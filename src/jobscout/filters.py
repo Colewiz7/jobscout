@@ -51,7 +51,10 @@ def title_matches(title: str, config: Config) -> bool:
     "Internal Cloud Platform Engineer" does not.
     """
     title = title or ""
-    if not config.title.search(title):
+    infra = config.title.search(title) or (
+        config.title_cased is not None and config.title_cased.search(title)
+    )
+    if not infra:
         return False
     return bool(config.kind.search(config.kind_negative.sub(" ", title)))
 

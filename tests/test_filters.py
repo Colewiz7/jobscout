@@ -15,6 +15,11 @@ from jobscout.models import Posting
     ("Cloud Solutions Architect", False),         # not an internship
     ("Internal Platform Engineer", False),        # "Internal" is not "Intern"
     ("International Cloud Analyst", False),
+    ("IT Intern - Summer 2027", True),          # case-sensitive \bIT\b
+    ("Intern - IT", True),
+    ("Information Technology Intern", True),
+    ("Make it Work Intern", False),             # the reason \bIT\b is not re.I
+    ("Digital Marketing Intern", False),
 ])
 def test_title_rules(title, expected, config):
     assert title_matches(title, config) is expected

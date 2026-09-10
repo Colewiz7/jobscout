@@ -5,7 +5,13 @@
 # A role has to look like infrastructure work. "production engineer" is Meta's
 # name for SRE; sysadmin/systems and IT-shaped titles are included because those
 # co-ops are less contested than anything labelled "DevOps intern".
-title_pattern: 'devops|devsecops|\bsre\b|site reliability|production engineer|platform|infrastructure|cloud|network|systems? (engineer|administrat)|sysadmin|(release|build) engineer'
+title_pattern: 'devops|devsecops|\bsre\b|site reliability|production engineer|platform|infrastructure|information technology|cloud|network|systems? (engineer|administrat)|sysadmin|(release|build) engineer'
+
+# Matched case-SENSITIVELY, unlike everything else here. "IT Intern" is exactly
+# the kind of less-contested CIT role worth seeing, but the main pattern is
+# compiled case-insensitively, where \bIT\b would match the word "it" and drag
+# in most of the list.
+title_pattern_cased: '\bIT\b'
 # ...and like an internship. \b keeps "intern" off "internal" and "international",
 # which the negative below also guards.
 kind_pattern: 'co-?ops?\b|intern(ship)?s?\b'
@@ -66,3 +72,11 @@ boards:
   greenhouse: []
   lever: []
   ashby: []
+
+# Display names for those slugs, also emitted by discover-boards. Without it a
+# notification reads "morsecorpcoop" rather than "MORSE Corp", since the board
+# APIs never state the company name themselves.
+board_companies:
+  greenhouse: {}
+  lever: {}
+  ashby: {}

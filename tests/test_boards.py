@@ -18,7 +18,7 @@ class FakeFetcher:
 
 
 def test_greenhouse_normalisation(fixture_json):
-    rows = _greenhouse(fixture_json("greenhouse_appian.json"), "appian")
+    rows = _greenhouse(fixture_json("greenhouse_appian.json"), "appian", "Appian")
     assert rows
     first = rows[0]
     assert first.source == "greenhouse" and first.board == "appian"
@@ -28,7 +28,7 @@ def test_greenhouse_normalisation(fixture_json):
 
 
 def test_ashby_keeps_secondary_locations(fixture_json):
-    rows = _ashby(fixture_json("ashby_etched.json"), "Etched")
+    rows = _ashby(fixture_json("ashby_etched.json"), "Etched", "Etched")
     assert rows
     assert all(r.source == "ashby" for r in rows)
     assert all(r.dedupe_key.startswith("ashby:") for r in rows)
@@ -41,13 +41,13 @@ def test_ashby_skips_unlisted():
         {"id": "2", "title": "Cloud Intern", "location": "NY", "isListed": True,
          "jobUrl": "https://y", "isRemote": True},
     ]}
-    rows = _ashby(payload, "acme")
+    rows = _ashby(payload, "acme", "Acme")
     assert [r.provider_id for r in rows] == ["ashby:2"]
     assert rows[0].remote is True
 
 
 def test_lever_normalisation(fixture_json):
-    rows = _lever(fixture_json("lever_cesiumastro.json"), "CesiumAstro")
+    rows = _lever(fixture_json("lever_cesiumastro.json"), "CesiumAstro", "CesiumAstro")
     assert rows
     assert rows[0].source == "lever"
     assert rows[0].location  # comes out of categories.location
@@ -69,3 +69,18 @@ def test_fetch_ignores_unknown_provider():
 
 def test_every_provider_has_a_url_template():
     assert set(PROVIDERS) == {"greenhouse", "lever", "ashby"}
+
+
+def test_company_display_name_comes_from_the_map(fixture_json):
+    """Board APIs never state the company, so without the map a push would read
+    "morsecorpcoop" instead of "MORSE Corp"."""
+    fetcher = FakeFetcher({"boards/appian/": fixture_json("greenhouse_appian.json")})
+    postings, _ = fetch(fetcher, {"greenhouse": ("appian",)},
+                        {"greenhouse": {"appian": "Appian Corporation"}})
+    assert {p.company for p in postings} == {"Appian Corporation"}
+
+
+def test_company_falls_back_to_the_slug_when_unmapped(fixture_json):
+    fetcher = FakeFetcher({"boards/appian/": fixture_json("greenhouse_appian.json")})
+    postings, _ = fetch(fetcher, {"greenhouse": ("appian",)}, {})
+    assert {p.company for p in postings} == {"appian"}

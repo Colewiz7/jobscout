@@ -27,6 +27,7 @@ DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[2] / "config" / "filters
 @dataclasses.dataclass(frozen=True)
 class Config:
     title: re.Pattern
+    title_cased: re.Pattern | None
     kind: re.Pattern
     kind_negative: re.Pattern
     wanted_terms: frozenset[str]
@@ -35,6 +36,7 @@ class Config:
     location_allow_extra: re.Pattern | None
     max_notify_per_run: int
     boards: dict[str, tuple[str, ...]]
+    board_companies: dict[str, dict[str, str]]
 
     @classmethod
     def load(cls, path: str | os.PathLike | None = None) -> "Config":
@@ -43,6 +45,12 @@ class Config:
         boards = raw.get("boards") or {}
         return cls(
             title=re.compile(raw["title_pattern"], re.I),
+            # Deliberately not re.I: see the note in filters.yaml.
+            title_cased=(
+                re.compile(raw["title_pattern_cased"])
+                if raw.get("title_pattern_cased")
+                else None
+            ),
             kind=re.compile(raw["kind_pattern"], re.I),
             kind_negative=re.compile(raw["kind_negative"], re.I),
             wanted_terms=frozenset(t.lower() for t in raw.get("wanted_terms", ())),
@@ -51,4 +59,7 @@ class Config:
             location_allow_extra=boundary_pattern(raw.get("location_allow_extra", ())),
             max_notify_per_run=int(raw.get("max_notify_per_run", 15)),
             boards={k: tuple(v or ()) for k, v in boards.items()},
+            board_companies={
+                k: dict(v or {}) for k, v in (raw.get("board_companies") or {}).items()
+            },
         )

@@ -34,7 +34,7 @@ LEVER = "https://api.lever.co/v0/postings/{slug}?mode=json"
 ASHBY = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 
 
-def _greenhouse(payload, slug: str) -> list[Posting]:
+def _greenhouse(payload, slug: str, company: str) -> list[Posting]:
     out = []
     for job in (payload or {}).get("jobs", []):
         location = ((job.get("location") or {}).get("name") or "").strip()
@@ -42,7 +42,7 @@ def _greenhouse(payload, slug: str) -> list[Posting]:
             Posting(
                 source="greenhouse",
                 board=slug,
-                company=slug,
+                company=company,
                 title=(job.get("title") or "").strip(),
                 location=location,
                 url=job.get("absolute_url") or "",
@@ -54,7 +54,7 @@ def _greenhouse(payload, slug: str) -> list[Posting]:
     return out
 
 
-def _lever(payload, slug: str) -> list[Posting]:
+def _lever(payload, slug: str, company: str) -> list[Posting]:
     out = []
     for job in payload or []:
         categories = job.get("categories") or {}
@@ -64,7 +64,7 @@ def _lever(payload, slug: str) -> list[Posting]:
             Posting(
                 source="lever",
                 board=slug,
-                company=slug,
+                company=company,
                 title=(job.get("text") or "").strip(),
                 location=location,
                 url=job.get("hostedUrl") or "",
@@ -76,7 +76,7 @@ def _lever(payload, slug: str) -> list[Posting]:
     return out
 
 
-def _ashby(payload, slug: str) -> list[Posting]:
+def _ashby(payload, slug: str, company: str) -> list[Posting]:
     out = []
     for job in (payload or {}).get("jobs", []):
         if not job.get("isListed", True):
@@ -92,7 +92,7 @@ def _ashby(payload, slug: str) -> list[Posting]:
             Posting(
                 source="ashby",
                 board=slug,
-                company=slug,
+                company=company,
                 title=(job.get("title") or "").strip(),
                 location="; ".join(p for p in places if p),
                 url=job.get("jobUrl") or "",
@@ -111,11 +111,16 @@ PROVIDERS = {
 }
 
 
-def fetch(fetcher, boards: dict[str, tuple[str, ...]]):
+def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None):
     """Returns (postings, fetched) where `fetched` is the (source, slug) pairs
     that actually answered. Only those are eligible for the missing-run close
     rule: a board that 404s this run must not close every job it ever had.
+
+    `names` maps a slug to a display company name. None of these APIs states the
+    company anywhere in the payload, so without the map a notification reads
+    "morsecorpcoop" instead of "MORSE Corp".
     """
+    names = names or {}
     postings: list[Posting] = []
     fetched: set[tuple[str, str]] = set()
     for provider, slugs in boards.items():
@@ -129,7 +134,8 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]]):
             if payload is None:
                 log.warning("%s/%s did not answer, skipping", provider, slug)
                 continue
-            rows = normalise(payload, slug)
+            company = (names.get(provider) or {}).get(slug, slug)
+            rows = normalise(payload, slug, company)
             postings.extend(rows)
             fetched.add((provider, slug))
             log.info("%s/%s: %d rows", provider, slug, len(rows))
