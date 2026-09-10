@@ -1,0 +1,68 @@
+# Default filter config. The cluster mounts its own copy of this file from the
+# jobscout-config ConfigMap at /etc/jobscout/config.yaml, so tuning the search
+# is a ConfigMap edit and an Argo sync, not a rebuild.
+
+# A role has to look like infrastructure work. "production engineer" is Meta's
+# name for SRE; sysadmin/systems and IT-shaped titles are included because those
+# co-ops are less contested than anything labelled "DevOps intern".
+title_pattern: 'devops|devsecops|\bsre\b|site reliability|production engineer|platform|infrastructure|cloud|network|systems? (engineer|administrat)|sysadmin|(release|build) engineer'
+# ...and like an internship. \b keeps "intern" off "internal" and "international",
+# which the negative below also guards.
+kind_pattern: 'co-?ops?\b|intern(ship)?s?\b'
+kind_negative: 'internal|international|internationally'
+
+# Seasons worth hearing about. Simplify off-season rows carry a comma-separated
+# Terms list; a row qualifies if any of its terms is in here.
+wanted_terms:
+  - spring 2027
+  - summer 2027
+
+# Board APIs have no Terms column, so terms come out of the title. Only 17% of
+# real board internship titles name a season, so by default an unnamed term
+# passes and only a wrong named term ("Fall Term 2026") is rejected. Set true to
+# require the season in the title.
+board_require_explicit_terms: false
+
+# Location: denied first, then allowed. A multi-location cell passes if any one
+# segment passes, so "Toronto, ON; Remote in USA" is kept and "Remote in Canada"
+# is not.
+location_deny:
+  - canada
+  - ontario
+  - quebec
+  - british columbia
+  - united kingdom
+  - england
+  - scotland
+  - ireland
+  - india
+  - germany
+  - france
+  - netherlands
+  - poland
+  - singapore
+  - japan
+  - australia
+  - israel
+  - mexico
+  - brazil
+location_allow_extra:
+  - remote
+  - usa
+  - u.s.
+  - united states
+  - sf
+  - nyc
+  - bay area
+  - silicon valley
+  - washington dc
+
+# Guard against a source format change turning into a push flood. Over this
+# many new matches in one run, send a single summary instead.
+max_notify_per_run: 15
+
+# Board slugs to poll, by provider. Fill from `python -m jobscout discover-boards`.
+boards:
+  greenhouse: []
+  lever: []
+  ashby: []
