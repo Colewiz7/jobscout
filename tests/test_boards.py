@@ -390,3 +390,68 @@ def test_phenom_sitemap_failure_makes_the_board_absent():
 
     postings, fetched = fetch(NoSitemap(), {"phenom": ("careers.example.com",)}, None)
     assert postings == [] and fetched == set()
+
+
+# --- workday location resolution -----------------------------------------
+
+WD_DETAIL_US = {
+    "jobPostingInfo": {
+        "location": "Folsom, CA",
+        "additionalLocations": ["Richardson, TX"],
+        "country": {"descriptor": "United States of America"},
+    }
+}
+WD_DETAIL_ABROAD = {
+    "jobPostingInfo": {
+        "location": "Miaoli - Tongluo",
+        "additionalLocations": ["Taichung - Fab 16, Taiwan"],
+        "country": {"descriptor": "Taiwan"},
+    }
+}
+
+
+class FakeDetail:
+    def __init__(self, payload):
+        self.payload = payload
+        self.asked = []
+
+    def get_json(self, url):
+        self.asked.append(url)
+        return self.payload
+
+
+def _collapsed(path):
+    from jobscout.models import Posting
+
+    return Posting(source="workday", board="micron/wd1/External", company="Micron",
+                   title="Intern", location="2 Locations", url="https://x/1",
+                   provider_id=f"workday:micron:{path}")
+
+
+def test_workday_detail_names_the_hidden_locations():
+    from jobscout.sources.boards import workday_resolve_location
+
+    fetcher = FakeDetail(WD_DETAIL_US)
+    places = workday_resolve_location(fetcher, _collapsed("/job/Folsom-CA/x_JR1"))
+    assert places == "Folsom, CA, United States of America; Richardson, TX"
+    assert fetcher.asked == [
+        "https://micron.wd1.myworkdayjobs.com/wday/cxs/micron/External/job/Folsom-CA/x_JR1"
+    ]
+
+
+def test_workday_detail_exposes_a_foreign_posting(config):
+    from jobscout.filters import location_matches
+    from jobscout.sources.boards import workday_resolve_location
+
+    places = workday_resolve_location(FakeDetail(WD_DETAIL_ABROAD),
+                                      _collapsed("/job/Miaoli/x_JR2"))
+    assert "Taiwan" in places
+    # The collapsed cell passed the location rule; the resolved one must not.
+    assert location_matches("2 Locations", config) is True
+    assert location_matches(places, config) is False
+
+
+def test_workday_detail_failure_leaves_the_posting_alone():
+    from jobscout.sources.boards import workday_resolve_location
+
+    assert workday_resolve_location(FakeDetail(None), _collapsed("/job/x/y_JR3")) is None
