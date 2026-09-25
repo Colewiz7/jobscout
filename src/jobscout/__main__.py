@@ -153,6 +153,37 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    """Hold a config to the documented behaviour.
+
+    Run against the deployed configmap this is the drift guard: the two config
+    files legitimately differ, so what is pinned is what they do, not what
+    they contain.
+    """
+    import pathlib
+
+    import yaml
+
+    config = Config.load(args.config)
+    cases_path = args.cases or (pathlib.Path(__file__).resolve().parents[2]
+                                / "tests" / "contract_cases.yaml")
+    cases = yaml.safe_load(pathlib.Path(cases_path).read_text())
+
+    failures = []
+    for title, expected in cases.get("titles", []):
+        if filters.title_matches(title, config) is not expected:
+            failures.append(f"title {title!r}: expected {expected}")
+    for location, expected in cases.get("locations", []):
+        if filters.location_matches(location, config) is not expected:
+            failures.append(f"location {location!r}: expected {expected}")
+
+    total = len(cases.get("titles", [])) + len(cases.get("locations", []))
+    for line in failures:
+        log.error("%s", line)
+    log.info("%d/%d contract cases pass", total - len(failures), total)
+    return 1 if failures else 0
+
+
 def cmd_export(args) -> int:
     """Dump every open posting as markdown, newest first.
 
@@ -251,6 +282,8 @@ def main(argv=None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="fetch, filter, store, notify")
+    check_parser = sub.add_parser("check", help="hold a config to the documented behaviour")
+    check_parser.add_argument("--cases", default=None, help="path to contract cases YAML")
     discover_parser = sub.add_parser("discover-boards", help="derive and probe board slugs")
     discover_parser.add_argument("-o", "--out", help="write YAML here instead of stdout")
     export_parser = sub.add_parser("export", help="dump open postings as markdown")
@@ -267,6 +300,7 @@ def main(argv=None) -> int:
         "discover-boards": cmd_discover,
         "export": cmd_export,
         "selftest": cmd_selftest,
+        "check": cmd_check,
         None: cmd_run,
     }[args.command](args)
 

@@ -1,0 +1,41 @@
+# The behaviour the filters must have, wherever they are deployed.
+#
+# The repo default and the cluster's configmap are not the same file and never
+# will be: the deployed one carries hundreds of boards and the employers being
+# targeted, which deliberately do not live in a public repo. So they are held
+# to the same behaviour rather than the same bytes, and this is that contract.
+titles:
+  # infrastructure, in the shapes employers actually write
+  - ["DevOps Engineer Co-op", true]
+  - ["Site Reliability Engineer Intern", true]
+  - ["Infrastructure Engineering Intern, Spring 2027", true]
+  - ["Cloud Infrastructure Co-op", true]
+  - ["IT Systems Administrator Intern", true]
+  - ["Network Engineer Intern", true]
+  - ["Systems Development Engineer Intern", true]      # AWS infrastructure track
+  - ["Data Center Engineering Operations Intern", true]
+  - ["Technology Intern - Summer 2027", true]          # generic program title
+  - ["Co-op, Information Technology", true]
+  # the go-to-market org reuses the same nouns
+  - ["Cloud Sales Intern", false]
+  - ["Platform Account Executive", false]
+  - ["IT Sales Intern", false]
+  - ["Technical Recruiter, Infrastructure", false]
+  - ["Recruiting Coordinator - IT", false]
+  - ["Product Manager, Cloud Platform", false]
+  - ["Customer Success Engineer, Network", false]
+  # one word from the infrastructure track, and not it
+  - ["Software Development Engineer Intern", false]
+  # a place name is not a technology
+  - ["Store Executive Intern (Store Leadership Intern) - St. Cloud, MN", false]
+locations:
+  - ["Austin, TX", true]
+  - ["US-NY-Rochester", true]                          # workday writes it this way
+  - ["NY-Rochester", true]
+  - ["Winston-Salem, NC", true]
+  - ["Remote - US", true]
+  - ["3 Locations", true]                              # workday collapses these
+  - ["CA-ON-Toronto", false]                           # country first: Canada
+  - ["Toronto, Ontario", false]
+  - ["Bangalore, India", false]
+  - ["OK COMPUTER", false]
