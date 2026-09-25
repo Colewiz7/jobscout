@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import os
 import sys
@@ -99,11 +100,37 @@ def cmd_run(args) -> int:
 
             ranked = filters.rank(pending, config)
             if len(ranked) < len(pending):
+                log.info("%d rows collapsed to %d jobs", len(pending), len(ranked))
+
+            scored = [(row, *filters.score_breakdown(row, config)) for row in ranked]
+            database.record_scores(
+                conn, [(row["dedupe_key"], total, detail) for row, total, detail in scored]
+            )
+
+            # Below the floor a posting is kept and explained but never sent,
+            # so a quiet week cannot eventually promote the dross.
+            worthy = [row for row, total, _ in scored if total >= config.min_notify_score]
+            dropped = len(scored) - len(worthy)
+
+            # And a queue that never empties is a queue that grows forever.
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+                days=config.notify_queue_days
+            )
+            fresh, stale = [], 0
+            for row in worthy:
+                seen = row.get("first_seen")
+                if seen is not None and seen < cutoff:
+                    stale += 1
+                    continue
+                fresh.append(row)
+            if dropped or stale:
                 log.info(
-                    "%d rows collapsed to %d jobs", len(pending), len(ranked)
+                    "%d below the score floor, %d older than %d days, neither sent",
+                    dropped, stale, config.notify_queue_days,
                 )
-            sending = ranked[: config.max_notify_per_run]
-            held = ranked[config.max_notify_per_run :]
+
+            sending = fresh[: config.max_notify_per_run]
+            held = fresh[config.max_notify_per_run :]
 
             for row in sending:
                 title, body = notify.format_posting(row)

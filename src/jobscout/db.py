@@ -9,6 +9,7 @@ import dataclasses
 import logging
 
 import psycopg
+from psycopg.types.json import Json
 from psycopg.rows import dict_row
 
 from .models import Posting, merge_locations
@@ -47,6 +48,8 @@ create table if not exists postings (
 -- be added explicitly or an upgrade fails at insert time.
 alter table postings add column if not exists fallback_key text not null default '';
 alter table postings add column if not exists age_days integer;
+alter table postings add column if not exists score integer;
+alter table postings add column if not exists score_detail jsonb;
 
 create index if not exists postings_dedupe_key_idx on postings (dedupe_key);
 create index if not exists postings_fallback_key_idx on postings (fallback_key);
@@ -195,12 +198,14 @@ grouped as (
            min(title)     as title,
            min(terms)     as terms,
            min(age_days)  as age_days,
+           min(first_seen) as first_seen,
            min(url) filter (where url <> '') as url,
            string_agg(location, ';')         as locations_raw
       from candidates
      group by dedupe_key
 )
-select dedupe_key, company, title, terms, age_days, coalesce(url, '') as url,
+select dedupe_key, company, title, terms, age_days, first_seen,
+       coalesce(url, '') as url,
        (select coalesce(string_agg(distinct btrim(part), '; ' order by btrim(part)), '')
           from unnest(string_to_array(locations_raw, ';')) as part
          where btrim(part) <> '') as location
@@ -261,3 +266,20 @@ def seed(conn: psycopg.Connection) -> int:
         changed = cur.rowcount
     conn.commit()
     return changed
+
+
+def record_scores(conn: psycopg.Connection, scored: list[tuple[str, int, dict]]) -> int:
+    """Store the score and its breakdown against every row of each key.
+
+    Written for every candidate, not only the ones that push, so a posting
+    that never arrived can still be explained after the fact.
+    """
+    if not scored:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            "update postings set score = %s, score_detail = %s where dedupe_key = %s",
+            [(total, Json(detail), key) for key, total, detail in scored],
+        )
+    conn.commit()
+    return len(scored)

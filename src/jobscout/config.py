@@ -57,6 +57,8 @@ class Config:
     location_deny: re.Pattern | None
     location_allow_extra: re.Pattern | None
     max_notify_per_run: int
+    min_notify_score: int
+    notify_queue_days: int
     boards: dict[str, tuple[str, ...]]
     workday_search_terms: tuple[str, ...]
     board_companies: dict[str, dict[str, str]]
@@ -81,6 +83,8 @@ class Config:
             location_deny=boundary_pattern(raw.get("location_deny", ())),
             location_allow_extra=boundary_pattern(raw.get("location_allow_extra", ())),
             max_notify_per_run=int(raw.get("max_notify_per_run", 15)),
+            min_notify_score=int(raw.get("min_notify_score", 40)),
+            notify_queue_days=int(raw.get("notify_queue_days", 14)),
             boards={k: tuple(v or ()) for k, v in boards.items()},
             workday_search_terms=tuple(raw.get("workday_search_terms") or WORKDAY_TERMS),
             board_companies={

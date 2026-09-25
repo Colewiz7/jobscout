@@ -281,3 +281,25 @@ def test_amazon_absent_when_the_endpoint_fails():
 
     postings, fetched = fetch(Dead(), {"amazon": ("intern",)}, None)
     assert postings == [] and fetched == set()
+
+
+def test_workday_warns_when_the_tenant_is_not_the_employer(caplog):
+    """Discover's careers page advertises Capital One's board."""
+    poster = FakePoster()
+    with caplog.at_level("WARNING"):
+        fetch(poster, {"workday": ("capitalone/wd12/Capital_One",)},
+              {"workday": {"capitalone/wd12/Capital_One": "Discover"}}, ("devops",))
+    assert any("does not look like" in str(r.msg) for r in caplog.records)
+
+
+@pytest.mark.parametrize("company,spec", [
+    ("NASA JPL", "citjpl/wd5/Jobs"),                 # Caltech runs the lab
+    ("Booz Allen Hamilton", "bah/wd1/BAH_Jobs"),     # initials
+    ("Southwest Airlines", "swa/wd1/external"),      # airline code
+    ("M&T Bank", "mtb/wd5/MTB"),                     # contraction
+])
+def test_workday_stays_quiet_for_a_legitimate_odd_tenant(caplog, company, spec):
+    poster = FakePoster()
+    with caplog.at_level("WARNING"):
+        fetch(poster, {"workday": (spec,)}, {"workday": {spec: company}}, ("devops",))
+    assert not [r for r in caplog.records if "does not look like" in str(r.msg)]

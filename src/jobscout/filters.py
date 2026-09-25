@@ -159,6 +159,18 @@ _OFF_TARGET = re.compile(
     re.I,
 )
 _COOP = re.compile(r"co-?op", re.I)
+_SEASON_ORDER = {"spring": 0, "summer": 1, "fall": 2, "autumn": 2, "winter": 3}
+
+
+def _term_rank(term: str) -> tuple[int, int] | None:
+    """(year, season) so two terms can be compared."""
+    parts = term.split()
+    if len(parts) != 2 or parts[0] not in _SEASON_ORDER:
+        return None
+    try:
+        return int(parts[1]), _SEASON_ORDER[parts[0]]
+    except ValueError:
+        return None
 _INTERNSHIP = re.compile(r"intern(ship)?\b", re.I)
 # "Systems Engineer Intern - Charleston, SC" is the same job as the Honolulu
 # one. Strip a trailing place so the twins collapse to a single entry.
@@ -169,28 +181,45 @@ def _title_key(title: str) -> str:
     return re.sub(r"\s+", " ", _TRAILING_PLACE.sub("", title or "")).strip().lower()
 
 
-def score(row, config: Config) -> int:
-    """How far up the feed this posting deserves to sit."""
+def score_breakdown(row, config: Config) -> tuple[int, dict]:
+    """The score and why, so a ranking can be audited after the fact."""
     title = row.get("title") or ""
-    points = 0
+    detail: dict[str, int] = {}
+
     if _ROLE_STRONG.search(title):
-        points += 100
+        detail["role_named"] = 100
     elif _ROLE_WEAK.search(title):
-        points += 25
+        detail["role_hinted"] = 25
     if _OFF_TARGET.search(title):
-        points -= 60
+        detail["off_target_discipline"] = -60
     if _COOP.search(title):
-        points += 40
+        detail["co_op"] = 40
     elif _INTERNSHIP.search(title):
-        points += 20
-    if config.wanted_terms and extract_terms(
-        (row.get("terms") or "") + " " + title
-    ) & config.wanted_terms:
-        points += 30
+        detail["internship"] = 20
+
+    found = extract_terms((row.get("terms") or "") + " " + title)
+    if config.wanted_terms:
+        if found & config.wanted_terms:
+            detail["wanted_term"] = 30
+        elif found:
+            # A posting that names a term, and none of them is one we want,
+            # is advertising a cycle that has already gone.
+            ours = [_term_rank(t) for t in config.wanted_terms]
+            theirs = [_term_rank(t) for t in found]
+            ours = [r for r in ours if r]
+            theirs = [r for r in theirs if r]
+            if ours and theirs and max(theirs) < min(ours):
+                detail["stale_term"] = -70
+
     age = row.get("age_days")
     if age is not None and age <= 7:
-        points += 10
-    return points
+        detail["fresh"] = 10
+
+    return sum(detail.values()), detail
+
+
+def score(row, config: Config) -> int:
+    return score_breakdown(row, config)[0]
 
 
 def rank(rows, config: Config) -> list:

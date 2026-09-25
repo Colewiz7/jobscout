@@ -131,6 +131,36 @@ def _workday_age(text: str) -> int | None:
     return int(found.group(1)) if found else None
 
 
+def _tenant_matches(company: str, tenant: str) -> bool:
+    """Is this Workday tenant plausibly this employer's.
+
+    Looser than the slug rule, because tenants are abbreviations as often as
+    names: Booz Allen Hamilton is bah, M&T Bank is mtb, and JPL is citjpl
+    because Caltech runs the lab. Any of a shared word, a prefix, or the
+    initials is enough. What it still catches is a tenant with no relationship
+    at all, which is how Discover's page offering Capital One's board reads.
+    """
+    tenant = re.sub(r"[^a-z0-9]", "", tenant.lower())
+    base = company.split("(")[0]
+    words = [w for w in re.sub(r"[^a-z0-9 ]", " ", base.lower()).split() if len(w) > 2]
+    full = "".join(re.sub(r"[^a-z0-9]", "", base.lower()))
+    if not tenant or not full:
+        return True
+    if tenant in full or full in tenant:
+        return True
+    if any(w in tenant for w in words):
+        return True
+    initials = "".join(w[0] for w in re.sub(r"[^a-z0-9 ]", " ", base.lower()).split() if w)
+    if initials and (tenant == initials or tenant.startswith(initials)):
+        return True
+    # Last resort: an airline-style contraction such as swa for Southwest
+    # Airlines. Weak on its own, but a tenant that is not even spelled out of
+    # the employer's letters in order is not theirs.
+    letters = iter(full)
+    return all(character in letters for character in tenant)
+
+
+
 def _workday_page(fetcher, url: str, term: str, offset: int):
     body = json.dumps(
         {"appliedFacets": {}, "limit": WORKDAY_PAGE, "offset": offset, "searchText": term}
@@ -162,6 +192,16 @@ def _workday(fetcher, slug: str, company: str, terms=()):
         log.warning("workday board %r is not tenant/wdN/site, skipping", slug)
         return None
     tenant, dc, site = spec.groups()
+    # A careers page can advertise somebody else's board: Discover's carries
+    # Capital One's, which answers with 1800 postings and would file them all
+    # under the wrong employer. The tenant is only a hint though, since JPL
+    # legitimately posts under citjpl because Caltech runs the lab, so this
+    # says so rather than dropping the board.
+    if company and company != slug and not _tenant_matches(company, tenant):
+        log.warning(
+            "workday tenant %r does not look like %r; check the board is theirs",
+            tenant, company,
+        )
     url = WORKDAY.format(tenant=tenant, dc=dc, site=site)
 
     seen: dict[str, Posting] = {}
