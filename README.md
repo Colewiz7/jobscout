@@ -46,9 +46,14 @@ live.
 | provider | board identifier | shape |
 | --- | --- | --- |
 | greenhouse, lever, ashby | slug | one GET, public JSON |
-| workday | `tenant/wdN/site` | POST, paged, one query per search term |
-| amazon | a search query | one GET against an undocumented endpoint |
+| workday | `tenant/wdN/site` | POST, paged, undocumented, one query per search term |
+| amazon | a search query | one GET, undocumented, one request per query |
 | phenom | careers host | sitemap, then a detail fetch per plausible job |
+
+Greenhouse, Lever and Ashby publish documented board APIs. Workday and Amazon
+do not: both endpoints are public and unauthenticated but undocumented, which
+is why both are used conservatively, with a real User-Agent and no paging
+beyond what is needed.
 
 Two of these took a detour worth recording.
 
