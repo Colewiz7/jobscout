@@ -54,7 +54,7 @@ def extract(html: str) -> dict[str, dict[str, str]]:
 
 def probe(fetcher, provider: str, slug: str) -> bool:
     """True when the provider's API actually answers for this slug."""
-    template, _ = boards_api.PROVIDERS[provider]
+    template = boards_api.BOARD_TEMPLATES[provider]
     payload = fetcher.get_json(template.format(slug=slug))
     if payload is None:
         return False

@@ -21,6 +21,19 @@ def boundary_pattern(terms) -> re.Pattern | None:
     body = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
     return re.compile(rf"(?<![a-z0-9])(?:{body})(?![a-z0-9])", re.I)
 
+# Workday's searchText is a substring match, so searching "intern" also returns
+# every "Internal Audit" posting and narrows nothing. These are the words that
+# actually cut the board down; the co-op rule is applied locally afterwards.
+WORKDAY_TERMS = (
+    "devops",
+    "site reliability",
+    "infrastructure",
+    "platform engineer",
+    "cloud engineer",
+    "systems engineer",
+    "network engineer",
+)
+
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[2] / "config" / "filters.yaml"
 
 
@@ -36,6 +49,7 @@ class Config:
     location_allow_extra: re.Pattern | None
     max_notify_per_run: int
     boards: dict[str, tuple[str, ...]]
+    workday_search_terms: tuple[str, ...]
     board_companies: dict[str, dict[str, str]]
 
     @classmethod
@@ -59,6 +73,7 @@ class Config:
             location_allow_extra=boundary_pattern(raw.get("location_allow_extra", ())),
             max_notify_per_run=int(raw.get("max_notify_per_run", 15)),
             boards={k: tuple(v or ()) for k, v in boards.items()},
+            workday_search_terms=tuple(raw.get("workday_search_terms") or WORKDAY_TERMS),
             board_companies={
                 k: dict(v or {}) for k, v in (raw.get("board_companies") or {}).items()
             },

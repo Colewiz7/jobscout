@@ -32,7 +32,9 @@ def cmd_run(args) -> int:
 
     with Fetcher() as fetcher:
         simplify_rows = simplify.fetch(fetcher)
-        board_rows, fetched = boards_source.fetch(fetcher, config.boards, config.board_companies)
+        board_rows, fetched = boards_source.fetch(
+            fetcher, config.boards, config.board_companies, config.workday_search_terms
+        )
 
         # A source that parses to nothing where it used to have thousands of
         # rows is a format change, not an empty job market. Fail loudly rather

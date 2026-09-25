@@ -7,7 +7,9 @@ rather than failing the run.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
+import re
 
 from ..models import Posting
 
@@ -104,14 +106,121 @@ def _ashby(payload, slug: str, company: str) -> list[Posting]:
     return out
 
 
+# Workday needs three values, not a slug: the tenant, the numbered datacenter
+# and the site name, written "mtb/wd5/MTB". They are all visible in the careers
+# URL a company links to.
+WORKDAY_SPEC = re.compile(r"^([A-Za-z0-9\-]+)/(wd\d+)/([A-Za-z0-9_\-]+)$")
+WORKDAY = "https://{tenant}.{dc}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+WORKDAY_VIEW = "https://{tenant}.{dc}.myworkdayjobs.com/en-US/{site}{path}"
+WORKDAY_PAGE = 20          # the API's own page size; asking for more is ignored
+WORKDAY_MAX_PAGES = 3      # 60 hits per term is far past anything relevant
+
+# Workday dates are prose: "Posted Today", "Posted Yesterday", "Posted 30+ Days
+# Ago". There is no timestamp anywhere in the list response.
+_WD_AGE = re.compile(r"(\d+)\+?\s*days?\s*ago", re.I)
+
+
+def _workday_age(text: str) -> int | None:
+    lowered = (text or "").lower()
+    if "just posted" in lowered or "today" in lowered:
+        return 0
+    if "yesterday" in lowered:
+        return 1
+    found = _WD_AGE.search(lowered)
+    return int(found.group(1)) if found else None
+
+
+def _workday_page(fetcher, url: str, term: str, offset: int):
+    body = json.dumps(
+        {"appliedFacets": {}, "limit": WORKDAY_PAGE, "offset": offset, "searchText": term}
+    ).encode()
+    response = fetcher.post(
+        url, body, {"Content-Type": "application/json", "Accept": "application/json"}
+    )
+    if response is None:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        log.warning("non-JSON body from %s", url)
+        return None
+
+
+def _workday(fetcher, slug: str, company: str, terms=()):
+    """One query per search term rather than one sweep of the whole board.
+
+    Workday's searchText is a substring match, so "intern" also returns every
+    "Internal Audit" posting: at M&T it matches 755 of 804 jobs and filters
+    nothing. The infrastructure words are what actually narrow it, so the fan
+    out is over those and the co-op rule is applied locally afterwards.
+    """
+    spec = WORKDAY_SPEC.match(slug)
+    if spec is None:
+        # None, not []: an empty list reads as "the board answered with nothing"
+        # and would make every job it ever had eligible for the close rule.
+        log.warning("workday board %r is not tenant/wdN/site, skipping", slug)
+        return None
+    tenant, dc, site = spec.groups()
+    url = WORKDAY.format(tenant=tenant, dc=dc, site=site)
+
+    seen: dict[str, Posting] = {}
+    answered = False
+    for term in terms or ():
+        for page in range(WORKDAY_MAX_PAGES):
+            payload = _workday_page(fetcher, url, term, page * WORKDAY_PAGE)
+            if payload is None:
+                break
+            answered = True
+            rows = payload.get("jobPostings") or []
+            for job in rows:
+                path = job.get("externalPath") or ""
+                if not path or path in seen:
+                    continue
+                location = (job.get("locationsText") or "").strip()
+                seen[path] = Posting(
+                    source="workday",
+                    board=slug,
+                    company=company,
+                    title=(job.get("title") or "").strip(),
+                    location=location,
+                    url=WORKDAY_VIEW.format(tenant=tenant, dc=dc, site=site, path=path),
+                    remote="remote" in location.lower(),
+                    provider_id=f"workday:{tenant}:{path}",
+                    age_days=_workday_age(job.get("postedOn")),
+                )
+            if len(rows) < WORKDAY_PAGE:
+                break
+    return list(seen.values()) if answered else None
+
+
+def _simple(template: str, normalise):
+    """A provider that is one GET of one URL."""
+
+    def run(fetcher, slug: str, company: str, terms=()):
+        payload = fetcher.get_json(template.format(slug=slug))
+        return None if payload is None else normalise(payload, slug, company)
+
+    return run
+
+
+# Discovery probes a slug by asking for the board, which only means anything
+# for the providers addressed by a single GET. Workday is deliberately absent:
+# its three-part spec cannot be derived from an apply URL.
+BOARD_TEMPLATES = {
+    "greenhouse": GREENHOUSE,
+    "lever": LEVER,
+    "ashby": ASHBY,
+}
+
 PROVIDERS = {
-    "greenhouse": (GREENHOUSE, _greenhouse),
-    "lever": (LEVER, _lever),
-    "ashby": (ASHBY, _ashby),
+    "greenhouse": _simple(GREENHOUSE, _greenhouse),
+    "lever": _simple(LEVER, _lever),
+    "ashby": _simple(ASHBY, _ashby),
+    "workday": _workday,
 }
 
 
-def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None):
+def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=()):
     """Returns (postings, fetched) where `fetched` is the (source, slug) pairs
     that actually answered. Only those are eligible for the missing-run close
     rule: a board that 404s this run must not close every job it ever had.
@@ -124,18 +233,16 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None):
     postings: list[Posting] = []
     fetched: set[tuple[str, str]] = set()
     for provider, slugs in boards.items():
-        spec = PROVIDERS.get(provider)
-        if spec is None:
+        run = PROVIDERS.get(provider)
+        if run is None:
             log.warning("unknown board provider %r, skipping", provider)
             continue
-        template, normalise = spec
         for slug in slugs:
-            payload = fetcher.get_json(template.format(slug=slug))
-            if payload is None:
+            company = (names.get(provider) or {}).get(slug, slug)
+            rows = run(fetcher, slug, company, search_terms)
+            if rows is None:
                 log.warning("%s/%s did not answer, skipping", provider, slug)
                 continue
-            company = (names.get(provider) or {}).get(slug, slug)
-            rows = normalise(payload, slug, company)
             postings.extend(rows)
             fetched.add((provider, slug))
             log.info("%s/%s: %d rows", provider, slug, len(rows))
