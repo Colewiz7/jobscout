@@ -162,7 +162,7 @@ def terms_match(posting: Posting, config: Config) -> bool:
 _COLLAPSED_LOCATION = re.compile(r"^\s*(?:\d+|multiple|several)\s+locations\s*$", re.I)
 
 
-def _location_is_collapsed(location: str) -> bool:
+def location_is_collapsed(location: str) -> bool:
     return any(
         _COLLAPSED_LOCATION.match(part) for part in re.split(r"[;\n]", location or "")
     )
@@ -281,7 +281,7 @@ def keep(posting: Posting, config: Config) -> bool:
     # A collapsed cell hid the country, so give the deny list the title too.
     if (
         config.location_deny is not None
-        and _location_is_collapsed(posting.location)
+        and location_is_collapsed(posting.location)
         and config.location_deny.search(posting.title or "")
     ):
         return False

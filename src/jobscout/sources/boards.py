@@ -429,6 +429,47 @@ def _phenom(fetcher, slug: str, company: str, terms=()):
 
 
 
+WORKDAY_DETAIL = "https://{tenant}.{dc}.myworkdayjobs.com/wday/cxs/{tenant}/{site}{path}"
+
+
+def workday_resolve_location(fetcher, posting) -> str | None:
+    """The real locations behind a collapsed "3 Locations" cell.
+
+    The list view names none of them, so a posting in Taiwan and a posting in
+    Texas are the same string. The detail record carries the primary location,
+    any additional ones, and the country, which is what the deny list needs to
+    do its job. Returns None when the detail cannot be read, so the caller can
+    decide what to do with an unresolved posting rather than being told a
+    wrong answer.
+    """
+    spec = WORKDAY_SPEC.match(posting.board or "")
+    if spec is None:
+        return None
+    tenant, dc, site = spec.groups()
+    path = (posting.provider_id or "").split(":", 2)[-1]
+    if not path.startswith("/"):
+        return None
+    payload = fetcher.get_json(
+        WORKDAY_DETAIL.format(tenant=tenant, dc=dc, site=site, path=path)
+    )
+    if not isinstance(payload, dict):
+        return None
+    info = payload.get("jobPostingInfo") or {}
+    places = [info.get("location")]
+    places.extend(info.get("additionalLocations") or [])
+    country = info.get("country")
+    if isinstance(country, dict):
+        country = country.get("descriptor")
+    cells = [str(p).strip() for p in places if p]
+    if country and cells:
+        # The country is stated once and applies to the primary location, so
+        # it rides with it: "Miaoli" alone is not something a deny list can
+        # read, while "Miaoli, Taiwan" is.
+        cells[0] = f"{cells[0]}, {country}"
+    return "; ".join(dict.fromkeys(cells)) or None
+
+
+
 # Discovery probes a slug by asking for the board, which only means anything
 # for the providers addressed by a single GET. Workday is deliberately absent:
 # its three-part spec cannot be derived from an apply URL.

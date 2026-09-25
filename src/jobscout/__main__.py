@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import logging
 import os
@@ -58,6 +59,36 @@ def cmd_run(args) -> int:
                     matched_simplify.append(posting)
 
         matched_boards = [p for p in board_rows if filters.keep(p, config)]
+
+        # Workday's list view collapses a multi-site posting to "3 Locations"
+        # and names none of them, so the location rule has nothing to read and
+        # lets it through. Only the ones that survived everything else are
+        # worth a detail request, which is a handful per run rather than one
+        # per posting.
+        resolved, rejected = 0, 0
+        checked = []
+        for posting in matched_boards:
+            if posting.source != "workday" or not filters.location_is_collapsed(
+                posting.location
+            ):
+                checked.append(posting)
+                continue
+            places = boards_source.workday_resolve_location(fetcher, posting)
+            if places is None:
+                # Unreadable detail is not evidence of being abroad; the title
+                # guard already caught the obvious cases.
+                checked.append(posting)
+                continue
+            resolved += 1
+            posting = dataclasses.replace(posting, location=places)
+            if filters.location_matches(places, config, posting.remote):
+                checked.append(posting)
+            else:
+                rejected += 1
+                log.info("%s: %r is not US, dropping", posting.company, places)
+        if resolved:
+            log.info("resolved %d collapsed locations, %d were not US", resolved, rejected)
+        matched_boards = checked
         log.info(
             "matched: %d simplify open, %d simplify closed, %d board",
             len(matched_simplify),
