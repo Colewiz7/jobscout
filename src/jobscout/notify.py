@@ -54,18 +54,3 @@ def format_held(rows: list[dict]) -> tuple[str, str]:
     preview.append("")
     preview.append("Held for the next run, ranked below the ones just sent.")
     return title, "\n".join(preview)
-
-
-def format_summary(rows: list[dict], cap: int) -> tuple[str, str]:
-    """One message instead of a flood.
-
-    A source changing format is the realistic way this job goes from 3 new
-    matches to 400, and that must not become 400 phone buzzes.
-    """
-    title = f"{len(rows)} new matches (over the {cap} cap)"
-    preview = [f"- {r['company']}: {r['title']}" for r in rows[:10]]
-    if len(rows) > 10:
-        preview.append(f"...and {len(rows) - 10} more")
-    preview.append("")
-    preview.append("Capped to one message. Check the postings table.")
-    return title, "\n".join(preview)

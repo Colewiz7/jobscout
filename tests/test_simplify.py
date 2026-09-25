@@ -59,3 +59,57 @@ def test_clean_url_drops_tracking_but_keeps_gh_jid():
 def test_apply_url_prefers_employer_over_simplify_mirror(fixture_text):
     rows = parse(fixture_text("simplify_s27.html"), "simplify-s27")
     assert all("simplify.jobs/p/" not in r.url for r in rows if r.url)
+
+
+OPEN_ROW = (
+    "<tr><th>Company</th><th>Role</th><th>Location</th><th>Application</th>"
+    "<th>Age</th></tr>"
+    "<tr><td>Acme</td><td>Cloud Intern</td><td>Austin, TX</td>"
+    "<td><a href=\"https://boards.greenhouse.io/acme/jobs/1\">Apply</a></td>"
+    "<td>0d</td></tr>"
+)
+
+
+def test_headerless_rows_pass_through_unharmed():
+    """A header row has to arrive before rows mean anything; a stray row
+    before the header is not a posting."""
+    html = "<table><tr><td>Spam Corp</td></tr>" + OPEN_ROW + "</table>"
+    rows = parse(html, "simplify-s27")
+    assert len(rows) == 1
+    assert rows[0].company == "Acme"
+
+
+def test_missing_application_column_means_closed():
+    """A table whose columns drift (Application gone) must not crash, and a
+    row without an application cell is treated as closed rather than open."""
+    html = (
+        "<tr><th>Company</th><th>Role</th></tr>"
+        "<tr><td>Acme</td><td>Cloud Intern</td></tr>"
+    )
+    rows = parse(html, "simplify-s27")
+    assert len(rows) == 1
+    assert rows[0].closed is True
+    assert rows[0].url == ""
+
+
+def test_open_row_without_a_link_is_skipped():
+    """An open row whose application cell has no anchor cannot be applied to,
+    so it is not worth a row at all."""
+    html = (
+        "<tr><th>Company</th><th>Role</th><th>Application</th></tr>"
+        "<tr><td>Acme</td><td>Cloud Intern</td><td>mailto:hr@acme.example</td></tr>"
+    )
+    rows = parse(html, "simplify-s27")
+    assert rows == []
+
+
+def test_fetch_skips_a_source_that_does_not_answer(caplog):
+    from jobscout.sources import simplify as simplify_module
+
+    class NoBody:
+        def get_text(self, _url):
+            return None
+
+    fetched = simplify_module.fetch(NoBody())
+    assert fetched == {}
+    assert "unavailable" in caplog.text

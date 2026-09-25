@@ -324,7 +324,11 @@ PHENOM_SITEMAP = "https://{host}/sitemap.xml"
 PHENOM_DETAIL_PAUSE = 0.4          # these are somebody's careers site
 PHENOM_MAX_DETAILS = 40            # a ceiling on one board's share of a run
 _LOC = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.I)
-_JOB_SLUG = re.compile(r"/job/[^/]+/([^/?#]+)")
+# Phenom job URLs come in two spellings: /job/<id>/<slug> and the Cisco-style
+# /jobs/ProjectDetail/<slug>/<id>. The id rides in a different segment in
+# each, so a single segment is never safe to dedupe on: the whole two-segment
+# tail is what is unique per posting.
+_JOB_TAIL = re.compile(r"/jobs?/(?:ProjectDetail/)?([^/?#]+/[^/?#]+)")
 # Deliberately looser than the real filter. A slug is truncated and stripped of
 # punctuation, so this only throws away what carries no role word at all; the
 # genuine test runs against the title from the job page.
@@ -379,17 +383,17 @@ def _phenom(fetcher, slug: str, company: str, terms=()):
         log.warning("phenom %s: sitemap did not answer, treating as absent", slug)
         return None
 
-    urls = [u for u in _LOC.findall(sitemap) if "/job/" in u]
+    urls = [u for u in _LOC.findall(sitemap) if _JOB_TAIL.search(u)]
     candidates = []
     for url in urls:
-        found = _JOB_SLUG.search(url)
+        found = _JOB_TAIL.search(url)
         if found and _SLUG_HINT.search(found.group(1)):
-            candidates.append(url)
+            candidates.append((url, found.group(1)))
     log.info("phenom %s: %d jobs listed, %d worth opening", slug, len(urls), len(candidates))
 
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
-    for url in candidates[:PHENOM_MAX_DETAILS]:
+    for url, job_tail in candidates[:PHENOM_MAX_DETAILS]:
         time.sleep(PHENOM_DETAIL_PAUSE)
         html = fetcher.get_text(url)
         if html is None:
@@ -420,7 +424,7 @@ def _phenom(fetcher, slug: str, company: str, terms=()):
                 location=location,
                 url=url,
                 remote="remote" in location.lower(),
-                provider_id=f"phenom:{slug}:{url.rsplit('/', 2)[-2]}",
+                provider_id=f"phenom:{slug}:{job_tail}",
                 age_days=_phenom_age(posting.get("datePosted")),
                 employment_type=employment,
             )
