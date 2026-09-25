@@ -7,6 +7,15 @@ name = "jobscout"
 version = "0.1.0"
 description = "Find DevOps/SRE/platform internships and push new ones to ntfy"
 requires-python = ">=3.11"
+# Kept in step with requirements.txt, which is what the image pins. Without
+# these an install straight from the repo, as CI does, yields a package that
+# cannot import its own modules.
+dependencies = [
+    "beautifulsoup4>=4.15",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.3",
+    "PyYAML>=6.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
