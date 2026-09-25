@@ -392,6 +392,62 @@ def test_phenom_sitemap_failure_makes_the_board_absent():
     assert postings == [] and fetched == set()
 
 
+CISCO_SITEMAP = """<?xml version="1.0"?>
+<urlset>
+  <url><loc>https://jobs.cisco.com/jobs/ProjectDetail/Site-Reliability-Engineer/1437351</loc></url>
+  <url><loc>https://jobs.cisco.com/jobs/ProjectDetail/Senior-SRE-Platform/1429102</loc></url>
+  <url><loc>https://jobs.cisco.com/jobs/ProjectDetail/Barista/1412345</loc></url>
+</urlset>"""
+
+
+def test_phenom_reads_the_cisco_jobs_url_spelling(monkeypatch):
+    """Cisco publishes job URLs as /jobs/ProjectDetail/<slug>/<id>. The old
+    "/job/" filter and _JOB_SLUG regex never matched that shape, so an
+    explicitly-targeted employer silently yielded zero postings."""
+    monkeypatch.setattr("jobscout.sources.boards.PHENOM_DETAIL_PAUSE", 0)
+    pages = {
+        "https://jobs.cisco.com/jobs/ProjectDetail/Site-Reliability-Engineer/1437351":
+            _ld("Site Reliability Engineer Intern", "INTERN"),
+        "https://jobs.cisco.com/jobs/ProjectDetail/Senior-SRE-Platform/1429102":
+            _ld("Senior SRE Platform Intern", "INTERN"),
+    }
+    fetcher = FakePhenom(sitemap=CISCO_SITEMAP, pages=pages)
+    postings, fetched = fetch(fetcher, {"phenom": ("jobs.cisco.com",)},
+                              {"phenom": {"jobs.cisco.com": "Cisco"}})
+    titles = sorted(p.title for p in postings)
+    assert titles == ["Senior SRE Platform Intern", "Site Reliability Engineer Intern"]
+    assert fetched == {("phenom", "jobs.cisco.com")}
+    # The id is the last segment; both postings must keep distinct keys.
+    keys = {p.dedupe_key for p in postings}
+    assert len(keys) == 2
+
+
+def test_phenom_dedupe_key_uses_the_job_not_the_department(monkeypatch):
+    """Two jobs under the same /job/ path prefix (same department, different
+    roles) previously shared the second-to-last segment as provider_id, so the
+    DB upsert silently overwrote one posting with the other."""
+    monkeypatch.setattr("jobscout.sources.boards.PHENOM_DETAIL_PAUSE", 0)
+    sitemap = """<?xml version="1.0"?>
+<urlset>
+  <url><loc>https://careers.example.com/us/en/job/engineering/software-engineer-intern</loc></url>
+  <url><loc>https://careers.example.com/us/en/job/engineering/platform-intern</loc></url>
+</urlset>"""
+    pages = {
+        "https://careers.example.com/us/en/job/engineering/software-engineer-intern":
+            _ld("Software Engineer Intern", "INTERN"),
+        "https://careers.example.com/us/en/job/engineering/platform-intern":
+            _ld("Platform Intern", "INTERN"),
+    }
+    fetcher = FakePhenom(sitemap=sitemap, pages=pages)
+    postings, _ = fetch(fetcher, {"phenom": ("careers.example.com",)}, None)
+    keys = sorted(p.dedupe_key for p in postings)
+    # Distinct roles under one department must not share a dedupe key: both
+    # survive as separate postings instead of the second overwriting the first.
+    assert len(keys) == 2
+    assert keys[0].endswith("engineering/platform-intern")
+    assert keys[1].endswith("engineering/software-engineer-intern")
+
+
 # --- workday location resolution -----------------------------------------
 
 WD_DETAIL_US = {
@@ -455,3 +511,80 @@ def test_workday_detail_failure_leaves_the_posting_alone():
     from jobscout.sources.boards import workday_resolve_location
 
     assert workday_resolve_location(FakeDetail(None), _collapsed("/job/x/y_JR3")) is None
+
+
+def test_workday_detail_without_a_leading_slash_is_none():
+    """A malformed provider_id must not turn into a URL fragment lookup."""
+    import dataclasses
+
+    from jobscout.sources.boards import workday_resolve_location
+
+    posting = dataclasses.replace(_collapsed("/job/x/y_JR4"), provider_id="workday:micron:no-slash")
+    assert workday_resolve_location(FakeDetail(WD_DETAIL_US), posting) is None
+
+
+def test_workday_detail_non_json_payload_is_none():
+    from jobscout.sources.boards import workday_resolve_location
+
+    class BadJSON(FakeDetail):
+        def get_json(self, url):
+            return ["not", "a", "dict"]
+
+    assert workday_resolve_location(BadJSON(None), _collapsed("/job/x/y_JR5")) is None
+
+
+def test_age_days_treats_an_invalid_stamp_as_none():
+    from jobscout.sources.boards import _age_days
+
+    assert _age_days("not-a-date") is None
+    assert _age_days("") is None
+    assert _age_days(None) is None
+
+
+def test_age_days_naive_iso_stamp_is_utc():
+    from jobscout.sources.boards import _age_days
+
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    naive = (now - datetime.timedelta(days=2)).replace(tzinfo=None)
+    assert _age_days(naive.isoformat()) == 2
+
+
+def test_tenant_matches_empty_sides_are_trusted():
+    """An unknown tenant for an unknown employer is not worth a warning."""
+    from jobscout.sources.boards import _tenant_matches
+
+    assert _tenant_matches("", "") is True
+    assert _tenant_matches("M&T Bank", "") is True
+
+
+def test_workday_page_non_json_body_is_absent():
+    from jobscout.sources.boards import _workday_page
+
+    class NotJSON:
+        def json(self):
+            raise ValueError("no json")
+
+    class Poster:
+        def post(self, url, content, headers):
+            return NotJSON()
+
+    assert _workday_page(Poster(), "https://x", "devops", 0) is None
+
+
+def test_amazon_age_handles_blank_and_garbage():
+    from jobscout.sources.boards import _amazon_age
+
+    assert _amazon_age("") is None
+    assert _amazon_age("not a date") is None
+
+
+def test_amazon_skips_a_job_without_an_id_or_path(monkeypatch):
+    from jobscout.sources.boards import fetch
+
+    page = {"hits": 1, "jobs": [{"title": "No Path", "location": "Seattle"}]}
+    fetcher = FakeAmazon(page)
+    postings, fetched = fetch(fetcher, {"amazon": ("devops intern",)}, None)
+    assert postings == []
+    assert fetched == {("amazon", "devops intern")}  # board answered, zero rows

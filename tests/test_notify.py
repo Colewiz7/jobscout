@@ -1,5 +1,5 @@
 """Message shape and the flood cap."""
-from jobscout.notify import _headers, format_posting, format_summary, push
+from jobscout.notify import _headers, format_posting, format_held, push
 
 
 class FakeFetcher:
@@ -34,12 +34,13 @@ def test_format_posting_survives_a_missing_location():
     assert "location not stated" in body
 
 
-def test_summary_caps_the_preview():
-    rows = [{**ROW, "title": f"Cloud Intern {i}"} for i in range(30)]
-    title, body = format_summary(rows, cap=15)
-    assert "30 new matches" in title
-    assert body.count("- Acme:") == 10
-    assert "and 20 more" in body
+def test_format_held_lists_the_tail_without_hiding_it():
+    rows = [{**ROW, "title": f"Cloud Intern {i}"} for i in range(12)]
+    title, body = format_held(rows)
+    assert title == "12 more queued"
+    assert body.count("- Acme:") == 8
+    assert "and 4 more" in body
+    assert "Held for the next run" in body
 
 
 def test_push_sends_bearer_token_and_click():
