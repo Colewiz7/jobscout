@@ -76,7 +76,7 @@ def test_fetch_ignores_unknown_provider():
 
 
 def test_provider_table():
-    assert set(PROVIDERS) == {"greenhouse", "lever", "ashby", "workday", "amazon"}
+    assert set(PROVIDERS) == {"greenhouse", "lever", "ashby", "workday", "amazon", "phenom"}
     # Workday is not addressable by one GET, so discovery cannot probe it.
     assert set(BOARD_TEMPLATES) == {"greenhouse", "lever", "ashby"}
 
@@ -303,3 +303,90 @@ def test_workday_stays_quiet_for_a_legitimate_odd_tenant(caplog, company, spec):
     with caplog.at_level("WARNING"):
         fetch(poster, {"workday": (spec,)}, {"workday": {spec: company}}, ("devops",))
     assert not [r for r in caplog.records if "does not look like" in str(r.msg)]
+
+
+# --- phenom ---------------------------------------------------------------
+
+PHENOM_SITEMAP_XML = """<?xml version="1.0"?>
+<urlset>
+  <url><loc>https://careers.example.com/us/en/job/AAA/IT-Platform-Intern</loc></url>
+  <url><loc>https://careers.example.com/us/en/job/BBB/Cloud-Platform-Sales</loc></url>
+  <url><loc>https://careers.example.com/us/en/job/CCC/Barista-Weekend</loc></url>
+  <url><loc>https://careers.example.com/us/en/search-results</loc></url>
+</urlset>"""
+
+
+def _ld(title, employment="FULL_TIME", posted="2026-09-20", valid=None):
+    import json as _json
+    doc = {"@type": "JobPosting", "title": title, "datePosted": posted,
+           "employmentType": [employment],
+           "jobLocation": {"address": {"addressLocality": "Rochester",
+                                       "addressRegion": "New York",
+                                       "addressCountry": "United States"}}}
+    if valid:
+        doc["validThrough"] = valid
+    return f'<script type="application/ld+json">{_json.dumps(doc)}</script>'
+
+
+class FakePhenom:
+    def __init__(self, sitemap=PHENOM_SITEMAP_XML, pages=None):
+        self.sitemap = sitemap
+        self.pages = pages or {}
+        self.asked = []
+
+    def get_text(self, url):
+        self.asked.append(url)
+        if url.endswith("/sitemap.xml"):
+            return self.sitemap
+        return self.pages.get(url)
+
+
+def test_phenom_opens_only_plausible_slugs(monkeypatch):
+    """The barista is never fetched; the sales job is, and the title rejects it."""
+    monkeypatch.setattr("jobscout.sources.boards.PHENOM_DETAIL_PAUSE", 0)
+    pages = {
+        "https://careers.example.com/us/en/job/AAA/IT-Platform-Intern":
+            _ld("College Intern - Summer 2027 - IT Platform", "PART_TIME"),
+        "https://careers.example.com/us/en/job/BBB/Cloud-Platform-Sales":
+            _ld("Cloud Platform Sales Specialist I"),
+    }
+    fetcher = FakePhenom(pages=pages)
+    postings, fetched = fetch(fetcher, {"phenom": ("careers.example.com",)},
+                              {"phenom": {"careers.example.com": "Example"}})
+    opened = [u for u in fetcher.asked if "/job/" in u]
+    assert not any("Barista" in u for u in opened)
+    assert any("Cloud-Platform-Sales" in u for u in opened)
+    assert fetched == {("phenom", "careers.example.com")}
+    titles = {p.title for p in postings}
+    assert "College Intern - Summer 2027 - IT Platform" in titles
+    assert "Cloud Platform Sales Specialist I" in titles   # provider keeps it,
+                                                           # the filter drops it
+
+
+def test_phenom_reads_employment_type_and_age(monkeypatch):
+    monkeypatch.setattr("jobscout.sources.boards.PHENOM_DETAIL_PAUSE", 0)
+    pages = {"https://careers.example.com/us/en/job/AAA/IT-Platform-Intern":
+             _ld("IT Platform Intern", "INTERN", posted="2026-09-20")}
+    postings, _ = fetch(FakePhenom(pages=pages), {"phenom": ("careers.example.com",)}, None)
+    row = next(p for p in postings if p.title == "IT Platform Intern")
+    assert row.employment_type == "INTERN"
+    assert row.age_days is not None
+    assert row.location == "Rochester, New York, United States"
+
+
+def test_phenom_skips_a_closed_posting(monkeypatch):
+    monkeypatch.setattr("jobscout.sources.boards.PHENOM_DETAIL_PAUSE", 0)
+    pages = {"https://careers.example.com/us/en/job/AAA/IT-Platform-Intern":
+             _ld("IT Platform Intern", "INTERN", valid="2020-01-01")}
+    postings, _ = fetch(FakePhenom(pages=pages), {"phenom": ("careers.example.com",)}, None)
+    assert postings == []
+
+
+def test_phenom_sitemap_failure_makes_the_board_absent():
+    """Otherwise a failed fetch reads as a board with nothing left open."""
+    class NoSitemap(FakePhenom):
+        def get_text(self, url):
+            return None
+
+    postings, fetched = fetch(NoSitemap(), {"phenom": ("careers.example.com",)}, None)
+    assert postings == [] and fetched == set()

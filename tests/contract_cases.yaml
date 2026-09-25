@@ -28,6 +28,34 @@ titles:
   - ["Software Development Engineer Intern", false]
   # a place name is not a technology
   - ["Store Executive Intern (Store Leadership Intern) - St. Cloud, MN", false]
+  # Phenom slugs are truncated and stripped of punctuation, so the loose slug
+  # prefilter lets these through and the real title has to reject them. The
+  # slug "cloud-platform-sales-specialist" keeps no trace of the exclusion.
+  - ["Cloud Platform Sales Specialist I", false]
+  - ["Infrastructure Account Executive, Central", false]
+  - ["IT Platform Recruiting Partner", false]
+  # and the one it must still keep
+  - ["College Intern - Summer 2027 - IT Platform", true]
+
+# The level, where a feed publishes schema.org employmentType. A hint, not a
+# verdict. [title, employmentType, expected]
+levels:
+  # INTERN settles it even when the title never says so: real co-ops are
+  # titled "Technology Development Program" and nothing else.
+  - ["Technology Development Program", "INTERN", true]
+  - ["Cloud Platform Engineer", "INTERN", true]
+  # PART_TIME and TEMPORARY are not evidence on their own.
+  - ["College Intern - Summer 2027 - IT Platform", "PART_TIME", true]
+  - ["IT Cloud Engineer Network", "PART_TIME", false]
+  - ["Systems Administrator", "TEMPORARY", false]
+  - ["Systems Administrator Co-op", "TEMPORARY", true]
+  # A FULL_TIME label on a posting titled Intern is a mislabelled feed.
+  - ["Infrastructure Engineering Intern", "FULL_TIME", true]
+  - ["DevOps Engineer Co-op", "FULL_TIME", true]
+  - ["IT Cloud Engineer Network", "FULL_TIME", false]
+  # no label at all: the title carries it
+  - ["Platform Engineering Intern", null, true]
+  - ["Platform Engineer", null, false]
 locations:
   - ["Austin, TX", true]
   - ["US-NY-Rochester", true]                          # workday writes it this way

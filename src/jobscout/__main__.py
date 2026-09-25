@@ -86,14 +86,26 @@ def cmd_run(args) -> int:
                 log.info("seed mode: marked %d rows notified, pushed nothing", marked)
                 return 0
 
+            base = os.environ.get("NTFY_URL", "")
+            topic = os.environ.get("NTFY_TOPIC", "")
+            token = os.environ.get("NTFY_TOKEN", "")
+
+            # Before the no-matches exit on purpose. A board pointed at the
+            # wrong employer is most worth saying on exactly the quiet run
+            # where nothing else is sent.
+            if base and topic:
+                for key, message in boards_source.NOTICES:
+                    if database.notice_once(conn, key):
+                        notify.push(
+                            fetcher, base, topic, token,
+                            "jobscout board needs checking", message,
+                        )
+
             pending = database.pending(conn)
             if not pending:
                 log.info("no new matches")
                 return 0
 
-            base = os.environ.get("NTFY_URL", "")
-            topic = os.environ.get("NTFY_TOPIC", "")
-            token = os.environ.get("NTFY_TOKEN", "")
             if not base or not topic:
                 log.error("NTFY_URL/NTFY_TOPIC not set; %d matches unsent", len(pending))
                 return 4
@@ -176,8 +188,15 @@ def cmd_check(args) -> int:
     for location, expected in cases.get("locations", []):
         if filters.location_matches(location, config) is not expected:
             failures.append(f"location {location!r}: expected {expected}")
+    for title, employment, expected in cases.get("levels", []):
+        posting = models.Posting(
+            source="contract", company="", title=title, location="", url="",
+            employment_type=employment,
+        )
+        if filters.posting_level_matches(posting, config) is not expected:
+            failures.append(f"level {title!r} ({employment}): expected {expected}")
 
-    total = len(cases.get("titles", [])) + len(cases.get("locations", []))
+    total = sum(len(cases.get(k, [])) for k in ("titles", "locations", "levels"))
     for line in failures:
         log.error("%s", line)
     log.info("%d/%d contract cases pass", total - len(failures), total)

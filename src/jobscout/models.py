@@ -86,6 +86,10 @@ class Posting:
     closed: bool = False
     provider_id: str | None = None   # set by board sources from the native id
     age_days: int | None = None      # how long the source says it has been posted
+    # Schema.org employmentType where a source publishes one. A hint, not a
+    # verdict: FULL_TIME on a posting titled Intern is a mislabelled feed, not
+    # a full-time job.
+    employment_type: str | None = None
 
     @property
     def dedupe_key(self) -> str:

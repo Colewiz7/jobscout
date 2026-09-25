@@ -51,6 +51,11 @@ alter table postings add column if not exists age_days integer;
 alter table postings add column if not exists score integer;
 alter table postings add column if not exists score_detail jsonb;
 
+create table if not exists board_notices (
+    key        text primary key,
+    first_seen timestamptz not null default now()
+);
+
 create index if not exists postings_dedupe_key_idx on postings (dedupe_key);
 create index if not exists postings_fallback_key_idx on postings (fallback_key);
 create index if not exists postings_pending_idx on postings (notified_at)
@@ -283,3 +288,18 @@ def record_scores(conn: psycopg.Connection, scored: list[tuple[str, int, dict]])
         )
     conn.commit()
     return len(scored)
+
+
+def notice_once(conn: psycopg.Connection, key: str) -> bool:
+    """True the first time this notice is raised, false forever after.
+
+    A misconfigured board is wrong every run. Saying so every six hours trains
+    the reader to ignore it, so it is said once.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "insert into board_notices (key) values (%s) on conflict do nothing", (key,)
+        )
+        fresh = cur.rowcount == 1
+    conn.commit()
+    return fresh

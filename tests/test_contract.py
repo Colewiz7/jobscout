@@ -24,3 +24,13 @@ def test_title_contract(title, expected, config):
 @pytest.mark.parametrize("location,expected", CASES["locations"])
 def test_location_contract(location, expected, config):
     assert location_matches(location, config) is expected
+
+
+@pytest.mark.parametrize("title,employment,expected", CASES["levels"])
+def test_level_contract(title, employment, expected, config):
+    from jobscout.filters import posting_level_matches
+    from jobscout.models import Posting
+
+    posting = Posting(source="contract", company="", title=title, location="",
+                      url="", employment_type=employment)
+    assert posting_level_matches(posting, config) is expected

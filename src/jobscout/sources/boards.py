@@ -10,6 +10,7 @@ import datetime
 import json
 import logging
 import re
+import time
 import urllib.parse
 
 from ..models import Posting
@@ -31,6 +32,10 @@ def _age_days(value) -> int | None:
     return max((now - stamp).days, 0)
 
 log = logging.getLogger(__name__)
+
+# Problems worth a human's attention rather than a log line nobody opens.
+# fetch() clears this, so it describes the run that just happened.
+NOTICES: list[tuple[str, str]] = []
 
 GREENHOUSE = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=false"
 LEVER = "https://api.lever.co/v0/postings/{slug}?mode=json"
@@ -202,6 +207,11 @@ def _workday(fetcher, slug: str, company: str, terms=()):
             "workday tenant %r does not look like %r; check the board is theirs",
             tenant, company,
         )
+        NOTICES.append((
+            f"workday-tenant:{slug}",
+            f"{company}: board {slug} belongs to tenant {tenant!r}, "
+            f"which does not look like them. Check it is the right board.",
+        ))
     url = WORKDAY.format(tenant=tenant, dc=dc, site=site)
 
     seen: dict[str, Posting] = {}
@@ -305,6 +315,120 @@ def _amazon(fetcher, slug: str, company: str, terms=()):
 
 
 
+# Phenom career sites render their results from a template, but every one of
+# them publishes a sitemap listing each job, and each job page carries
+# schema.org JobPosting. So the whole source is readable without a browser:
+# one sitemap, then a detail fetch only for the slugs that could plausibly
+# qualify. A board here is the careers host.
+PHENOM_SITEMAP = "https://{host}/sitemap.xml"
+PHENOM_DETAIL_PAUSE = 0.4          # these are somebody's careers site
+PHENOM_MAX_DETAILS = 40            # a ceiling on one board's share of a run
+_LOC = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.I)
+_JOB_SLUG = re.compile(r"/job/[^/]+/([^/?#]+)")
+# Deliberately looser than the real filter. A slug is truncated and stripped of
+# punctuation, so this only throws away what carries no role word at all; the
+# genuine test runs against the title from the job page.
+_SLUG_HINT = re.compile(
+    r"devops|devsecops|sre|reliab|platform|infra|cloud|network|system|sysadmin|"
+    r"data-?cent|kubernetes|linux|technolog|\bit\b|it-|-it-|engineer|operations|"
+    r"intern|co-?op|technician|administrat",
+    re.I,
+)
+
+
+def _phenom_jsonld(html: str) -> dict | None:
+    for block in re.findall(
+        r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html or "", re.S
+    ):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        for candidate in data if isinstance(data, list) else [data]:
+            if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
+                return candidate
+    return None
+
+
+def _phenom_location(posting: dict) -> str:
+    places = posting.get("jobLocation")
+    if isinstance(places, dict):
+        places = [places]
+    parts = []
+    for place in places or []:
+        address = (place or {}).get("address") or {}
+        cell = ", ".join(
+            str(address[key])
+            for key in ("addressLocality", "addressRegion", "addressCountry")
+            if address.get(key)
+        )
+        if cell:
+            parts.append(cell)
+    return "; ".join(dict.fromkeys(parts))
+
+
+def _phenom_age(value: str) -> int | None:
+    return _age_days(value)
+
+
+def _phenom(fetcher, slug: str, company: str, terms=()):
+    sitemap = fetcher.get_text(PHENOM_SITEMAP.format(host=slug))
+    if sitemap is None:
+        # Same rule as a malformed Workday spec: a board that did not answer
+        # must not look like a board that answered with nothing.
+        log.warning("phenom %s: sitemap did not answer, treating as absent", slug)
+        return None
+
+    urls = [u for u in _LOC.findall(sitemap) if "/job/" in u]
+    candidates = []
+    for url in urls:
+        found = _JOB_SLUG.search(url)
+        if found and _SLUG_HINT.search(found.group(1)):
+            candidates.append(url)
+    log.info("phenom %s: %d jobs listed, %d worth opening", slug, len(urls), len(candidates))
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = []
+    for url in candidates[:PHENOM_MAX_DETAILS]:
+        time.sleep(PHENOM_DETAIL_PAUSE)
+        html = fetcher.get_text(url)
+        if html is None:
+            continue
+        posting = _phenom_jsonld(html)
+        if posting is None:
+            continue
+        closes = posting.get("validThrough")
+        if closes:
+            try:
+                deadline = datetime.datetime.fromisoformat(str(closes).replace("Z", "+00:00"))
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=datetime.timezone.utc)
+                if deadline < now:
+                    continue
+            except ValueError:
+                pass
+        employment = posting.get("employmentType")
+        if isinstance(employment, list):
+            employment = employment[0] if employment else None
+        location = _phenom_location(posting)
+        out.append(
+            Posting(
+                source="phenom",
+                board=slug,
+                company=company,
+                title=(posting.get("title") or "").strip(),
+                location=location,
+                url=url,
+                remote="remote" in location.lower(),
+                provider_id=f"phenom:{slug}:{url.rsplit('/', 2)[-2]}",
+                age_days=_phenom_age(posting.get("datePosted")),
+                employment_type=employment,
+            )
+        )
+    return out
+
+
+
 # Discovery probes a slug by asking for the board, which only means anything
 # for the providers addressed by a single GET. Workday is deliberately absent:
 # its three-part spec cannot be derived from an apply URL.
@@ -320,6 +444,7 @@ PROVIDERS = {
     "ashby": _simple(ASHBY, _ashby),
     "workday": _workday,
     "amazon": _amazon,
+    "phenom": _phenom,
 }
 
 
@@ -333,6 +458,7 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=
     "morsecorpcoop" instead of "MORSE Corp".
     """
     names = names or {}
+    NOTICES.clear()
     postings: list[Posting] = []
     fetched: set[tuple[str, str]] = set()
     for provider, slugs in boards.items():

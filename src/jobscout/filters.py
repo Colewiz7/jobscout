@@ -47,20 +47,50 @@ def extract_terms(text: str) -> set[str]:
     return out
 
 
-def title_matches(title: str, config: Config) -> bool:
-    """Infrastructure-shaped AND internship-shaped.
+def infra_matches(title: str, config: Config) -> bool:
+    """Is this title about this kind of work."""
+    title = title or ""
+    return bool(
+        config.title.search(title)
+        or (config.title_cased is not None and config.title_cased.search(title))
+    )
+
+
+def level_matches(title: str, config: Config) -> bool:
+    """Is this title early-career.
 
     The negative pattern is applied by blanking the offending words first, so
     "Internal Cloud Platform Intern" still qualifies on the real "Intern" while
     "Internal Cloud Platform Engineer" does not.
     """
-    title = title or ""
-    infra = config.title.search(title) or (
-        config.title_cased is not None and config.title_cased.search(title)
-    )
-    if not infra:
-        return False
-    return bool(config.kind.search(config.kind_negative.sub(" ", title)))
+    return bool(config.kind.search(config.kind_negative.sub(" ", title or "")))
+
+
+def title_matches(title: str, config: Config) -> bool:
+    """Infrastructure-shaped AND internship-shaped."""
+    return infra_matches(title, config) and level_matches(title, config)
+
+
+# Schema.org employmentType, where a source publishes one.
+_LEVEL_IS_PROOF = {"INTERN", "INTERNSHIP"}
+_LEVEL_IS_WEAK = {"PART_TIME", "TEMPORARY", "CONTRACTOR"}
+
+
+def posting_level_matches(posting: Posting, config: Config) -> bool:
+    """The level, using the feed's own label where it has one.
+
+    INTERN settles it: plenty of real co-ops are titled "Technology Development
+    Program" and say so nowhere else. PART_TIME and TEMPORARY are not evidence
+    on their own, and a FULL_TIME label on a posting titled Intern is a
+    mislabelled feed rather than a full-time job, so the title still carries.
+    """
+    by_title = level_matches(posting.title, config)
+    label = (posting.employment_type or "").strip().upper()
+    if label in _LEVEL_IS_PROOF:
+        return True
+    if label in _LEVEL_IS_WEAK:
+        return by_title
+    return by_title
 
 
 def _has_state_code(segment: str) -> bool:
@@ -242,7 +272,9 @@ def rank(rows, config: Config) -> list:
 
 
 def keep(posting: Posting, config: Config) -> bool:
-    if not title_matches(posting.title, config):
+    if not infra_matches(posting.title, config):
+        return False
+    if not posting_level_matches(posting, config):
         return False
     if not location_matches(posting.location, config, posting.remote):
         return False
