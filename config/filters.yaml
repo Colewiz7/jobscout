@@ -57,6 +57,10 @@ location_allow_extra:
   - usa
   - u.s.
   - united states
+  # Workday's list view collapses a multi-site posting to "3 Locations" or
+  # "Multiple Locations" and names none of them, so the cell has to be let
+  # through and judged on the posting itself.
+  - locations
   - sf
   - nyc
   - bay area

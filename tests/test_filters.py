@@ -37,6 +37,18 @@ def test_title_rules(title, expected, config):
     ("London", False),
     ("Bangalore, India", False),
     ("Toronto, ON, Canada; Remote in USA", True),
+    # Workday writes the country and state as dash-delimited fields.
+    ("US-NY-Rochester", True),
+    ("NY-Rochester", True),
+    ("US-TX-Austin", True),
+    ("Winston-Salem, NC", True),          # dash inside the city name
+    ("Remote - US", True),
+    ("United States", True),
+    ("3 Locations", True),                # Workday collapses multi-site jobs
+    ("Multiple Locations", True),
+    ("CA-ON-Toronto", False),             # dash-delimited but not a US state
+    ("Toronto, Ontario", False),
+    ("OK COMPUTER", False),               # undelimited capitals are not a state
 ])
 def test_location_rules(location, expected, config):
     assert location_matches(location, config) is expected

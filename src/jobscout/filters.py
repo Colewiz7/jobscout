@@ -6,9 +6,13 @@ import re
 from .config import Config, boundary_pattern
 from .models import Posting
 
-# "Austin, TX" / "Manassas, VA (HQ)". A two-letter code only counts after a
-# comma, so a title full of capitals cannot fake a location match.
-_STATE_CODE = re.compile(r",\s*([A-Z]{2})\b")
+# "Austin, TX" / "Manassas, VA (HQ)" / Workday's "US-NY-Rochester". A code only
+# counts when a comma or dash actually delimits it, so a title full of capitals
+# still cannot fake a location match: an undelimited cell yields one field and
+# is rejected outright. Splitting on both delimiters at once is what keeps
+# "Winston-Salem, NC" working.
+_LOC_DELIM = re.compile(r"[,\u2013\u2014-]")
+_LEADING_CODE = re.compile(r"\s*([A-Z]{2})\b")
 _VALID_CODES = frozenset(
     """AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT
     NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC PR""".split()
@@ -59,6 +63,30 @@ def title_matches(title: str, config: Config) -> bool:
     return bool(config.kind.search(config.kind_negative.sub(" ", title)))
 
 
+def _has_state_code(segment: str) -> bool:
+    """A delimited two-letter field naming a US state or DC/PR.
+
+    Workday writes country first, so "CA-ON-Toronto" leads with Canada, not
+    California. Any three-field cell that opens with a country code other than
+    US is therefore foreign no matter what follows, which is the one case where
+    a valid state code must be ignored rather than trusted.
+    """
+    fields = _LOC_DELIM.split(segment)
+    if len(fields) < 2:
+        return False
+    if len(fields) >= 3:
+        head = _LEADING_CODE.fullmatch(fields[0].strip())
+        if head:
+            if head.group(1) != "US":
+                return False
+            fields = fields[1:]
+    for field in fields:
+        head = _LEADING_CODE.match(field)
+        if head and head.group(1) in _VALID_CODES:
+            return True
+    return False
+
+
 def location_matches(location: str, config: Config, remote: bool = False) -> bool:
     """US or remote. Any qualifying segment carries the whole cell."""
     location = location or ""
@@ -71,7 +99,7 @@ def location_matches(location: str, config: Config, remote: bool = False) -> boo
         segment = segment.strip()
         if not segment or denied(segment):
             continue
-        if {c for c in _STATE_CODE.findall(segment) if c in _VALID_CODES}:
+        if _has_state_code(segment):
             return True
         if _STATE_NAMES and _STATE_NAMES.search(segment):
             return True
