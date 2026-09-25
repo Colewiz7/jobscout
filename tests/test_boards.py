@@ -76,7 +76,7 @@ def test_fetch_ignores_unknown_provider():
 
 
 def test_provider_table():
-    assert set(PROVIDERS) == {"greenhouse", "lever", "ashby", "workday"}
+    assert set(PROVIDERS) == {"greenhouse", "lever", "ashby", "workday", "amazon"}
     # Workday is not addressable by one GET, so discovery cannot probe it.
     assert set(BOARD_TEMPLATES) == {"greenhouse", "lever", "ashby"}
 
@@ -219,3 +219,65 @@ def test_a_failed_query_makes_the_whole_board_absent():
     )
     assert postings == []
     assert fetched == set()
+
+
+# --- amazon ---------------------------------------------------------------
+
+AMZ_PAGE = {
+    "hits": 2,
+    "jobs": [
+        {
+            "title": "Systems Development Engineer Intern - Summer 2027",
+            "normalized_location": "Seattle, Washington, USA",
+            "posted_date": "September 24, 2026",
+            "job_path": "/en/jobs/10559746/systems-development-engineer-intern",
+            "id_icims": "10559746",
+        },
+        {
+            "title": "Data Center Engineering Operations Intern",
+            "normalized_location": "Virtual, USA",
+            "posted_date": "September 16, 2026",
+            "job_path": "/en/jobs/10550494/data-center-engineering-operations-intern",
+            "id_icims": "10550494",
+        },
+    ],
+}
+
+
+class FakeAmazon:
+    def __init__(self, page=AMZ_PAGE):
+        self.page = page
+        self.asked = []
+
+    def get_json(self, url):
+        self.asked.append(url)
+        return self.page
+
+
+def test_amazon_makes_one_request_per_query():
+    """The endpoint is undocumented, so the request count has to stay flat."""
+    fetcher = FakeAmazon()
+    postings, fetched = fetch(fetcher, {"amazon": ("intern",)}, {"amazon": {"intern": "Amazon"}})
+    assert len(fetcher.asked) == 1
+    assert "base_query=intern" in fetcher.asked[0]
+    assert "country=USA" in fetcher.asked[0]
+    assert fetched == {("amazon", "intern")}
+    assert len(postings) == 2
+    first = postings[0]
+    assert first.company == "Amazon"
+    assert first.source == "amazon"
+    assert first.url == (
+        "https://www.amazon.jobs/en/jobs/10559746/systems-development-engineer-intern"
+    )
+    assert first.provider_id == "amazon:10559746"
+    assert first.remote is False
+    assert postings[1].remote is True          # "Virtual, USA"
+
+
+def test_amazon_absent_when_the_endpoint_fails():
+    class Dead:
+        def get_json(self, url):
+            return None
+
+    postings, fetched = fetch(Dead(), {"amazon": ("intern",)}, None)
+    assert postings == [] and fetched == set()

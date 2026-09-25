@@ -10,6 +10,7 @@ import datetime
 import json
 import logging
 import re
+import urllib.parse
 
 from ..models import Posting
 
@@ -207,6 +208,63 @@ def _simple(template: str, normalise):
     return run
 
 
+# amazon.jobs has no documented API. This is the endpoint its own search page
+# calls, so it is used sparingly: one request per configured query, a real
+# User-Agent, and no paging. A board here is the query itself rather than a
+# slug, which is what keeps the request count equal to the number of queries.
+AMAZON = "https://www.amazon.jobs/en/search.json"
+AMAZON_VIEW = "https://www.amazon.jobs{path}"
+AMAZON_LIMIT = 100
+_AMAZON_DATE = "%B %d, %Y"
+
+
+def _amazon_age(text: str) -> int | None:
+    if not text:
+        return None
+    try:
+        stamp = datetime.datetime.strptime(text.strip(), _AMAZON_DATE)
+    except ValueError:
+        return None
+    stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return max((datetime.datetime.now(datetime.timezone.utc) - stamp).days, 0)
+
+
+def _amazon(fetcher, slug: str, company: str, terms=()):
+    query = urllib.parse.urlencode(
+        {
+            "base_query": slug,
+            "result_limit": AMAZON_LIMIT,
+            "sort": "recent",
+            "country": "USA",
+        }
+    )
+    payload = fetcher.get_json(f"{AMAZON}?{query}")
+    if payload is None:
+        return None
+    out = []
+    for job in payload.get("jobs") or []:
+        location = (job.get("normalized_location") or job.get("location") or "").strip()
+        path = job.get("job_path") or ""
+        job_id = job.get("id_icims") or job.get("id")
+        if not path or job_id is None:
+            continue
+        out.append(
+            Posting(
+                source="amazon",
+                board=slug,
+                company=company,
+                title=(job.get("title") or "").strip(),
+                location=location,
+                url=AMAZON_VIEW.format(path=path),
+                remote="virtual" in location.lower() or "remote" in location.lower(),
+                provider_id=f"amazon:{job_id}",
+                age_days=_amazon_age(job.get("posted_date")),
+            )
+        )
+    return out
+
+
+
 # Discovery probes a slug by asking for the board, which only means anything
 # for the providers addressed by a single GET. Workday is deliberately absent:
 # its three-part spec cannot be derived from an apply URL.
@@ -221,6 +279,7 @@ PROVIDERS = {
     "lever": _simple(LEVER, _lever),
     "ashby": _simple(ASHBY, _ashby),
     "workday": _workday,
+    "amazon": _amazon,
 }
 
 
