@@ -1,4 +1,6 @@
 """Slug derivation from apply URLs."""
+import pytest
+
 from jobscout.discover import extract, probe
 
 
@@ -51,3 +53,53 @@ def test_probe_true_when_the_api_answers():
 
 def test_probe_false_on_404():
     assert probe(_Fetcher(None), "greenhouse", "nope") is False
+
+
+@pytest.mark.parametrize("company,slug,expected", [
+    # Real hits from the survey.
+    ("Datadog", "datadog", True),
+    ("Grafana Labs", "grafanalabs", True),
+    ("Tailscale", "tailscale", True),
+    ("MongoDB", "mongodb", True),
+    ("Temporal Technologies", "temporal", True),
+    # Live boards that belong to somebody else. Every one of these answered.
+    ("Charles Schwab", "charles", False),
+    ("General Dynamics IT", "general", False),
+    ("Oak Ridge National Lab", "oak", False),
+    ("Eli Lilly", "eli", False),
+    ("Constellation Brands", "constellation", False),
+])
+def test_name_matches_rejects_a_borrowed_slug(company, slug, expected):
+    from jobscout.discover import name_matches
+
+    assert name_matches(company, slug) is expected
+
+
+def test_probe_skips_the_api_when_the_name_is_wrong():
+    """The cheap check comes first: a wrong-looking slug is not even fetched."""
+    from jobscout.discover import probe
+
+    class Boom:
+        def get_json(self, url):  # pragma: no cover
+            raise AssertionError("should not have been fetched")
+
+    assert probe(Boom(), "greenhouse", "charles", "Charles Schwab") is False
+
+
+@pytest.mark.parametrize("company,slug", [
+    ("Atoms", "cssmerge"),
+    ("Axon", "axontalentcommunity"),
+    ("DRW", "drweng"),
+    ("Chicago Trading Company", "ctccampusboard"),
+    ("Flagship Pioneering", "fspco-op012325"),
+])
+def test_published_slugs_need_not_resemble_the_company(company, slug):
+    """Guard against applying the name rule to Simplify-derived slugs.
+
+    These are all real boards whose slug looks nothing like the employer. The
+    rule must stay on guessed slugs only, or discovery drops a quarter of the
+    boards it finds.
+    """
+    from jobscout.discover import name_matches
+
+    assert name_matches(company, slug) is False

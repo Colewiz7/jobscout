@@ -52,8 +52,54 @@ def extract(html: str) -> dict[str, dict[str, str]]:
     return found
 
 
-def probe(fetcher, provider: str, slug: str) -> bool:
-    """True when the provider's API actually answers for this slug."""
+_NOT_A_NAME = re.compile(
+    r"(inc|llc|corp|corporation|company|group|technologies|technology|the|and|"
+    r"global|labs?|ltd|plc|holdings)$"
+)
+
+
+def _normalise_name(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def name_matches(company: str, slug: str) -> bool:
+    """Does this slug plausibly belong to this employer.
+
+    A slug that answers is not a slug that belongs: "charles" is a live
+    Greenhouse board for a German company, not Charles Schwab, and "general"
+    is a board literally named General Interest, not General Dynamics. What
+    separates those from a real hit is coverage. "charles" accounts for seven
+    of the thirteen characters in "charlesschwab" while "datadog" accounts for
+    all of "datadog", so a slug has to carry most of the employer's name
+    rather than merely appear inside it.
+    """
+    slug_key = _normalise_name(slug)
+    if not slug_key:
+        return False
+    base = company.split("/")[0].split("(")[0]
+    keys = {_normalise_name(base)}
+    keys.add(_NOT_A_NAME.sub("", _normalise_name(base)))
+    for key in keys:
+        if not key:
+            continue
+        if slug_key == key:
+            return True
+        shorter, longer = sorted((slug_key, key), key=len)
+        if shorter in longer and len(shorter) / len(longer) >= 0.7:
+            return True
+    return False
+
+
+def probe(fetcher, provider: str, slug: str, company: str | None = None) -> bool:
+    """True when the provider's API answers and the board is the right employer.
+
+    Answering is not enough on its own: a derived slug can land on a live board
+    belonging to someone else entirely. When the employer is known, the slug
+    has to look like their name as well.
+    """
+    if company is not None and not name_matches(company, slug):
+        log.info("%s/%s does not look like %r, skipping", provider, slug, company)
+        return False
     template = boards_api.BOARD_TEMPLATES[provider]
     payload = fetcher.get_json(template.format(slug=slug))
     if payload is None:
@@ -77,6 +123,11 @@ def discover(fetcher) -> dict[str, list[dict[str, str]]]:
     for provider, slugs in candidates.items():
         live = []
         for slug, company in sorted(slugs.items(), key=lambda kv: kv[0].lower()):
+            # No company here on purpose. These slugs were read out of real
+            # apply URLs, so they are already the employer's own board however
+            # little they resemble the name: Atoms posts at cssmerge and Axon
+            # at axontalentcommunity. The name rule is for a slug somebody
+            # guessed, not one the employer published.
             if probe(fetcher, provider, slug):
                 live.append({"slug": slug, "company": company})
             else:
