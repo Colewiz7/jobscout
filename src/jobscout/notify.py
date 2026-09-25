@@ -41,6 +41,21 @@ def format_posting(row: dict) -> tuple[str, str]:
     return title, "\n".join(lines)
 
 
+def format_held(rows: list[dict]) -> tuple[str, str]:
+    """The tail that did not fit this run.
+
+    Unlike a capped flood these are not being dropped, so the message says so:
+    they stay unnotified and lead the next run.
+    """
+    title = f"{len(rows)} more queued"
+    preview = [f"- {r['company']}: {r['title']}" for r in rows[:8]]
+    if len(rows) > 8:
+        preview.append(f"...and {len(rows) - 8} more")
+    preview.append("")
+    preview.append("Held for the next run, ranked below the ones just sent.")
+    return title, "\n".join(preview)
+
+
 def format_summary(rows: list[dict], cap: int) -> tuple[str, str]:
     """One message instead of a flood.
 

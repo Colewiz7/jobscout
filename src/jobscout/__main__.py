@@ -97,17 +97,30 @@ def cmd_run(args) -> int:
                 log.error("NTFY_URL/NTFY_TOPIC not set; %d matches unsent", len(pending))
                 return 4
 
-            if len(pending) > config.max_notify_per_run:
-                title, body = notify.format_summary(pending, config.max_notify_per_run)
+            ranked = filters.rank(pending, config)
+            if len(ranked) < len(pending):
+                log.info(
+                    "%d rows collapsed to %d jobs", len(pending), len(ranked)
+                )
+            sending = ranked[: config.max_notify_per_run]
+            held = ranked[config.max_notify_per_run :]
+
+            for row in sending:
+                title, body = notify.format_posting(row)
+                if not notify.push(fetcher, base, topic, token, title, body, click=row["url"]):
+                    return 5
+            if held:
+                # A summary so the backlog is visible, but the held rows stay
+                # unnotified: they are the next run's first pushes rather than
+                # something marked seen and never sent.
+                title, body = notify.format_held(held)
                 if not notify.push(fetcher, base, topic, token, title, body):
                     return 5
-            else:
-                for row in pending:
-                    title, body = notify.format_posting(row)
-                    if not notify.push(fetcher, base, topic, token, title, body, click=row["url"]):
-                        return 5
-            database.mark_notified(conn, [r["dedupe_key"] for r in pending])
-            log.info("notified %d matches", len(pending))
+
+            database.mark_notified(conn, [r["dedupe_key"] for r in sending])
+            log.info(
+                "notified %d matches, %d held for the next run", len(sending), len(held)
+            )
         finally:
             conn.close()
     return 0

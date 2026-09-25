@@ -125,9 +125,103 @@ def terms_match(posting: Posting, config: Config) -> bool:
     return bool(found & config.wanted_terms)
 
 
-def keep(posting: Posting, config: Config) -> bool:
-    return (
-        title_matches(posting.title, config)
-        and location_matches(posting.location, config, posting.remote)
-        and terms_match(posting, config)
+# Workday collapses a multi-site posting to "3 Locations" and names none of
+# them, so the cell has to be let through. When it is, the country is often
+# still sitting in the title: Micron's "Technology Development, Research &
+# Innovation Internship (Singapore)" arrived as "3 Locations".
+_COLLAPSED_LOCATION = re.compile(r"^\s*(?:\d+|multiple|several)\s+locations\s*$", re.I)
+
+
+def _location_is_collapsed(location: str) -> bool:
+    return any(
+        _COLLAPSED_LOCATION.match(part) for part in re.split(r"[;\n]", location or "")
     )
+
+
+# Scoring. A match is binary but a feed is ordered, and the cap means the
+# ordering decides what is actually seen.
+_ROLE_STRONG = re.compile(
+    r"devops|devsecops|\bsre\b|site reliability|production engineer|"
+    r"platform engineer|infrastructure|sysadmin|systems? administrat|"
+    r"systems? engineer|systems? development engineer|network engineer|"
+    r"cloud engineer|cloud (?:hardware|support)|data cent(?:er|re)|"
+    r"reliability engineer|(?:build|release) engineer|kubernetes|linux",
+    re.I,
+)
+# Words that only hint at the right family. "Technology Intern" is worth
+# hearing about; it should not outrank a posting that says DevOps.
+_ROLE_WEAK = re.compile(r"technolog|cloud|platform|network|systems?|\bIT\b", re.I)
+# Disciplines that share the vocabulary but are not this job.
+_OFF_TARGET = re.compile(
+    r"aerodynamic|fluid dynamics|mechanical|chemical|civil|biolog|materials|"
+    r"quantum|applied science|actuarial|audit|photonic|optical|dram|wafer|"
+    r"semiconductor|yield|firmware physical design",
+    re.I,
+)
+_COOP = re.compile(r"co-?op", re.I)
+_INTERNSHIP = re.compile(r"intern(ship)?\b", re.I)
+# "Systems Engineer Intern - Charleston, SC" is the same job as the Honolulu
+# one. Strip a trailing place so the twins collapse to a single entry.
+_TRAILING_PLACE = re.compile(r"\s*[-\u2013\u2014,]\s*[A-Za-z .'\u2019]+,\s*[A-Z]{2}\.?\s*$")
+
+
+def _title_key(title: str) -> str:
+    return re.sub(r"\s+", " ", _TRAILING_PLACE.sub("", title or "")).strip().lower()
+
+
+def score(row, config: Config) -> int:
+    """How far up the feed this posting deserves to sit."""
+    title = row.get("title") or ""
+    points = 0
+    if _ROLE_STRONG.search(title):
+        points += 100
+    elif _ROLE_WEAK.search(title):
+        points += 25
+    if _OFF_TARGET.search(title):
+        points -= 60
+    if _COOP.search(title):
+        points += 40
+    elif _INTERNSHIP.search(title):
+        points += 20
+    if config.wanted_terms and extract_terms(
+        (row.get("terms") or "") + " " + title
+    ) & config.wanted_terms:
+        points += 30
+    age = row.get("age_days")
+    if age is not None and age <= 7:
+        points += 10
+    return points
+
+
+def rank(rows, config: Config) -> list:
+    """Best first, one row per job.
+
+    Booz Allen posts a single co-op once per city, eleven rows for one job,
+    which would fill the notification budget on its own.
+    """
+    best: dict[tuple[str, str], tuple[int, dict]] = {}
+    for row in rows:
+        key = ((row.get("company") or "").lower(), _title_key(row.get("title")))
+        points = score(row, config)
+        if key not in best or points > best[key][0]:
+            best[key] = (points, row)
+    ordered = sorted(
+        best.values(),
+        key=lambda pair: (-pair[0], pair[1].get("age_days") if pair[1].get("age_days") is not None else 999),
+    )
+    return [row for _, row in ordered]
+
+
+def keep(posting: Posting, config: Config) -> bool:
+    if not title_matches(posting.title, config):
+        return False
+    if not location_matches(posting.location, config, posting.remote):
+        return False
+    # A collapsed cell hid the country, so give the deny list the title too.
+    if (
+        config.location_deny is not None
+        and _location_is_collapsed(posting.location)
+        and config.location_deny.search(posting.title or "")
+    ):
+        return False
+    return terms_match(posting, config)

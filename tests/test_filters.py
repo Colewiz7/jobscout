@@ -102,3 +102,60 @@ def test_board_strict_mode_requires_the_season(config):
     strict = config.__class__(**{**config.__dict__, "board_require_explicit_terms": True})
     assert keep(_p(source="greenhouse", title="Cloud Infrastructure Intern"), strict) is False
     assert keep(_p(source="greenhouse", title="Cloud Infra Intern Summer 2027"), strict) is True
+
+
+# --- ranking --------------------------------------------------------------
+
+def _row(company, title, age=None, terms=""):
+    return {"company": company, "title": title, "age_days": age, "terms": terms,
+            "dedupe_key": f"{company}:{title}", "url": "https://x/1"}
+
+
+def test_rank_collapses_one_job_posted_per_city(config):
+    """Booz Allen lists a single co-op once per office. Eleven rows, one job."""
+    from jobscout.filters import rank
+
+    cities = ["Annapolis Junction, MD", "Charleston, SC", "Honolulu, HI",
+              "Rome, NY", "San Diego, CA", "McLean, VA"]
+    rows = [_row("Booz Allen Hamilton",
+                 f"University - 2027 Summer Games Systems Engineer Intern - {c}", 5)
+            for c in cities]
+    assert len(rank(rows, config)) == 1
+
+
+def test_rank_puts_the_real_role_above_the_vague_one(config):
+    from jobscout.filters import rank
+
+    rows = [
+        _row("PNC", "Technology Undergraduate Intern", 9),
+        _row("Boeing", "Engineering & Technology Innovation, Aerodynamics Intern", 11),
+        _row("M&T Bank", "DevOps Engineer Co-op", 1, "Spring 2027"),
+        _row("Disney", "Infrastructure Engineering Intern, Spring 2027", 2, "Spring 2027"),
+    ]
+    order = [r["company"] for r in rank(rows, config)]
+    assert order[0] == "M&T Bank"
+    assert order[1] == "Disney"
+    assert order[-1] == "Boeing"          # off-target discipline sinks
+
+
+def test_score_penalises_a_discipline_that_shares_the_words(config):
+    from jobscout.filters import score
+
+    infra = _row("Amazon", "Data Center Engineering Operations Intern", 3)
+    quantum = _row("Amazon", "Quantum Applied Science Internship, Quantum Technologies", 3)
+    assert score(infra, config) > score(quantum, config)
+
+
+def test_a_collapsed_location_still_checks_the_title(config):
+    """Workday hid the country in "3 Locations"; the title still names it."""
+    from jobscout.models import Posting
+    from jobscout.filters import keep
+
+    singapore = Posting(source="workday", company="Micron",
+                        title="Technology Development Internship (Singapore)",
+                        location="3 Locations", url="https://x/1")
+    usa = Posting(source="workday", company="Micron",
+                  title="Data Center SSD Firmware Intern",
+                  location="3 Locations", url="https://x/2")
+    assert keep(singapore, config) is False
+    assert keep(usa, config) is True
