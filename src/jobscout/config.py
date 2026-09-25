@@ -32,6 +32,15 @@ WORKDAY_TERMS = (
     "cloud engineer",
     "systems engineer",
     "network engineer",
+    # Large employers title a co-op "Technology Internship Program" with no
+    # infrastructure word anywhere, so the early-career words have to be swept
+    # too. "intern" and "co-op" are deliberately absent: measured against four
+    # tenants they return 59-94% and 93-100% of the board respectively.
+    "internship",
+    "coop",
+    "early career",
+    "university",
+    "student",
 )
 
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parents[2] / "config" / "filters.yaml"

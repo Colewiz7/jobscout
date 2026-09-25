@@ -194,3 +194,28 @@ def test_workday_relative_dates(text, expected):
     from jobscout.sources.boards import _workday_age
 
     assert _workday_age(text) is expected
+
+
+class FlakyPoster(FakePoster):
+    """Answers the first term and fails the second."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def post(self, url, content, headers):
+        self.calls += 1
+        if self.calls > 1:
+            return None
+        return super().post(url, content, headers)
+
+
+def test_a_failed_query_makes_the_whole_board_absent():
+    """A board is several requests now. A partial result must not look like a
+    board that answered, or the close rule retires what the failure hid."""
+    poster = FlakyPoster()
+    postings, fetched = fetch(
+        poster, {"workday": ("mtb/wd5/MTB",)}, None, ("devops", "infrastructure")
+    )
+    assert postings == []
+    assert fetched == set()

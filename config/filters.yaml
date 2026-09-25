@@ -69,6 +69,23 @@ location_allow_extra:
 
 # Guard against a source format change turning into a push flood. Over this
 # many new matches in one run, send a single summary instead.
+# Workday's searchText is a substring match. "intern" returns 59-94% of a
+# board because it also matches "Internal", and "co-op" returns 93-100%
+# because the hyphen splits. These are the words measured to actually narrow.
+workday_search_terms:
+  - devops
+  - site reliability
+  - infrastructure
+  - platform engineer
+  - cloud engineer
+  - systems engineer
+  - network engineer
+  - internship
+  - coop
+  - early career
+  - university
+  - student
+
 max_notify_per_run: 15
 
 # Board slugs to poll, by provider. Fill from `python -m jobscout discover-boards`.

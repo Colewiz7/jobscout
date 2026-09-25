@@ -169,7 +169,11 @@ def _workday(fetcher, slug: str, company: str, terms=()):
         for page in range(WORKDAY_MAX_PAGES):
             payload = _workday_page(fetcher, url, term, page * WORKDAY_PAGE)
             if payload is None:
-                break
+                # One board is many requests, so a single failure leaves the
+                # result partial. Reporting it as answered would let the close
+                # rule retire everything the failed query would have returned.
+                log.warning("%s: query %r failed, treating the board as absent", slug, term)
+                return None
             answered = True
             rows = payload.get("jobPostings") or []
             for job in rows:
