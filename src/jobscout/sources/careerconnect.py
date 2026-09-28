@@ -135,3 +135,63 @@ def parse(raw: bytes) -> list[Posting]:
 
     log.info("careerconnect %r: %d jobs", term or subject, len(postings))
     return postings
+
+
+INBOX = "careerconnect/inbox/"
+FAILED = "careerconnect/failed/"
+
+
+def drain(bucket) -> tuple[list[Posting], list[str], list[str]]:
+    """Read every stored alert.
+
+    Returns the postings, the keys that parsed, and the keys that did not.
+    Nothing is deleted here: a key is only safe to remove once its postings
+    are committed, and that happens in the caller where the transaction is.
+
+    A message that does not parse is moved aside rather than dropped, so the
+    parser can be fixed and the message replayed. The three Google forwarding
+    confirmations sitting in the bucket are exactly that case: real messages
+    that are not job alerts.
+    """
+    postings: list[Posting] = []
+    parsed: list[str] = []
+    failed: list[str] = []
+
+    for key in bucket.keys(INBOX):
+        try:
+            raw = bucket.get(key)
+        except Exception:
+            log.exception("careerconnect: could not read %s, leaving it", key)
+            continue
+        try:
+            found = parse(raw)
+        except Exception:
+            log.exception("careerconnect: %s did not parse, moving aside", key)
+            failed.append(key)
+            continue
+        if not found:
+            # Parsed cleanly and held no jobs. A confirmation email, not a
+            # broken parser, so it goes aside rather than round again forever.
+            log.info("careerconnect: %s held no jobs, moving aside", key)
+            failed.append(key)
+            continue
+        postings.extend(found)
+        parsed.append(key)
+
+    log.info("careerconnect: %d alerts parsed, %d set aside, %d jobs",
+             len(parsed), len(failed), len(postings))
+    return postings, parsed, failed
+
+
+def retire(bucket, parsed: list[str], failed: list[str]) -> None:
+    """Called once the postings are committed, never before."""
+    for key in parsed:
+        try:
+            bucket.delete(key)
+        except Exception:
+            log.exception("careerconnect: committed %s but could not delete it", key)
+    for key in failed:
+        try:
+            bucket.move(key, FAILED + key.rsplit("/", 1)[-1])
+        except Exception:
+            log.exception("careerconnect: could not move %s aside", key)
