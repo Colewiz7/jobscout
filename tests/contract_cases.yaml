@@ -36,6 +36,18 @@ titles:
   - ["IT Platform Recruiting Partner", false]
   # and the one it must still keep
   - ["College Intern - Summer 2027 - IT Platform", true]
+  # Career Connect, from the first real alert. RIT writes its titles with en
+  # dashes rather than hyphens, so the normalisation has to accept both.
+  - ["Co-Op \u2013 IT \u2013 Windows Systems Administration (Spring-Summer 2027)", true]
+  - ["HR Intern", false]
+  # Finance borrows the word: an infrastructure co-op and infrastructure as an
+  # asset class read identically until the sense is excluded.
+  - ["Intern - Private Infrastructure (Summer 2027)", false]
+  - ["Infrastructure Investment Banking Analyst Intern", false]
+  - ["Real Assets & Infrastructure Summer Analyst", false]
+  - ["Infrastructure Private Equity Intern", false]
+  # but the IT sense of the same words survives
+  - ["Private Cloud Infrastructure Intern", true]
 
 # The level, where a feed publishes schema.org employmentType. A hint, not a
 # verdict. [title, employmentType, expected]
