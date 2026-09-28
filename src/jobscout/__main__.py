@@ -16,6 +16,7 @@ from . import filters, models, notify
 from .config import Config
 from .http import Fetcher
 from .sources import boards as boards_source
+from .sources import careerconnect, r2
 from .sources import simplify
 
 log = logging.getLogger("jobscout")
@@ -89,17 +90,44 @@ def cmd_run(args) -> int:
         if resolved:
             log.info("resolved %d collapsed locations, %d were not US", resolved, rejected)
         matched_boards = checked
+
+        # Career Connect alerts, caught by the Cloudflare Worker and left in
+        # R2. Unconfigured is not an error: the source is simply absent.
+        mail_bucket = r2.Bucket.from_env(client=None)
+        matched_mail: list[models.Posting] = []
+        mail_parsed: list[str] = []
+        mail_failed: list[str] = []
+        if mail_bucket is not None:
+            try:
+                mail_rows, mail_parsed, mail_failed = careerconnect.drain(mail_bucket)
+                matched_mail = [p for p in mail_rows if filters.keep(p, config)]
+            except Exception:
+                # A bucket that cannot be read must not take the run down with
+                # it: the boards are the bulk of the feed and still ran.
+                log.exception("careerconnect: drain failed, continuing without it")
+                mail_parsed, mail_failed = [], []
+
         log.info(
             "matched: %d simplify open, %d simplify closed, %d board",
             len(matched_simplify),
             sum(len(v) for v in closed_keys.values()),
             len(matched_boards),
         )
+        if matched_mail:
+            log.info("careerconnect: %d matched", len(matched_mail))
 
         conn = database.connect(dsn)
         try:
             database.ensure_schema(conn)
-            new_rows = database.upsert_open(conn, matched_simplify + matched_boards)
+            new_rows = database.upsert_open(
+                conn, matched_simplify + matched_boards + matched_mail
+            )
+
+            # Only now. An alert is deleted once its jobs are committed, so a
+            # crash between the two costs a repeated parse rather than a lost
+            # posting. One that did not parse is moved aside for replay.
+            if mail_bucket is not None and (mail_parsed or mail_failed):
+                careerconnect.retire(mail_bucket, mail_parsed, mail_failed)
 
             for source, keys in closed_keys.items():
                 if keys:
