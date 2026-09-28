@@ -1,5 +1,7 @@
 """Message shape and the flood cap."""
-from jobscout.notify import _headers, format_posting, format_summary, push
+import json
+
+from jobscout.notify import format_posting, format_summary, push
 
 
 class FakeFetcher:
@@ -47,15 +49,33 @@ def test_push_sends_bearer_token_and_click():
     assert push(fetcher, "http://ntfy.ntfy.svc.cluster.local", "jobs", "tk",
                 "t", "b", click="https://x") is True
     url, body, headers = fetcher.calls[0]
-    assert url == "http://ntfy.ntfy.svc.cluster.local/jobs"
+    # The topic moves into the JSON body, so the URL is the base.
+    assert url == "http://ntfy.ntfy.svc.cluster.local"
     assert headers["Authorization"] == "Bearer tk"
-    assert headers["Click"] == "https://x"
-    assert body == "b"
+    payload = json.loads(body)
+    assert payload["topic"] == "jobs"
+    assert payload["click"] == "https://x"
+    assert payload["title"] == "t"
+    assert payload["message"] == "b"
+
+
+def test_push_carries_a_title_that_is_not_ascii():
+    """A single non-ASCII character used to take down the whole run.
+
+    The title was an HTTP header, which must be ASCII. RIT writes its co-ops
+    with en dashes and a campus posting arrived carrying a graduation cap, so
+    this is the real shape of the data, not a contrived case.
+    """
+    fetcher = FakeFetcher()
+    title = "RIT: Co-Op \u2013 IT \u2013 Windows Systems Administration \U0001f393"
+    assert push(fetcher, "http://n", "jobs", "tk", title, "b") is True
+    payload = json.loads(fetcher.calls[0][1])
+    assert payload["title"] == title
+    # and it is genuinely encodable on the wire
+    fetcher.calls[0][1].encode("utf-8")
 
 
 def test_push_reports_failure():
     assert push(FakeFetcher(ok=False), "http://n", "jobs", "tk", "t", "b") is False
 
 
-def test_headers_omit_authorization_when_there_is_no_token():
-    assert "Authorization" not in _headers("", "t")

@@ -1,29 +1,38 @@
 """Push new matches to ntfy."""
 from __future__ import annotations
 
+import json
 import logging
 
 log = logging.getLogger(__name__)
 
 
-def _headers(token: str, title: str, click: str = "") -> dict[str, str]:
-    headers = {
-        "Title": title,
-        "Tags": "briefcase",
-        "Priority": "default",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if click:
-        headers["Click"] = click
-    return headers
-
-
 def push(fetcher, base_url: str, topic: str, token: str, title: str, body: str,
          click: str = "") -> bool:
-    url = f"{base_url.rstrip('/')}/{topic}"
+    """Publish as JSON rather than through headers.
+
+    The title went in an HTTP header, which has to be ASCII, so a single
+    non-ASCII character in a job title raised UnicodeEncodeError and took the
+    whole run down before anything was marked notified. Real titles are full
+    of them: RIT writes co-ops as "Co-Op - IT - ..." with en dashes, and a
+    campus posting carrying a graduation-cap emoji is what actually found
+    this. The JSON body is UTF-8 by definition and has none of that problem.
+    """
+    payload = {
+        "topic": topic,
+        "title": title,
+        "message": body,
+        "tags": ["briefcase"],
+        "priority": 3,
+    }
+    if click:
+        payload["click"] = click
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = base_url.rstrip("/")
     response = fetcher.post(
-        url, body.encode("utf-8"), _headers(token, title, click)
+        url, json.dumps(payload).encode("utf-8"), headers
     )
     if response is None:
         log.error("ntfy rejected the push to %s", url)
