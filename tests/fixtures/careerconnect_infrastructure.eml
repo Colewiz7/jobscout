@@ -1,0 +1,818 @@
+Delivered-To: cjw9461@g.rit.edu
+Received: by 2002:a05:7301:301:b0:33b:bc2c:9685 with SMTP id ia1csp1939899dyb;
+        Sat, 26 Sep 2026 23:19:30 -0700 (PDT)
+X-Forwarded-Encrypted: i=2; AKwUvBwU+IEo7BnjGwdD4Yxq3rKiQy1pz3tXgNVuqsKStxduHAw9gDszTdwA+Bk/CPct6H3fGjhqTykS@g.rit.edu
+X-Received: by 2002:ac8:5fc5:0:b0:532:f124:188e with SMTP id d75a77b69052e-5330b69f84amr133054771cf.44.1790489970210;
+        Sat, 26 Sep 2026 23:19:30 -0700 (PDT)
+ARC-Seal: i=1; a=rsa-sha256; t=1790489970; cv=none;
+        d=google.com; s=arc-20260327;
+        b=n4P0ARV4eGJa+eoCskVz0m9TvL/BDs1EPif47fN5J2KQ7tZUtb/zJOGWXkeLzYbVXO
+         WnErUvQBR4pBcLqNT4e2jw1aMoxIYhQBYr4GxAZgAZM9tOs2pjZKy7J88tQs582djmrj
+         Jg7KWp2tTPKFGfbyH4eAIkAzmej2X6BT8vsShi2JhMgB2pfa4TiwtexM7HcZQM4A6yDI
+         LJUcaXKR6uDvUb+aHjmretsOaL6j9YwneQ94pGMyXg5GcbTwWZuDmsviKN8ApEWYgdqL
+         DgmGveIbkRJ85yDnqpSiAx6GVj9O/ceyHGcoZzbcHvQSRa8OzDVnGkyMuwAqeh4M6CtP
+         ysCg==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327;
+        h=date:message-id:subject:to:from:mime-version:dkim-signature
+         :dkim-filter;
+        bh=8u0tSR6maCeqvBPRJh74sK4WSjPRu6dpHSfUmonAxPw=;
+        fh=vvCumaIjeNy3mvyO8drx2C9BMhdtcZQuUB5QqxUvjyk=;
+        b=ePkiZ/A62jj4mG5ianRLI0sXEGONbVCUSAC5UesCJ5CCnSe60S3fkVBgXkQ8axXOgU
+         ur3U70YSfkF+vlAg01IJ3VEYnJ1WemJz88L/LcuxU33voD3XsGTZ3A567oSfSM1NhhzW
+         t24uEIcf+O+jMzT099yqvevLnkBwJoGHKze0trBVwRBtrdPW4/GRolLzxPDrL7pqnx4K
+         6mVqf6AOcS18TD+eiKZEVKzzLohcLXNx0W8xfPsZKaMBvBh+RUGzIrOjnzE65P7lh1Pj
+         qinlZZIoBZ8T6qmMTdtkT6Dc+cn9drCAR6Wkq4zyyDrKvukIkypiaDrPhaH4Bmo88YWB
+         cPNQ==;
+        dara=google.com
+ARC-Authentication-Results: i=1; mx.google.com;
+       dkim=pass header.i=@careerconnect.rit.edu header.s=careerconnectritedusymp header.b=FETuDwS4;
+       spf=none (google.com: careerservices@careerconnect.rit.edu does not designate permitted sender hosts) smtp.mailfrom=careerservices@careerconnect.rit.edu
+Return-Path: <careerservices@careerconnect.rit.edu>
+Received: from mx03d-out01c.rit.edu (mx03d-out01c.rit.edu. [129.21.10.65])
+        by mx.google.com with ESMTPS id d75a77b69052e-53322438289si40261941cf.344.2026.09.26.23.19.29
+        for <cjw9461@g.rit.edu>
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Sat, 26 Sep 2026 23:19:30 -0700 (PDT)
+Received-SPF: none (google.com: careerservices@careerconnect.rit.edu does not designate permitted sender hosts) client-ip=34.194.230.233;
+Authentication-Results: mx.google.com;
+       dkim=pass header.i=@careerconnect.rit.edu header.s=careerconnectritedusymp header.b=FETuDwS4;
+       spf=none (google.com: careerservices@careerconnect.rit.edu does not designate permitted sender hosts) smtp.mailfrom=careerservices@careerconnect.rit.edu
+X-CSE-ConnectionGUID: 6lU7IhcMT8GfmCp/ok/ngw==
+X-CSE-MsgGUID: Eca51qF5SCq0yPCrHR8SLA==
+Received-SPF: None (mx03d-in01r.rit.edu: no sender authenticity
+  information available from domain of
+  careerservices@careerconnect.rit.edu) identity=pra;
+  client-ip=34.194.230.233; receiver=mx03d-in01r.rit.edu;
+  envelope-from="careerservices@careerconnect.rit.edu";
+  x-sender="careerservices@careerconnect.rit.edu";
+  x-conformance=sidf_compatible
+Received-SPF: None (mx03d-in01r.rit.edu: no sender authenticity
+  information available from domain of
+  careerservices@careerconnect.rit.edu) identity=mailfrom;
+  client-ip=34.194.230.233; receiver=mx03d-in01r.rit.edu;
+  envelope-from="careerservices@careerconnect.rit.edu";
+  x-sender="careerservices@careerconnect.rit.edu";
+  x-conformance=sidf_compatible
+Received-SPF: None (mx03d-in01r.rit.edu: no sender authenticity
+  information available from domain of
+  postmaster@mail.symplicity.com) identity=helo;
+  client-ip=34.194.230.233; receiver=mx03d-in01r.rit.edu;
+  envelope-from="careerservices@careerconnect.rit.edu";
+  x-sender="postmaster@mail.symplicity.com";
+  x-conformance=sidf_compatible
+Authentication-Results: mx03d-in01r.rit.edu; spf=None smtp.pra=careerservices@careerconnect.rit.edu; spf=None smtp.mailfrom=careerservices@careerconnect.rit.edu; spf=None smtp.helo=postmaster@mail.symplicity.com; dkim=pass (signature verified) header.i=@careerconnect.rit.edu; dmarc=pass (p=quarantine dis=none) d=rit.edu
+X-RIT-HAT: Cloud Any
+X-RIT-Filters: CareerApps
+Received: from us-east-mail1.symplicity.com (HELO mail.symplicity.com) ([34.194.230.233])
+  by mx03d-in01r.rit.edu with ESMTP/TLS/ECDHE-ECDSA-AES128-GCM-SHA256; 27 Sep 2026 02:19:29 -0400
+Received: from ip-172-30-13-248.ec2.internal (ip-172-30-13-248.ec2.internal [172.30.13.248])
+	by mail.symplicity.com (Postfix) with ESMTP id 3B5634389F9
+	for <cjw9461@rit.edu>; Sun, 27 Sep 2026 02:19:29 -0400 (EDT)
+DKIM-Filter: OpenDKIM Filter v2.11.0 mail.symplicity.com 3B5634389F9
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+	d=careerconnect.rit.edu; s=careerconnectritedusymp; t=1790489969;
+	bh=8u0tSR6maCeqvBPRJh74sK4WSjPRu6dpHSfUmonAxPw=;
+	h=From:To:Subject:Date:From;
+	b=FETuDwS4GB7yWoxwCduTiakYsF2Q0N1TIJMDqPYqwI5ch4cl5jAvAld1LYWEoH4Ev
+	 QZymnQgReU481pjsMvzMOjRC2Ub6dDPHIuV0YUC5lD/54DBZsmQlVyu4Dg5n2secQ3
+	 2rl1s4sWryPSO66EmSo5MWCRHsZafjA+TXrasFJjXiIuEO3rjUU54wi6sMw2fU/Zqa
+	 MBTxjtMb932UkHcAwzBpam4iwVzt5nZwkAEOD44E/VXeGlt1E2iqehBWBpUQDZmLd1
+	 tg/IXb5IEHXqWIeqZyFH3fteeNrC5qnAP83E1zMC6ujIOnnMa7veWZxiQpzyurvrMu
+	 zEoG1/wSaysPQ==
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="=_830cf6a2d6110cccce8d5307ba9adabd"
+From: careerservices@careerconnect.rit.edu
+To: cjw9461@rit.edu
+Subject: Cole, the latest "infrastructure" jobs are here  
+Message-ID: <bbfd22595f32b6c35d3776b458c92b8c@rit-csm.symplicity.com>
+Date: Sun, 27 Sep 2026 02:19:29 -0400
+
+--=_830cf6a2d6110cccce8d5307ba9adabd
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/plain; charset=UTF-8
+
+  
+--=_830cf6a2d6110cccce8d5307ba9adabd
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.=
+w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">=0A<html xmlns=3D"http://www.=
+w3.org/1999/xhtml">=0A<head>=0A    <meta http-equiv=3D"Content-Type" conten=
+t=3D"text/html; charset=3DUTF-8" />=0A    <meta name=3D"viewport" content=
+=3D"width=3Ddevice-width, initial-scale=3D1.0"/>=0A</head>=0A<body style=3D=
+"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">=0A    <meta ht=
+tp-equiv=3D"Content-Type" content=3D"text/html; charset=3DUTF-8" /><table s=
+tyle=3D"font-family: 'Roboto','Helvetica Neue', Helvetica, Arial, sans-seri=
+f; mso-table-lspace: 0pt; mso-table-rspace: 0pt; background-color: #f5f5f5;=
+ height: 100% !important; margin: 0; padding: 0; width: 100% !important;" b=
+order=3D"0" width=3D"100%" cellspacing=3D"10" cellpadding=3D"0" align=3D"ce=
+nter" bgcolor=3D"#f2f2f2">=0A<tbody>=0A<tr>=0A<td align=3D"center" valign=
+=3D"top">=0A<table style=3D"mso-table-lspace: 0pt; mso-table-rspace: 0pt; p=
+adding: 0; border-radius: 4px;" border=3D"0" width=3D"700" cellspacing=3D"0=
+" cellpadding=3D"0" align=3D"center">=0A<tbody>=0A<tr>=0A<td>=0A<div style=
+=3D"text-align: center;"><table width=3D'700' cellspacing=3D'0' cellpadding=
+=3D'0'><tr>=0A            <td align=3D'center' bgcolor=3D'#EE5500' style=3D=
+'border-radius: 4px; text-align:center; padding:20px;color: white'>=0A     =
+       <img src=3D'https://s3.amazonaws.com/symp.csm.usprod/rit/files/publi=
+c/16e/16eacd4ad0ddb301c5eddc08963542bb_166_166.png' alt=3D'Rochester Instit=
+ute of Technology' width=3D'166' style=3D'width:100%; max-width:166px; back=
+ground-color:#EE5500;'/>=0A            </td></tr></table></div>=0A</td>=0A<=
+/tr>=0A</tbody>=0A</table>=0A&nbsp;=0A<table style=3D"background-color: whi=
+te; mso-table-lspace: 0pt; mso-table-rspace: 0pt; margin: 0; padding: 30px =
+40px; border-radius: 4px; border: 1px solid #ececec; width: 700px;" border=
+=3D"0" width=3D"700" cellspacing=3D"0" cellpadding=3D"0" align=3D"center">=
+=0A<tbody>=0A<tr>=0A<td>=0A<div style=3D"font-size: 14px; color: #333333; l=
+ine-height: 22px; text-align: center;"><span style=3D"font-size: 28px;">=0A=
+Cole, here are your latest job matches!</span><br>=0A<br>=0ADon't miss thes=
+e matches to your "infrastructure" job alert.</div>=0A</td>=0A</tr>=0A</tbo=
+dy>=0A</table>=0A&nbsp;=0A<table style=3D"border-collapse: collapse; border=
+-spacing: 0; mso-table-lspace: 0pt; mso-table-rspace: 0pt; margin: 0; width=
+: 700px; margin-bottom: 10px;" border=3D"0" cellspacing=3D"0" cellpadding=
+=3D"0">=0A<tbody>=0A<tr>=0A<td><table border=3D"0" cellspacing=3D"0" cellpa=
+dding=3D"0" width=3D"100%"><tr>        <td bgcolor=3D"#ffffff" style=3D"bac=
+kground-color:#ffffff; border-width:1px; border-style:solid; border-color:#=
+ececec; border-bottom: 0; padding: 20px; ">            <table border=3D"0" =
+cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-si=
+ze-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-=
+rspace:0pt; border-collapse:collapse !important; margin:0; padding:0; width=
+:100% !important">                <tr>                    <td valign=3D"top=
+" width=3D"70" style=3D"width:70px; vertical-align: top; padding-bottom: 10=
+px;">                        <img width=3D"50" src=3D"https://rit-csm.sympl=
+icity.com/si_ei/images/employers_placeholder.png" alt=3D"IBM logo" style=3D=
+"text-align:center; border-radius:4px;" />                    </td>        =
+            <td valign=3D"top" style=3D"vertical-align: top;">             =
+           <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D=
+"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; m=
+so-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !import=
+ant; margin:0; padding:0; width:100% !important">                          =
+  <tr>                                <td>                                 =
+   <p style=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"http=
+s://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpb=
+C8yOWI1YTVlMzgyNWJlMDcwYTRjNGZjY2QzZTAzMmUwYw=3D=3D" style=3D"text-decorati=
+on:none; color:#333333;">Quantum Infrastructure Intern 2027 - SRE</a></p>  =
+                              </td>                            </tr>       =
+                     <tr>                                <td>              =
+                      <p style=3D"margin:0; color:#333333; font-size:14px; =
+line-height:24px; font-weight:300;">                                       =
+ IBM                                    </p>                               =
+ </td>                            </tr>                                    =
+                    <tr>                                <td>               =
+                     <p style=3D"margin:0; color:#333333; font-size:14px; l=
+ine-height:24px; font-weight:300;">                                        =
+                                        Yorktown Heights, New York, United =
+States                                    </p>                             =
+   </td>                            </tr>                                  =
+                      <tr>                                <td>             =
+                       <p style=3D"margin:0; color:#6c6c6c; font-weight:300=
+; font-size:13px; line-height:21px;">Co-op/Internship</p>                  =
+              </td>                            </tr>                       =
+ </table>                    </td>                </tr>            </table>=
+        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff" style=3D"back=
+ground-color:#ffffff; border-width:1px; border-style:solid; border-color:#e=
+cecec; border-bottom: 0; padding: 20px; ">            <table border=3D"0" c=
+ellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-siz=
+e-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-r=
+space:0pt; border-collapse:collapse !important; margin:0; padding:0; width:=
+100% !important">                <tr>                    <td valign=3D"top"=
+ width=3D"70" style=3D"width:70px; vertical-align: top; padding-bottom: 10p=
+x;">                        <img width=3D"50" src=3D"https://rit-csm.sympli=
+city.com/si_ei/images/employers_placeholder.png" alt=3D"Principal Financial=
+ Group logo" style=3D"text-align:center; border-radius:4px;" />            =
+        </td>                    <td valign=3D"top" style=3D"vertical-align=
+: top;">                        <table border=3D"0" cellpadding=3D"0" cells=
+pacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-tex=
+t-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-coll=
+apse:collapse !important; margin:0; padding:0; width:100% !important">     =
+                       <tr>                                <td>            =
+                        <p style=3D"margin:0; font-size:16px; line-height:2=
+4px;"><a href=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3D=
+L2FwcC9qb2JzL2RldGFpbC84N2RjYWRhYzM2N2I0MjRlMDZmNzU3MTMyYjZkMDNhZg=3D=3D" s=
+tyle=3D"text-decoration:none; color:#333333;">Intern - Private Infrastructu=
+re (Summer 2027)</a></p>                                </td>              =
+              </tr>                            <tr>                        =
+        <td>                                    <p style=3D"margin:0; color=
+:#333333; font-size:14px; line-height:24px; font-weight:300;">             =
+                           Principal Financial Group                       =
+             </p>                                </td>                     =
+       </tr>                                                        <tr>   =
+                             <td>                                    <p sty=
+le=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-weigh=
+t:300;">                                                                   =
+             New York, New York, United States                             =
+       </p>                                </td>                           =
+ </tr>                                                        <tr>         =
+                       <td>                                    <p style=3D"=
+margin:0; color:#6c6c6c; font-weight:300; font-size:13px; line-height:21px;=
+">Co-op/Internship</p>                                </td>                =
+            </tr>                        </table>                    </td> =
+               </tr>            </table>        </td>    </tr>    <tr>     =
+   <td bgcolor=3D"#ffffff" style=3D"background-color:#ffffff; border-width:=
+1px; border-style:solid; border-color:#ececec; border-bottom: 0; padding: 2=
+0px; ">            <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" =
+width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust=
+:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse=
+ !important; margin:0; padding:0; width:100% !important">                <t=
+r>                    <td valign=3D"top" width=3D"70" style=3D"width:70px; =
+vertical-align: top; padding-bottom: 10px;">                        <img wi=
+dth=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei/images/employers_pla=
+ceholder.png" alt=3D"New York Independent System Operator (NYISO) logo" sty=
+le=3D"text-align:center; border-radius:4px;" />                    </td>   =
+                 <td valign=3D"top" style=3D"vertical-align: top;">        =
+                <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" wid=
+th=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:10=
+0%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !i=
+mportant; margin:0; padding:0; width:100% !important">                     =
+       <tr>                                <td>                            =
+        <p style=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D=
+"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2Rl=
+dGFpbC8yOGIzNmMxZTU4OWRkYjA2NGM5NGNjY2EyNGI1YmU4Mg=3D=3D" style=3D"text-dec=
+oration:none; color:#333333;">Co-Op =E2=80=93 IT =E2=80=93 ServiceNow CMDB =
+& Discovery (Spring-Summer 2027)</a></p>                                </t=
+d>                            </tr>                            <tr>        =
+                        <td>                                    <p style=3D=
+"margin:0; color:#333333; font-size:14px; line-height:24px; font-weight:300=
+;">                                        New York Independent System Oper=
+ator (NYISO)                                    </p>                       =
+         </td>                            </tr>                            =
+                            <tr>                                <td>       =
+                             <p style=3D"margin:0; color:#333333; font-size=
+:14px; line-height:24px; font-weight:300;">                                =
+                                                Albany, New York, United St=
+ates                                    </p>                               =
+ </td>                            </tr>                                    =
+                    <tr>                                <td>               =
+                     <p style=3D"margin:0; color:#6c6c6c; font-weight:300; =
+font-size:13px; line-height:21px;">Co-op/Internship</p>                    =
+            </td>                            </tr>                        <=
+/table>                    </td>                </tr>            </table>  =
+      </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff" style=3D"backgr=
+ound-color:#ffffff; border-width:1px; border-style:solid; border-color:#ece=
+cec; border-bottom: 0; padding: 20px; ">            <table border=3D"0" cel=
+lpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-=
+adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rsp=
+ace:0pt; border-collapse:collapse !important; margin:0; padding:0; width:10=
+0% !important">                <tr>                    <td valign=3D"top" w=
+idth=3D"70" style=3D"width:70px; vertical-align: top; padding-bottom: 10px;=
+">                        <img width=3D"50" src=3D"https://rit-csm.symplici=
+ty.com/si_ei/images/employers_placeholder.png" alt=3D"AECOM logo" style=3D"=
+text-align:center; border-radius:4px;" />                    </td>         =
+           <td valign=3D"top" style=3D"vertical-align: top;">              =
+          <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"=
+100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; ms=
+o-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !importa=
+nt; margin:0; padding:0; width:100% !important">                           =
+ <tr>                                <td>                                  =
+  <p style=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https=
+://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC=
+82MDdlM2ZjYTgyZjhkZTViYzRhZWZiNjU2MTc1Njc1NQ=3D=3D" style=3D"text-decoratio=
+n:none; color:#333333;">Engineering Intern</a></p>                         =
+       </td>                            </tr>                            <t=
+r>                                <td>                                    <=
+p style=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-=
+weight:300;">                                        AECOM                 =
+                   </p>                                </td>               =
+             </tr>                                                        <=
+tr>                                <td>                                    =
+<p style=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font=
+-weight:300;">                                                             =
+                   Philadelphia, Pennsylvania, United States               =
+                     </p>                                </td>             =
+               </tr>                                                       =
+ <tr>                                <td>                                  =
+  <p style=3D"margin:0; color:#6c6c6c; font-weight:300; font-size:13px; lin=
+e-height:21px;">Co-op/Internship</p>                                </td>  =
+                          </tr>                        </table>            =
+        </td>                </tr>            </table>        </td>    </tr=
+>    <tr>        <td bgcolor=3D"#ffffff" style=3D"background-color:#ffffff;=
+ border-width:1px; border-style:solid; border-color:#ececec; border-bottom:=
+ 0; padding: 20px; ">            <table border=3D"0" cellpadding=3D"0" cell=
+spacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-te=
+xt-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-col=
+lapse:collapse !important; margin:0; padding:0; width:100% !important">    =
+            <tr>                    <td valign=3D"top" width=3D"70" style=
+=3D"width:70px; vertical-align: top; padding-bottom: 10px;">               =
+         <img width=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei/imag=
+es/employers_placeholder.png" alt=3D"New York Independent System Operator (=
+NYISO) logo" style=3D"text-align:center; border-radius:4px;" />            =
+        </td>                    <td valign=3D"top" style=3D"vertical-align=
+: top;">                        <table border=3D"0" cellpadding=3D"0" cells=
+pacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-tex=
+t-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-coll=
+apse:collapse !important; margin:0; padding:0; width:100% !important">     =
+                       <tr>                                <td>            =
+                        <p style=3D"margin:0; font-size:16px; line-height:2=
+4px;"><a href=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3D=
+L2FwcC9qb2JzL2RldGFpbC9lNTRlZDljMjNlMWI1MmZlNDhmNjE4ZWQ1MDMyMzdkYQ=3D=3D" s=
+tyle=3D"text-decoration:none; color:#333333;">Co-Op =E2=80=93 IT =E2=80=93 =
+ServiceNow Platform Administration (Spring-Summer 2027)</a></p>            =
+                    </td>                            </tr>                 =
+           <tr>                                <td>                        =
+            <p style=3D"margin:0; color:#333333; font-size:14px; line-heigh=
+t:24px; font-weight:300;">                                        New York =
+Independent System Operator (NYISO)                                    </p>=
+                                </td>                            </tr>     =
+                                                   <tr>                    =
+            <td>                                    <p style=3D"margin:0; c=
+olor:#333333; font-size:14px; line-height:24px; font-weight:300;">         =
+                                                                       Alba=
+ny, New York, United States                                    </p>        =
+                        </td>                            </tr>             =
+                                           <tr>                            =
+    <td>                                    <p style=3D"margin:0; color:#6c=
+6c6c; font-weight:300; font-size:13px; line-height:21px;">Co-op/Internship<=
+/p>                                </td>                            </tr>  =
+                      </table>                    </td>                </tr=
+>            </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#=
+ffffff" style=3D"background-color:#ffffff; border-width:1px; border-style:s=
+olid; border-color:#ececec; border-bottom: 0; padding: 20px; ">            =
+<table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" styl=
+e=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-ls=
+pace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin=
+:0; padding:0; width:100% !important">                <tr>                 =
+   <td valign=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top=
+; padding-bottom: 10px;">                        <img width=3D"50" src=3D"h=
+ttps://rit-csm.symplicity.com/si_ei/images/employers_placeholder.png" alt=
+=3D"New York Independent System Operator (NYISO) logo" style=3D"text-align:=
+center; border-radius:4px;" />                    </td>                    =
+<td valign=3D"top" style=3D"vertical-align: top;">                        <=
+table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=
+=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lsp=
+ace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin:=
+0; padding:0; width:100% !important">                            <tr>      =
+                          <td>                                    <p style=
+=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-csm=
+.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC82YmU1MjY0=
+ZmY0ZGZmODRlNGY5NjE5ZTM1MzdlMTE4NQ=3D=3D" style=3D"text-decoration:none; co=
+lor:#333333;">Co-Op - IT - Software Engineering (Spring-Summer 2027)</a></p=
+>                                </td>                            </tr>    =
+                        <tr>                                <td>           =
+                         <p style=3D"margin:0; color:#333333; font-size:14p=
+x; line-height:24px; font-weight:300;">                                    =
+    New York Independent System Operator (NYISO)                           =
+         </p>                                </td>                         =
+   </tr>                                                        <tr>       =
+                         <td>                                    <p style=
+=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-weight:=
+300;">                                                                     =
+           Albany, New York, United States                                 =
+   </p>                                </td>                            </t=
+r>                                                        <tr>             =
+                   <td>                                    <p style=3D"marg=
+in:0; color:#6c6c6c; font-weight:300; font-size:13px; line-height:21px;">Co=
+-op/Internship</p>                                </td>                    =
+        </tr>                        </table>                    </td>     =
+           </tr>            </table>        </td>    </tr>    <tr>        <=
+td bgcolor=3D"#ffffff" style=3D"background-color:#ffffff; border-width:1px;=
+ border-style:solid; border-color:#ececec; border-bottom: 0; padding: 20px;=
+ ">            <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" widt=
+h=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100=
+%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !im=
+portant; margin:0; padding:0; width:100% !important">                <tr>  =
+                  <td valign=3D"top" width=3D"70" style=3D"width:70px; vert=
+ical-align: top; padding-bottom: 10px;">                        <img width=
+=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei/images/employers_placeh=
+older.png" alt=3D"New York Independent System Operator (NYISO) logo" style=
+=3D"text-align:center; border-radius:4px;" />                    </td>     =
+               <td valign=3D"top" style=3D"vertical-align: top;">          =
+              <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=
+=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%=
+; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !imp=
+ortant; margin:0; padding:0; width:100% !important">                       =
+     <tr>                                <td>                              =
+      <p style=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"h=
+ttps://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldG=
+FpbC84OTQ0OGUzYmUxZGE3NDgxODNjODkwZjYzYzBmMWUxMQ=3D=3D" style=3D"text-decor=
+ation:none; color:#333333;">Co-Op =E2=80=93 IT =E2=80=93 Technical Security=
+ (Spring-Summer 2027)</a></p>                                </td>         =
+                   </tr>                            <tr>                   =
+             <td>                                    <p style=3D"margin:0; =
+color:#333333; font-size:14px; line-height:24px; font-weight:300;">        =
+                                New York Independent System Operator (NYISO=
+)                                    </p>                                </=
+td>                            </tr>                                       =
+                 <tr>                                <td>                  =
+                  <p style=3D"margin:0; color:#333333; font-size:14px; line=
+-height:24px; font-weight:300;">                                           =
+                                     Albany, New York, United States       =
+                             </p>                                </td>     =
+                       </tr>                                               =
+         <tr>                                <td>                          =
+          <p style=3D"margin:0; color:#6c6c6c; font-weight:300; font-size:1=
+3px; line-height:21px;">Co-op/Internship</p>                               =
+ </td>                            </tr>                        </table>    =
+                </td>                </tr>            </table>        </td>=
+    </tr>    <tr>        <td bgcolor=3D"#ffffff" style=3D"background-color:=
+#ffffff; border-width:1px; border-style:solid; border-color:#ececec; border=
+-bottom: 0; padding: 20px; ">            <table border=3D"0" cellpadding=3D=
+"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%=
+; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; bo=
+rder-collapse:collapse !important; margin:0; padding:0; width:100% !importa=
+nt">                <tr>                    <td valign=3D"top" width=3D"70"=
+ style=3D"width:70px; vertical-align: top; padding-bottom: 10px;">         =
+               <img width=3D"50" src=3D"https://rit-csm.symplicity.com/si_e=
+i/images/employers_placeholder.png" alt=3D"Chemours logo" style=3D"text-ali=
+gn:center; border-radius:4px;" />                    </td>                 =
+   <td valign=3D"top" style=3D"vertical-align: top;">                      =
+  <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" st=
+yle=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-=
+lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; marg=
+in:0; padding:0; width:100% !important">                            <tr>   =
+                             <td>                                    <p sty=
+le=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-c=
+sm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC84NTQ1Yz=
+A4YTljNWJmMGMwNzZhZmRjNTkxNzEyNTk0NA=3D=3D" style=3D"text-decoration:none; =
+color:#333333;">Data Visualization Analyst Summer Intern</a></p>           =
+                     </td>                            </tr>                =
+            <tr>                                <td>                       =
+             <p style=3D"margin:0; color:#333333; font-size:14px; line-heig=
+ht:24px; font-weight:300;">                                        Chemours=
+                                    </p>                                </t=
+d>                            </tr>                                        =
+                <tr>                                <td>                   =
+                 <p style=3D"margin:0; color:#333333; font-size:14px; line-=
+height:24px; font-weight:300;">                                            =
+                                    Atlanta, Georgia, United States        =
+                            </p>                                </td>      =
+                      </tr>                                                =
+        <tr>                                <td>                           =
+         <p style=3D"margin:0; color:#6c6c6c; font-weight:300; font-size:13=
+px; line-height:21px;">Co-op/Internship</p>                                =
+</td>                            </tr>                        </table>     =
+               </td>                </tr>            </table>        </td> =
+   </tr>    <tr>        <td bgcolor=3D"#ffffff" style=3D"background-color:#=
+ffffff; border-width:1px; border-style:solid; border-color:#ececec; border-=
+bottom: 0; padding: 20px; ">            <table border=3D"0" cellpadding=3D"=
+0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%;=
+ -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; bor=
+der-collapse:collapse !important; margin:0; padding:0; width:100% !importan=
+t">                <tr>                    <td valign=3D"top" width=3D"70" =
+style=3D"width:70px; vertical-align: top; padding-bottom: 10px;">          =
+              <img width=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei=
+/images/employers_placeholder.png" alt=3D"CDM Smith logo" style=3D"text-ali=
+gn:center; border-radius:4px;" />                    </td>                 =
+   <td valign=3D"top" style=3D"vertical-align: top;">                      =
+  <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" st=
+yle=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-=
+lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; marg=
+in:0; padding:0; width:100% !important">                            <tr>   =
+                             <td>                                    <p sty=
+le=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-c=
+sm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC9hMjZkMG=
+U1ZWExMjA1MjVkMjVmYTFhYzNmM2Y2YzZkNw=3D=3D" style=3D"text-decoration:none; =
+color:#333333;">Operations & Maintenance Intern - Program Services (Summer =
+2027)</a></p>                                </td>                         =
+   </tr>                            <tr>                                <td=
+>                                    <p style=3D"margin:0; color:#333333; f=
+ont-size:14px; line-height:24px; font-weight:300;">                        =
+                CDM Smith                                    </p>          =
+                      </td>                            </tr>               =
+                                         <tr>                              =
+  <td>                                    <p style=3D"margin:0; color:#3333=
+33; font-size:14px; line-height:24px; font-weight:300;">                   =
+                                                             Boca Raton, Fl=
+orida, United States                                    </p>               =
+                 </td>                            </tr>                    =
+                                    <tr>                                <td=
+>                                    <p style=3D"margin:0; color:#6c6c6c; f=
+ont-weight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>    =
+                            </td>                            </tr>         =
+               </table>                    </td>                </tr>      =
+      </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff"=
+ style=3D"background-color:#ffffff; border-width:1px; border-style:solid; b=
+order-color:#ececec; border-bottom: 0; padding: 20px; ">            <table =
+border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-w=
+ebkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0p=
+t; mso-table-rspace:0pt; border-collapse:collapse !important; margin:0; pad=
+ding:0; width:100% !important">                <tr>                    <td =
+valign=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top; paddi=
+ng-bottom: 10px;">                        <img width=3D"50" src=3D"https://=
+rit-csm.symplicity.com/si_ei/images/employers_placeholder.png" alt=3D"Cisco=
+ logo" style=3D"text-align:center; border-radius:4px;" />                  =
+  </td>                    <td valign=3D"top" style=3D"vertical-align: top;=
+">                        <table border=3D"0" cellpadding=3D"0" cellspacing=
+=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size=
+-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:c=
+ollapse !important; margin:0; padding:0; width:100% !important">           =
+                 <tr>                                <td>                  =
+                  <p style=3D"margin:0; font-size:16px; line-height:24px;">=
+<a href=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC=
+9qb2JzL2RldGFpbC85MDcxZTNlMDY5MTQ3ZjY3MzMwYWUzNDY0MTdjM2RiOA=3D=3D" style=
+=3D"text-decoration:none; color:#333333;">Engineering Product Management Sp=
+ecialist I (Intern) - United States</a></p>                                =
+</td>                            </tr>                            <tr>     =
+                           <td>                                    <p style=
+=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-weight:=
+300;">                                        Cisco                        =
+            </p>                                </td>                      =
+      </tr>                                                        <tr>    =
+                            <td>                                    <p styl=
+e=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-weight=
+:300;">                                                                    =
+            Milpitas, California, United States                            =
+        </p>                                </td>                          =
+  </tr>                                                        <tr>        =
+                        <td>                                    <p style=3D=
+"margin:0; color:#6c6c6c; font-weight:300; font-size:13px; line-height:21px=
+;">Co-op/Internship</p>                                </td>               =
+             </tr>                        </table>                    </td>=
+                </tr>            </table>        </td>    </tr>    <tr>    =
+    <td bgcolor=3D"#ffffff" style=3D"background-color:#ffffff; border-width=
+:1px; border-style:solid; border-color:#ececec; border-bottom: 0; padding: =
+20px; ">            <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0"=
+ width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjus=
+t:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collaps=
+e !important; margin:0; padding:0; width:100% !important">                <=
+tr>                    <td valign=3D"top" width=3D"70" style=3D"width:70px;=
+ vertical-align: top; padding-bottom: 10px;">                        <img w=
+idth=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei/images/employers_pl=
+aceholder.png" alt=3D"The Walt Disney Company logo" style=3D"text-align:cen=
+ter; border-radius:4px;" />                    </td>                    <td=
+ valign=3D"top" style=3D"vertical-align: top;">                        <tab=
+le border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D=
+"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace=
+:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin:0; =
+padding:0; width:100% !important">                            <tr>         =
+                       <td>                                    <p style=3D"=
+margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-csm.sym=
+plicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC8zYzZhMjNkYTc0=
+MzYxOTE1NTEyNWY2YWI1MmU2ZWJlMg=3D=3D" style=3D"text-decoration:none; color:=
+#333333;">Decision Science Undergraduate Intern, Spring 2027</a></p>       =
+                         </td>                            </tr>            =
+                <tr>                                <td>                   =
+                 <p style=3D"margin:0; color:#333333; font-size:14px; line-=
+height:24px; font-weight:300;">                                        The =
+Walt Disney Company                                    </p>                =
+                </td>                            </tr>                     =
+                                   <tr>                                <td>=
+                                    <p style=3D"margin:0; color:#333333; fo=
+nt-size:14px; line-height:24px; font-weight:300;">                         =
+                                                       Lake Buena Vista, Fl=
+orida, United States                                    </p>               =
+                 </td>                            </tr>                    =
+                                    <tr>                                <td=
+>                                    <p style=3D"margin:0; color:#6c6c6c; f=
+ont-weight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>    =
+                            </td>                            </tr>         =
+               </table>                    </td>                </tr>      =
+      </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff"=
+ style=3D"background-color:#ffffff; border-width:1px; border-style:solid; b=
+order-color:#ececec; border-bottom: 0; padding: 20px; ">            <table =
+border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-w=
+ebkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0p=
+t; mso-table-rspace:0pt; border-collapse:collapse !important; margin:0; pad=
+ding:0; width:100% !important">                <tr>                    <td =
+valign=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top; paddi=
+ng-bottom: 10px;">                        <img width=3D"50" src=3D"https://=
+rit-csm.symplicity.com/si_ei/images/employers_placeholder.png" alt=3D"Micro=
+soft Corporation logo" style=3D"text-align:center; border-radius:4px;" />  =
+                  </td>                    <td valign=3D"top" style=3D"vert=
+ical-align: top;">                        <table border=3D"0" cellpadding=
+=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:1=
+00%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt;=
+ border-collapse:collapse !important; margin:0; padding:0; width:100% !impo=
+rtant">                            <tr>                                <td>=
+                                    <p style=3D"margin:0; font-size:16px; l=
+ine-height:24px;"><a href=3D"https://rit-csm.symplicity.com/students/?jobRe=
+directUrl=3DL2FwcC9qb2JzL2RldGFpbC9hYmVjZTAxM2FiMjNiNGE4NGViNzJhMjQwMzRmOGI=
+zMw=3D=3D" style=3D"text-decoration:none; color:#333333;">Treasury Finance =
+Manager: MBA Internship Opportunities</a></p>                              =
+  </td>                            </tr>                            <tr>   =
+                             <td>                                    <p sty=
+le=3D"margin:0; color:#333333; font-size:14px; line-height:24px; font-weigh=
+t:300;">                                        Microsoft Corporation      =
+                              </p>                                </td>    =
+                        </tr>                                              =
+          <tr>                                <td>                         =
+           <p style=3D"margin:0; color:#333333; font-size:14px; line-height=
+:24px; font-weight:300;">                                                  =
+                              Redmond, Washington, United States           =
+                         </p>                                </td>         =
+                   </tr>                                                   =
+     <tr>                                <td>                              =
+      <p style=3D"margin:0; color:#6c6c6c; font-weight:300; font-size:13px;=
+ line-height:21px;">Co-op/Internship</p>                                </t=
+d>                            </tr>                        </table>        =
+            </td>                </tr>            </table>        </td>    =
+</tr>    <tr>        <td bgcolor=3D"#ffffff" style=3D"background-color:#fff=
+fff; border-width:1px; border-style:solid; border-color:#ececec; border-bot=
+tom: 0; padding: 20px; ">            <table border=3D"0" cellpadding=3D"0" =
+cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -m=
+s-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border=
+-collapse:collapse !important; margin:0; padding:0; width:100% !important">=
+                <tr>                    <td valign=3D"top" width=3D"70" sty=
+le=3D"width:70px; vertical-align: top; padding-bottom: 10px;">             =
+           <img width=3D"50" src=3D"https://rit-csm.symplicity.com/si_ei/im=
+ages/employers_placeholder.png" alt=3D"Siemens logo" style=3D"text-align:ce=
+nter; border-radius:4px;" />                    </td>                    <t=
+d valign=3D"top" style=3D"vertical-align: top;">                        <ta=
+ble border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=
+=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lsp=
+ace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin:=
+0; padding:0; width:100% !important">                            <tr>      =
+                          <td>                                    <p style=
+=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-csm=
+.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC81MDVjZWIy=
+NWQ3ZGNmZmQ1OWI3Y2ZkMGVhZTNjODY5NQ=3D=3D" style=3D"text-decoration:none; co=
+lor:#333333;">Smart Buildings Fire & Life Safety Solutions Sales Internship=
+</a></p>                                </td>                            </=
+tr>                            <tr>                                <td>    =
+                                <p style=3D"margin:0; color:#333333; font-s=
+ize:14px; line-height:24px; font-weight:300;">                             =
+           Siemens                                    </p>                 =
+               </td>                            </tr>                      =
+                                  <tr>                                <td> =
+                                   <p style=3D"margin:0; color:#333333; fon=
+t-size:14px; line-height:24px; font-weight:300;">                          =
+                                                      Saint Louis, Missouri=
+, United States                                    </p>                    =
+            </td>                            </tr>                         =
+                               <tr>                                <td>    =
+                                <p style=3D"margin:0; color:#6c6c6c; font-w=
+eight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>         =
+                       </td>                            </tr>              =
+          </table>                    </td>                </tr>           =
+ </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff" styl=
+e=3D"background-color:#ffffff; border-width:1px; border-style:solid; border=
+-color:#ececec; border-bottom: 0; padding: 20px; ">            <table borde=
+r=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit=
+-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; ms=
+o-table-rspace:0pt; border-collapse:collapse !important; margin:0; padding:=
+0; width:100% !important">                <tr>                    <td valig=
+n=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top; padding-bo=
+ttom: 10px;">                        <img width=3D"50" src=3D"https://rit-c=
+sm.symplicity.com/si_ei/images/employers_placeholder.png" alt=3D"Charles Sc=
+hwab logo" style=3D"text-align:center; border-radius:4px;" />              =
+      </td>                    <td valign=3D"top" style=3D"vertical-align: =
+top;">                        <table border=3D"0" cellpadding=3D"0" cellspa=
+cing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-=
+size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collap=
+se:collapse !important; margin:0; padding:0; width:100% !important">       =
+                     <tr>                                <td>              =
+                      <p style=3D"margin:0; font-size:16px; line-height:24p=
+x;"><a href=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2=
+FwcC9qb2JzL2RldGFpbC81MDJjNTRkYWIwN2E2ZGI2MmRlMWY1ODA0ZjM2ZjJmMQ=3D=3D" sty=
+le=3D"text-decoration:none; color:#333333;">2027 Enterprise Finance Intern<=
+/a></p>                                </td>                            </t=
+r>                            <tr>                                <td>     =
+                               <p style=3D"margin:0; color:#333333; font-si=
+ze:14px; line-height:24px; font-weight:300;">                              =
+          Charles Schwab                                    </p>           =
+                     </td>                            </tr>                =
+                                        <tr>                               =
+ <td>                                    <p style=3D"margin:0; color:#33333=
+3; font-size:14px; line-height:24px; font-weight:300;">                    =
+                                                            Westlake, Texas=
+, United States                                    </p>                    =
+            </td>                            </tr>                         =
+                               <tr>                                <td>    =
+                                <p style=3D"margin:0; color:#6c6c6c; font-w=
+eight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>         =
+                       </td>                            </tr>              =
+          </table>                    </td>                </tr>           =
+ </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff" styl=
+e=3D"background-color:#ffffff; border-width:1px; border-style:solid; border=
+-color:#ececec; border-bottom: 0; padding: 20px; ">            <table borde=
+r=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit=
+-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; ms=
+o-table-rspace:0pt; border-collapse:collapse !important; margin:0; padding:=
+0; width:100% !important">                <tr>                    <td valig=
+n=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top; padding-bo=
+ttom: 10px;">                        <img width=3D"50" src=3D"https://rit-c=
+sm.symplicity.com/si_ei/images/employers_placeholder.png" alt=3D"3M logo" s=
+tyle=3D"text-align:center; border-radius:4px;" />                    </td> =
+                   <td valign=3D"top" style=3D"vertical-align: top;">      =
+                  <table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" w=
+idth=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:=
+100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse =
+!important; margin:0; padding:0; width:100% !important">                   =
+         <tr>                                <td>                          =
+          <p style=3D"margin:0; font-size:16px; line-height:24px;"><a href=
+=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL=
+2RldGFpbC81ZGE2ZmNlZmMzNWI5ZjhjYTc4MzViNjI1MzQ2N2E2NQ=3D=3D" style=3D"text-=
+decoration:none; color:#333333;">Internship - 2027 MBA IT Enterprise Applic=
+ation Intern</a></p>                                </td>                  =
+          </tr>                            <tr>                            =
+    <td>                                    <p style=3D"margin:0; color:#33=
+3333; font-size:14px; line-height:24px; font-weight:300;">                 =
+                       3M                                    </p>          =
+                      </td>                            </tr>               =
+                                         <tr>                              =
+  <td>                                    <p style=3D"margin:0; color:#3333=
+33; font-size:14px; line-height:24px; font-weight:300;">                   =
+                                                             Maplewood, Min=
+nesota, United States                                    </p>              =
+                  </td>                            </tr>                   =
+                                     <tr>                                <t=
+d>                                    <p style=3D"margin:0; color:#6c6c6c; =
+font-weight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>   =
+                             </td>                            </tr>        =
+                </table>                    </td>                </tr>     =
+       </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#ffffff=
+" style=3D"background-color:#ffffff; border-width:1px; border-style:solid; =
+border-color:#ececec; border-bottom: 0; padding: 20px; ">            <table=
+ border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-=
+webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lspace:0=
+pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin:0; pa=
+dding:0; width:100% !important">                <tr>                    <td=
+ valign=3D"top" width=3D"70" style=3D"width:70px; vertical-align: top; padd=
+ing-bottom: 10px;">                        <img width=3D"50" src=3D"https:/=
+/rit-csm.symplicity.com/si_ei/images/employers_placeholder.png" alt=3D"S&P =
+Global logo" style=3D"text-align:center; border-radius:4px;" />            =
+        </td>                    <td valign=3D"top" style=3D"vertical-align=
+: top;">                        <table border=3D"0" cellpadding=3D"0" cells=
+pacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:100%; -ms-tex=
+t-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt; border-coll=
+apse:collapse !important; margin:0; padding:0; width:100% !important">     =
+                       <tr>                                <td>            =
+                        <p style=3D"margin:0; font-size:16px; line-height:2=
+4px;"><a href=3D"https://rit-csm.symplicity.com/students/?jobRedirectUrl=3D=
+L2FwcC9qb2JzL2RldGFpbC9hMzllMDFmNDliYmUyNGE0YjNkNDIwNDBlNDk2NmEwZg=3D=3D" s=
+tyle=3D"text-decoration:none; color:#333333;">Ratings Analytical Intern - A=
+mericas</a></p>                                </td>                       =
+     </tr>                            <tr>                                <=
+td>                                    <p style=3D"margin:0; color:#333333;=
+ font-size:14px; line-height:24px; font-weight:300;">                      =
+                  S&P Global                                    </p>       =
+                         </td>                            </tr>            =
+                                            <tr>                           =
+     <td>                                    <p style=3D"margin:0; color:#3=
+33333; font-size:14px; line-height:24px; font-weight:300;">                =
+                                                                New York, N=
+ew York, United States                                    </p>             =
+                   </td>                            </tr>                  =
+                                      <tr>                                <=
+td>                                    <p style=3D"margin:0; color:#6c6c6c;=
+ font-weight:300; font-size:13px; line-height:21px;">Co-op/Internship</p>  =
+                              </td>                            </tr>       =
+                 </table>                    </td>                </tr>    =
+        </table>        </td>    </tr>    <tr>        <td bgcolor=3D"#fffff=
+f" style=3D"background-color:#ffffff; border-width:1px; border-style:solid;=
+ border-color:#ececec; border-bottom-left-radius: 4px; border-bottom-right-=
+radius: 4px; padding: 20px; ">            <table border=3D"0" cellpadding=
+=3D"0" cellspacing=3D"0" width=3D"100%" style=3D"-webkit-text-size-adjust:1=
+00%; -ms-text-size-adjust:100%; mso-table-lspace:0pt; mso-table-rspace:0pt;=
+ border-collapse:collapse !important; margin:0; padding:0; width:100% !impo=
+rtant">                <tr>                    <td valign=3D"top" width=3D"=
+70" style=3D"width:70px; vertical-align: top; padding-bottom: 10px;">      =
+                  <img width=3D"50" src=3D"https://rit-csm.symplicity.com/s=
+i_ei/images/employers_placeholder.png" alt=3D"EY logo" style=3D"text-align:=
+center; border-radius:4px;" />                    </td>                    =
+<td valign=3D"top" style=3D"vertical-align: top;">                        <=
+table border=3D"0" cellpadding=3D"0" cellspacing=3D"0" width=3D"100%" style=
+=3D"-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; mso-table-lsp=
+ace:0pt; mso-table-rspace:0pt; border-collapse:collapse !important; margin:=
+0; padding:0; width:100% !important">                            <tr>      =
+                          <td>                                    <p style=
+=3D"margin:0; font-size:16px; line-height:24px;"><a href=3D"https://rit-csm=
+.symplicity.com/students/?jobRedirectUrl=3DL2FwcC9qb2JzL2RldGFpbC9mNjY0YzQ0=
+NjMzZTQwYWNjNjU0ZTQzNGViMTg3MDRlOA=3D=3D" style=3D"text-decoration:none; co=
+lor:#333333;">USA - Assurance - Data and Intelligence Delivery - Intern - W=
+inter 2027</a></p>                                </td>                    =
+        </tr>                            <tr>                              =
+  <td>                                    <p style=3D"margin:0; color:#3333=
+33; font-size:14px; line-height:24px; font-weight:300;">                   =
+                     EY                                    </p>            =
+                    </td>                            </tr>                 =
+                                       <tr>                                =
+<td>                                    <p style=3D"margin:0; color:#333333=
+; font-size:14px; line-height:24px; font-weight:300;">                     =
+                                                           Tampa, Florida, =
+United States                                    </p>                      =
+          </td>                            </tr>                           =
+                             <tr>                                <td>      =
+                              <p style=3D"margin:0; color:#6c6c6c; font-wei=
+ght:300; font-size:13px; line-height:21px;">Co-op/Internship</p>           =
+                     </td>                            </tr>                =
+        </table>                    </td>                </tr>            <=
+/table>        </td>    </tr></table></td>=0A</tr>=0A</tbody>=0A</table>=0A=
+<div style=3D"border-bottom: 2px solid #cccccc; text-align: left; width: 70=
+0px;"><p><span style=3D"font-family: arial, helvetica, sans-serif; font-siz=
+e: 10pt;">Rochester Institute of Technology</span><br /><span style=3D"font=
+-family: arial, helvetica, sans-serif; font-size: 10pt;">Office of Career S=
+ervices and Cooperative Education </span><br /><span style=3D"font-family: =
+arial, helvetica, sans-serif; font-size: 10pt;">Bausch and Lomb Center</spa=
+n><br /><span style=3D"font-family: arial, helvetica, sans-serif; font-size=
+: 10pt;">57 Lomb Memorial Drive </span><br /><span style=3D"font-family: ar=
+ial, helvetica, sans-serif; font-size: 10pt;">Rochester, NY 14623-5603</spa=
+n><br /><span style=3D"font-family: arial, helvetica, sans-serif; font-size=
+: 10pt;">585-475-2301</span><br /><span style=3D"font-family: arial, helvet=
+ica, sans-serif; font-size: 10pt;"><a href=3D"https://www.rit.edu/careerser=
+vices" target=3D"_blank">www.rit.edu/careerservices</a> </span></p>
+<p>&nbsp;</p></div>=0A<div><table cellspacing=3D"0" cellpadding=3D"0" borde=
+r=3D"0" width=3D"100%"><tr><td style=3D"text-align:center; line-height: 20p=
+x; padding: 20px 10px; font-size: 13px;"><a href=3D'https://shibboleth-rit-=
+csm.symplicity.com/sso/students/students/app/jobs/search' style=3D'color: #=
+6c6c6c;'>Unsubscribe or Manage Preferences</a>&nbsp; &nbsp; &nbsp; &nbsp;<a=
+ href=3D"https://www.symplicity.com/support/privacy-policy" style=3D"color:=
+ #6c6c6c;">Privacy Policy</a>&nbsp; &nbsp; &nbsp; &nbsp;<a href=3D"https://=
+www.symplicity.com/support/terms-of-use" style=3D"color: #6c6c6c;">Terms</a=
+></td></tr></table></div>=0A</td>=0A</tr>=0A</tbody>=0A</table>=0A<tr><td a=
+lign=3D"center"><table width=3D'100%' style=3D'border-collapse: collapse'>=
+=0A    <tr>=0A        <td align=3D'center'><a href=3D"https://symplicity.co=
+m/career_services_manager_csm" target=3D"_blank" title=3D"Powered By Sympli=
+city"><img src=3D"https://static.symplicity.com/images/powered-by-symplicit=
+y.png"></a></td>=0A    </tr>=0A</table></td></tr>=0A</body>=0A</html>  
+--=_830cf6a2d6110cccce8d5307ba9adabd--
+

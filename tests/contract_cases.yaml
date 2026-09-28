@@ -48,6 +48,15 @@ titles:
   - ["Infrastructure Private Equity Intern", false]
   # but the IT sense of the same words survives
   - ["Private Cloud Infrastructure Intern", true]
+  # Real titles from the first alert. The Co-Op ones use en dashes, the
+  # Software Engineering one a hyphen, in the same batch from one employer.
+  - ["Co-Op \u2013 IT \u2013 ServiceNow Platform Administration (Spring-Summer 2027)", true]
+  - ["Co-Op \u2013 IT \u2013 Technical Security (Spring-Summer 2027)", true]
+  - ["Quantum Infrastructure Intern 2027 - SRE", true]
+  - ["Engineering Product Management Specialist I (Intern)", false]
+  - ["Smart Buildings Fire & Life Safety Solutions Sales Intern", false]
+  - ["2027 Enterprise Finance Intern", false]
+  - ["Ratings Analytical Intern - Americas", false]
 
 # The level, where a feed publishes schema.org employmentType. A hint, not a
 # verdict. [title, employmentType, expected]
