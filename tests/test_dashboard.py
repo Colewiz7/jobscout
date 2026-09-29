@@ -6,14 +6,23 @@ import pytest
 
 from jobscout.dashboard import DashboardServer, DemoStore, load_profile
 
-AUTH = {"X-authentik-username": "cole"}
+AUTH = {
+    "X-authentik-username": "cole",
+    "X-authentik-meta-app": "jobseer",
+    "X-authentik-meta-outpost": "authentik Embedded Outpost",
+}
 
 
 @pytest.fixture
 def dashboard():
     store = DemoStore()
     try:
-        server = DashboardServer(("127.0.0.1", 0), store, require_auth=True)
+        server = DashboardServer(
+            ("127.0.0.1", 0),
+            store,
+            require_auth=True,
+            authentik_user="cole",
+        )
     except PermissionError:
         pytest.skip("the test sandbox does not permit a loopback listener")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -62,6 +71,32 @@ def test_v1_api_requires_authentik(dashboard):
     response = httpx.get(f"{base}/api/v1/jobs", timeout=2)
     assert response.status_code == 401
     assert "Authentik" in response.json()["error"]
+
+
+def test_forged_username_without_outpost_metadata_is_rejected(dashboard):
+    base, _ = dashboard
+    response = httpx.get(
+        f"{base}/api/v1/jobs",
+        headers={"X-authentik-username": "cole"},
+        timeout=2,
+    )
+    assert response.status_code == 401
+
+
+def test_wrong_authentik_application_or_user_is_rejected(dashboard):
+    base, _ = dashboard
+    wrong_app = httpx.get(
+        f"{base}/api/v1/jobs",
+        headers={**AUTH, "X-authentik-meta-app": "another-app"},
+        timeout=2,
+    )
+    wrong_user = httpx.get(
+        f"{base}/api/v1/jobs",
+        headers={**AUTH, "X-authentik-username": "someone-else"},
+        timeout=2,
+    )
+    assert wrong_app.status_code == 401
+    assert wrong_user.status_code == 401
 
 
 def test_profile_is_not_shipped_in_phase_one(dashboard):

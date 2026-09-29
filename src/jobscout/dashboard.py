@@ -165,7 +165,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _auth_user(self) -> str | None:
         if not self.app.require_auth:
             return "demo"
-        return self.headers.get("X-authentik-username") or None
+        # Authentik 2026.5's proxy provider does not expose a signed identity
+        # JWT. Its documented contract is a set of X-authentik-* headers, so
+        # accept those only when the request also carries the provider metadata
+        # injected by the expected outpost/application. Kubernetes networking
+        # separately prevents any pod except that outpost from reaching us.
+        username = self.headers.get("X-authentik-username", "")
+        application = self.headers.get("X-authentik-meta-app", "")
+        outpost = self.headers.get("X-authentik-meta-outpost", "")
+        if not username or application != self.app.authentik_app or not outpost:
+            return None
+        if self.app.authentik_user and not hmac.compare_digest(username, self.app.authentik_user):
+            return None
+        return username
 
     def _require_api_auth(self) -> str | None:
         user = self._auth_user()
@@ -297,10 +309,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store, *, require_auth: bool = True):
+    def __init__(
+        self,
+        address,
+        store,
+        *,
+        require_auth: bool = True,
+        authentik_app: str = "jobseer",
+        authentik_user: str | None = None,
+    ):
         super().__init__(address, DashboardHandler)
         self.store = store
         self.require_auth = require_auth
+        self.authentik_app = authentik_app
+        self.authentik_user = authentik_user
         self.csrf_token = secrets.token_urlsafe(32)
 
 
@@ -315,7 +337,13 @@ def serve(
     # structured personal data until the Authentik path is deployment-verified.
     del profile_path
     store = DemoStore() if demo else PostgresStore(dsn or "")
-    server = DashboardServer((host, port), store, require_auth=not demo)
+    server = DashboardServer(
+        (host, port),
+        store,
+        require_auth=not demo,
+        authentik_app=os.environ.get("JOBSCOUT_AUTHENTIK_APP", "jobseer"),
+        authentik_user=os.environ.get("JOBSCOUT_AUTHENTIK_USER"),
+    )
     log.info("application workspace listening on http://%s:%d", host, port)
     try:
         server.serve_forever()
