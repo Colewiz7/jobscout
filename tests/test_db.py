@@ -23,6 +23,10 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists documents")
+        cur.execute("drop table if exists answer_templates")
+        cur.execute("drop table if exists profile_fields")
+        cur.execute("drop table if exists saved_views")
         cur.execute("drop table if exists application_status_history")
         cur.execute("drop table if exists application_states")
         cur.execute("drop table if exists board_notices")
@@ -52,6 +56,8 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
         assert cur.fetchall() == [
             {"version": 1, "name": "baseline"},
             {"version": 2, "name": "inbox_descriptions_and_status_history"},
+            {"version": 3, "name": "saved_views"},
+            {"version": 4, "name": "quick_fill"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -258,3 +264,33 @@ def test_application_status_changes_are_timestamped(conn):
             {"from_status": "new", "to_status": "saved"},
             {"from_status": "saved", "to_status": "queued"},
         ]
+
+
+def test_saved_views_are_server_backed_and_upsert_by_name(conn):
+    first = database.save_view(
+        conn,
+        name="Remote new",
+        filters={"status": "new", "remote": True, "ignored": "no"},
+        sort="newest",
+    )
+    second = database.save_view(
+        conn,
+        name="Remote new",
+        filters={"status": "saved", "remote": True},
+        sort="score",
+    )
+    assert first["id"] == second["id"]
+    assert database.saved_views(conn)[0]["filters"] == {"status": "saved", "remote": True}
+    assert database.delete_saved_view(conn, first["id"])
+    assert database.saved_views(conn) == []
+
+
+def test_dashboard_warns_about_another_recent_company_application(conn):
+    first = _p(title="Cloud Intern", url="https://acme.example/one")
+    second = _p(title="Platform Intern", url="https://acme.example/two")
+    database.upsert_open(conn, [first, second])
+    database.save_application_state(conn, first.dedupe_key, "applied", "")
+
+    rows = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}
+    assert rows[second.dedupe_key]["recent_company_application_at"] is not None
+    assert rows[first.dedupe_key]["recent_company_application_at"] is None

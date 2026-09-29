@@ -26,4 +26,7 @@ curl -i https://jobs.example.invalid/api/v1/session
 
 Also verify that a direct request from another namespace cannot reach the
 dashboard Service. Until these checks pass in the GitOps deployment, the
-application deliberately has no `/api/v1/profile` endpoint.
+application returns 404 for `/api/v1/profile` and renders no Quick-fill UI by
+default. After every verification in the deployment runbook passes, set
+`JOBSCOUT_QUICK_FILL_ENABLED=true` on the dashboard Deployment to enable both
+as one security boundary.

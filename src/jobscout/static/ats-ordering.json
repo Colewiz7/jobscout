@@ -1,0 +1,14 @@
+{
+  "default": ["Pinned", "Identity", "Contact", "Links", "Education", "Work authorization", "Availability", "Documents", "Short answers"],
+  "greenhouse": ["Pinned", "Identity", "Contact", "Links", "Documents", "Education", "Work authorization", "Availability", "Short answers"],
+  "lever": ["Pinned", "Identity", "Contact", "Links", "Documents", "Work authorization", "Education", "Availability", "Short answers"],
+  "ashby": ["Pinned", "Identity", "Contact", "Links", "Education", "Documents", "Work authorization", "Availability", "Short answers"],
+  "workday": ["Pinned", "Identity", "Contact", "Education", "Work authorization", "Availability", "Documents", "Links", "Short answers"],
+  "_guidance": {
+    "default": "Review every value in the form; Quick-fill never submits.",
+    "greenhouse": "Recheck searchable dropdowns after pasting; they can replace their own field controls.",
+    "lever": "Leave checkboxes, radio buttons, and CAPTCHA controls for manual review.",
+    "ashby": "Confirm the success page before marking applied; a filled form is not a submission.",
+    "workday": "Tab out after pasting and confirm the field's validation has cleared."
+  }
+}

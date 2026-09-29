@@ -1,0 +1,27 @@
+{
+  "name": "Example Applicant",
+  "email": "applicant@example.invalid",
+  "phone": "",
+  "location": "",
+  "highlights": [],
+  "fields": [
+    {"key": "name", "group": "Identity", "label": "Full name", "value": "Example Applicant", "pinned": true, "sort_order": 10},
+    {"key": "email", "group": "Contact", "label": "Email", "value": "applicant@example.invalid", "pinned": true, "sort_order": 20},
+    {"key": "phone", "group": "Contact", "label": "Phone", "value": "", "pinned": false, "sort_order": 30},
+    {"key": "location", "group": "Contact", "label": "Location", "value": "", "pinned": false, "sort_order": 40},
+    {"key": "portfolio", "group": "Links", "label": "Portfolio", "value": "", "pinned": false, "sort_order": 50},
+    {"key": "github", "group": "Links", "label": "GitHub", "value": "", "pinned": false, "sort_order": 60},
+    {"key": "linkedin", "group": "Links", "label": "LinkedIn", "value": "", "pinned": false, "sort_order": 70},
+    {"key": "school", "group": "Education", "label": "School", "value": "Example University", "pinned": false, "sort_order": 80},
+    {"key": "degree", "group": "Education", "label": "Degree", "value": "B.S. Computing", "pinned": false, "sort_order": 90},
+    {"key": "graduation", "group": "Education", "label": "Graduation", "value": "Expected 2028", "pinned": false, "sort_order": 100},
+    {"key": "work_authorization", "group": "Work authorization", "label": "Work authorization", "value": "", "pinned": false, "sort_order": 110},
+    {"key": "availability", "group": "Availability", "label": "Availability", "value": "", "pinned": false, "sort_order": 120}
+  ],
+  "documents": [
+    {"id": "resume-general", "name": "General resume", "date": "2026-09-01", "url": ""}
+  ],
+  "answer_templates": [
+    {"id": "why-role", "name": "Why this role", "body": "I'm interested in {role} at {company} because…", "sort_order": 10}
+  ]
+}

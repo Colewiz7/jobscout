@@ -12,10 +12,11 @@ const remoteFilter = document.querySelector("#remote-filter");
 const savedViewName = document.querySelector("#saved-view-name");
 const snackbarRegion = document.querySelector("#snackbar-region");
 const assertiveRegion = document.querySelector("#assertive-region");
+const quickFillTrigger = document.querySelector("#quick-fill-trigger");
+const quickFillSheet = document.querySelector("#quick-fill-sheet");
 
 const ROW_HEIGHT = 72;
 const DIVIDER_HEIGHT = 32;
-const SAVED_VIEWS_KEY = "jobseer.savedViews.v1";
 const LAST_VISIT_KEY = "jobseer.inboxLastVisit";
 const allowedStatuses = new Set(["all", "new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"]);
 const allowedSorts = new Set(["score", "newest", "company"]);
@@ -31,6 +32,8 @@ const icons = {
   filter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10m-7 6h4"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
   external: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5m0-5-9 9M19 14v5H5V5h5"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
 };
 
 const pages = {
@@ -53,8 +56,11 @@ const state = {
   jobs: [], loaded: false, loading: false, error: "", csrf: "", refreshedAt: null,
   query: "", status: "new", sort: "score", source: "", remote: false, focus: false,
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, scrollTop: 0,
-  entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: readSavedViews(),
+  entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
+  quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
+  copiedByJob: new Map(), copiedKey: "", quickFillPopout: null,
 };
 
 let commandSelection = 0;
@@ -78,18 +84,6 @@ function readStoredDate(key) {
     const value = raw ? new Date(raw) : null;
     return value && !Number.isNaN(value.valueOf()) ? value : null;
   } catch { return null; }
-}
-
-function readSavedViews() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((view) => view && typeof view.name === "string").slice(0, 8) : [];
-  } catch { return []; }
-}
-
-function storeSavedViews() {
-  try { localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(state.savedViews)); }
-  catch { showSnackbar("Couldn't save the view in this browser."); }
 }
 
 function routeRoot(pathname = window.location.pathname) {
@@ -249,7 +243,7 @@ function activeFilterChips() {
 
 function savedViewsMarkup() {
   if (!state.savedViews.length) return "";
-  return `<div class="saved-views" aria-label="Saved views"><span>Views</span>${state.savedViews.map((view, index) => `<button class="saved-view interactive" type="button" data-saved-view="${index}">${escapeHtml(view.name)}</button>`).join("")}</div>`;
+  return `<div class="saved-views" aria-label="Saved views"><span>Views</span>${state.savedViews.map((view, index) => `<span class="saved-view-wrap"><button class="saved-view interactive" type="button" data-saved-view="${index}">${escapeHtml(view.name)}</button><button class="saved-view-delete interactive" type="button" data-delete-saved-view="${view.id}" aria-label="Delete ${escapeHtml(view.name)} saved view">${icons.close}</button></span>`).join("")}</div>`;
 }
 
 function initials(company) {
@@ -325,6 +319,10 @@ function detailMarkup(job) {
   const sources = sourceList(job);
   const sourceText = sources.length ? sources.join(", ") : "";
   const otherRoles = state.jobs.filter((candidate) => candidate.dedupe_key !== job.dedupe_key && candidate.company === job.company).slice(0, 5);
+  const recentDate = formatDate(job.recent_company_application_at);
+  const recentWhen = recentDate === "Today" ? "today" : recentDate === "Yesterday" ? "yesterday" : recentDate;
+  const recentCompanyWarning = recentWhen
+    ? `<p class="company-warning"><span aria-hidden="true">!</span>You applied to another ${escapeHtml(job.company)} role ${escapeHtml(recentWhen)}.</p>` : "";
   const pending = state.pending.has(job.dedupe_key);
   const description = state.descriptions.get(job.dedupe_key)?.value;
   return `<article class="job-detail" aria-labelledby="job-title">
@@ -336,7 +334,7 @@ function detailMarkup(job) {
       <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", statusLabel(job.status || "new"))}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
       ${descriptionMarkup(job)}
       <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(statusLabel(job.status || "new"))}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
-      ${otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2><div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
+      ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
   </article>`;
 }
@@ -354,7 +352,7 @@ function inboxMarkup() {
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();
   return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}" aria-label="Inbox">
-    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs">${icons.filter}</button><label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
+    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs">${icons.filter}</button><label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
       <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true">${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
     <main class="reading-pane" id="inbox-reading-pane">${detailMarkup(selectedJob)}</main>
   </section>`;
@@ -412,6 +410,7 @@ function renderInbox({ focus = false } = {}) {
     renderVirtualRows();
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
+  if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) renderQuickFill();
   if (focus) document.querySelector("#job-title, .inbox-list h1")?.focus({ preventScroll: true });
 }
 
@@ -453,12 +452,22 @@ async function loadInbox() {
     if (!sessionResponse.ok) throw new Error((await sessionResponse.json().catch(() => ({}))).error || "The session could not be verified.");
     const session = await sessionResponse.json();
     state.csrf = session.csrf_token || "";
-    const jobsResponse = await fetch("/api/v1/jobs", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    state.quickFillEnabled = Boolean(session.features?.quick_fill);
+    quickFillTrigger.hidden = !state.quickFillEnabled;
+    quickFillSheet.hidden = !state.quickFillEnabled;
+    if (state.quickFillEnabled && !state.quickFillProfile && !state.quickFillError) loadQuickFillData();
+    if (!state.quickFillEnabled) closeQuickFill({ restoreFocus: false });
+    const [jobsResponse, viewsResponse] = await Promise.all([
+      fetch("/api/v1/jobs", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+      fetch("/api/v1/saved-views", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+    ]);
     if (!jobsResponse.ok) throw new Error((await jobsResponse.json().catch(() => ({}))).error || "The job list did not respond.");
-    const payload = await jobsResponse.json();
+    if (!viewsResponse.ok) throw new Error((await viewsResponse.json().catch(() => ({}))).error || "Saved views did not respond.");
+    const [payload, viewsPayload] = await Promise.all([jobsResponse.json(), viewsResponse.json()]);
     const wait = state.skeletonAt ? Math.max(0, 500 - (performance.now() - state.skeletonAt)) : 0;
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+    state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
     try { localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString()); } catch { /* Storage is optional. */ }
@@ -469,6 +478,207 @@ async function loadInbox() {
     state.loading = false;
     if (routeRoot() === "inbox") renderInbox();
   }
+}
+
+function currentJob() {
+  return state.jobs.find((job) => job.dedupe_key === state.selectedKey) || null;
+}
+
+function detectedAts(job = currentJob()) {
+  const known = new Set(["greenhouse", "lever", "ashby", "workday"]);
+  try {
+    const host = new URL(job?.url || "").hostname.toLowerCase();
+    if (host.includes("greenhouse.io")) return "greenhouse";
+    if (host.includes("lever.co")) return "lever";
+    if (host.includes("ashbyhq.com")) return "ashby";
+    if (host.includes("myworkdayjobs.com")) return "workday";
+  } catch { /* Some imported jobs do not have a valid application URL yet. */ }
+  return sourceList(job || {}).find((source) => known.has(source.toLowerCase()))?.toLowerCase() || "default";
+}
+
+function templateValue(body, job = currentJob()) {
+  const values = {
+    company: job?.company || "",
+    role: job?.title || "",
+    term: job?.terms || "",
+    location: job?.location || "",
+  };
+  return String(body || "").replace(/\{(company|role|term|location)\}/g, (_, key) => values[key]);
+}
+
+function quickFillGroups() {
+  const profile = state.quickFillProfile || {};
+  const query = state.quickFillQuery.trim().toLowerCase();
+  const fields = (Array.isArray(profile.fields) ? profile.fields : [])
+    .filter((field) => String(field.value || "").trim())
+    .map((field) => ({
+      key: `field:${field.key}`, label: field.label || field.key,
+      value: String(field.value), group: field.group || "Identity", pinned: Boolean(field.pinned),
+    }));
+  const documents = (Array.isArray(profile.documents) ? profile.documents : [])
+    .filter((document) => document?.name)
+    .map((document) => ({
+      key: `document:${document.id}`, label: document.name,
+      value: String(document.url || document.name), group: "Documents",
+      detail: document.date ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(`${document.date}T00:00:00`)) : "",
+    }));
+  const templates = (Array.isArray(profile.answer_templates) ? profile.answer_templates : [])
+    .filter((template) => String(template?.body || "").trim())
+    .map((template) => {
+      const value = templateValue(template.body);
+      return { key: `template:${template.id}`, label: template.name, value, group: "Short answers", detail: `${new Intl.NumberFormat().format(value.length)} characters` };
+    });
+  const all = [...fields, ...documents, ...templates];
+  const order = state.atsOrdering[detectedAts()] || state.atsOrdering.default || [];
+  const groups = [];
+  const candidates = [
+    ["Pinned", fields.filter((item) => item.pinned)],
+    ...order.filter((name) => name !== "Pinned").map((name) => [name, all.filter((item) => item.group === name && !item.pinned)]),
+  ];
+  for (const [name, items] of candidates) {
+    const visible = items.filter((item) => !query || `${item.label} ${item.value}`.toLowerCase().includes(query));
+    if (visible.length) groups.push({ name, items: visible });
+  }
+  state.quickFillItems = groups.flatMap((group) => group.items);
+  return groups;
+}
+
+function quickFillInnerMarkup({ popout = false } = {}) {
+  const groups = quickFillGroups();
+  const ats = detectedAts();
+  let itemIndex = 0;
+  const jobKey = currentJob()?.dedupe_key || "none";
+  const tracked = state.copiedByJob.get(jobKey) || new Set();
+  const content = groups.map((group, groupIndex) => {
+    const rows = group.items.map((item, index) => {
+      const flatIndex = itemIndex;
+      itemIndex += 1;
+      const copied = state.copiedKey === item.key;
+      const wasCopied = tracked.has(item.key);
+      const shortcut = index < 9 ? `<span class="copy-shortcut" aria-hidden="true">${index + 1}</span>` : "";
+      return `<button class="copy-row interactive${copied ? " is-copied" : ""}" type="button" data-copy-index="${flatIndex}" data-tracked="${wasCopied}" tabindex="${flatIndex === 0 ? "0" : "-1"}"><span class="copy-row-copy"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.detail || item.value)}</span></span><span class="copy-row-icon" aria-hidden="true">${copied || wasCopied ? icons.check : shortcut || icons.copy}</span></button>`;
+    }).join("");
+    return `<section class="quick-fill-group" aria-labelledby="quick-fill-group-${groupIndex}"><h3 id="quick-fill-group-${groupIndex}">${escapeHtml(group.name)}</h3>${rows}</section>`;
+  }).join("");
+  const status = ats === "default" ? "Standard order" : `${ats.slice(0, 1).toUpperCase()}${ats.slice(1)} order`;
+  const guidance = state.atsOrdering._guidance?.[ats] || state.atsOrdering._guidance?.default || "";
+  return `<div class="quick-fill-header"><div><h2>Quick-fill</h2><p>${escapeHtml(status)}</p></div><button class="icon-button interactive" type="button" data-quick-fill-popout aria-label="Pop out Quick-fill" ${popout ? "hidden" : ""}>${icons.external}</button><button class="icon-button interactive" type="button" data-quick-fill-close aria-label="Close Quick-fill">${icons.close}</button></div>
+    <label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>
+    ${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || '<p class="quick-fill-empty">No filled fields match this search.</p>'}</div>`;
+}
+
+function bindQuickFillSurface(root, { popout = false } = {}) {
+  root.addEventListener("click", (event) => {
+    const copy = event.target.closest("[data-copy-index]");
+    if (copy) { copyQuickFillItem(Number(copy.dataset.copyIndex)); return; }
+    if (event.target.closest("[data-quick-fill-popout]")) { popOutQuickFill(); return; }
+    if (event.target.closest("[data-quick-fill-close]")) {
+      if (popout) state.quickFillPopout?.close(); else closeQuickFill();
+    }
+  });
+  root.addEventListener("input", (event) => {
+    if (!event.target.matches("[id^='quick-fill-search-']")) return;
+    state.quickFillQuery = event.target.value;
+    renderQuickFill();
+    const search = (popout ? state.quickFillPopout?.document : document)?.querySelector(`#${event.target.id}`);
+    search?.focus(); search?.setSelectionRange(state.quickFillQuery.length, state.quickFillQuery.length);
+  });
+  root.addEventListener("keydown", (event) => {
+    const row = event.target.closest("[data-copy-index]");
+    if (!row) return;
+    const rows = [...root.querySelectorAll("[data-copy-index]")];
+    const index = rows.indexOf(row);
+    const next = event.key === "ArrowDown" ? Math.min(rows.length - 1, index + 1)
+      : event.key === "ArrowUp" ? Math.max(0, index - 1)
+      : event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : -1;
+    if (next >= 0) {
+      event.preventDefault(); rows.forEach((item, cursor) => { item.tabIndex = cursor === next ? 0 : -1; }); rows[next].focus();
+    } else if (event.key === "Enter") { event.preventDefault(); copyQuickFillItem(Number(row.dataset.copyIndex)); }
+  });
+}
+
+function renderQuickFill() {
+  if (!state.quickFillEnabled) return;
+  quickFillSheet.innerHTML = quickFillInnerMarkup();
+  quickFillSheet.setAttribute("aria-hidden", state.quickFillOpen ? "false" : "true");
+  quickFillTrigger.setAttribute("aria-expanded", String(state.quickFillOpen));
+  quickFillTrigger.setAttribute("aria-label", `${state.quickFillOpen ? "Close" : "Open"} Quick-fill`);
+  if (state.quickFillPopout && !state.quickFillPopout.closed) {
+    const popoutSheet = state.quickFillPopout.document.querySelector("#quick-fill-sheet");
+    if (popoutSheet) popoutSheet.innerHTML = quickFillInnerMarkup({ popout: true });
+  }
+}
+
+async function loadQuickFillData() {
+  try {
+    const [profileResponse, orderResponse] = await Promise.all([
+      fetch("/api/v1/profile", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+      fetch("/static/ats-ordering.json", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+    ]);
+    if (!profileResponse.ok) throw new Error((await profileResponse.json().catch(() => ({}))).error || "Quick-fill data did not respond.");
+    if (!orderResponse.ok) throw new Error("ATS field ordering did not respond.");
+    state.quickFillProfile = (await profileResponse.json()).profile || {};
+    state.atsOrdering = await orderResponse.json();
+    state.quickFillError = "";
+  } catch (error) {
+    state.quickFillError = error instanceof Error ? error.message : "Quick-fill data did not respond.";
+  }
+  renderQuickFill();
+}
+
+function openQuickFill() {
+  if (!state.quickFillEnabled) return;
+  state.quickFillOpen = true;
+  renderQuickFill();
+  requestAnimationFrame(() => quickFillSheet.querySelector("input")?.focus());
+}
+
+function closeQuickFill({ restoreFocus = true } = {}) {
+  state.quickFillOpen = false;
+  quickFillSheet.setAttribute("aria-hidden", "true");
+  quickFillTrigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && !quickFillTrigger.hidden) quickFillTrigger.focus();
+}
+
+async function copyQuickFillItem(index) {
+  const item = state.quickFillItems[index];
+  if (!item) return;
+  try {
+    await navigator.clipboard.writeText(item.value);
+  } catch {
+    const fallback = document.createElement("textarea");
+    fallback.className = "clipboard-fallback";
+    fallback.value = item.value;
+    fallback.setAttribute("aria-label", `${item.label}; press Control C to copy`);
+    document.body.append(fallback);
+    fallback.select();
+    showSnackbar("Couldn't copy. Text selected.");
+    setTimeout(() => fallback.remove(), 6000);
+    return;
+  }
+  const jobKey = currentJob()?.dedupe_key || "none";
+  if (!state.copiedByJob.has(jobKey)) state.copiedByJob.set(jobKey, new Set());
+  state.copiedByJob.get(jobKey).add(item.key);
+  state.copiedKey = item.key;
+  renderQuickFill();
+  showSnackbar(`Copied ${item.label.toLowerCase()}.`);
+  setTimeout(() => { if (state.copiedKey === item.key) { state.copiedKey = ""; renderQuickFill(); } }, 1500);
+}
+
+async function popOutQuickFill() {
+  if (!state.quickFillEnabled) return;
+  let target;
+  try {
+    if (window.documentPictureInPicture?.requestWindow) target = await window.documentPictureInPicture.requestWindow({ width: 380, height: 640 });
+    else target = window.open("", "jobseer-quick-fill", "popup,width=380,height=640");
+  } catch { target = window.open("", "jobseer-quick-fill", "popup,width=380,height=640"); }
+  if (!target) { showSnackbar("The browser blocked the Quick-fill window."); return; }
+  target.document.head.innerHTML = `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quick-fill — JobSeer</title><link rel="stylesheet" href="/static/tokens.css"><link rel="stylesheet" href="/static/app.css">`;
+  target.document.body.className = "quick-fill-popout";
+  target.document.body.innerHTML = `<aside class="quick-fill-sheet" id="quick-fill-sheet" aria-label="Quick-fill" aria-hidden="false">${quickFillInnerMarkup({ popout: true })}</aside>`;
+  state.quickFillPopout = target;
+  bindQuickFillSurface(target.document.body, { popout: true });
+  target.addEventListener("pagehide", () => { if (state.quickFillPopout === target) state.quickFillPopout = null; }, { once: true });
 }
 
 function renderCommands() {
@@ -625,17 +835,59 @@ function clearAllFilters() {
 function applySavedView(index) {
   const view = state.savedViews[index];
   if (!view) return;
-  state.query = view.query || ""; state.status = allowedStatuses.has(view.status) ? view.status : "all"; state.sort = allowedSorts.has(view.sort) ? view.sort : "score"; state.source = view.source || ""; state.remote = Boolean(view.remote); state.scrollTop = 0; syncInboxUrl(); renderInbox();
+  const filters = view.filters || {};
+  state.query = filters.query || ""; state.status = allowedStatuses.has(filters.status) ? filters.status : "all"; state.sort = allowedSorts.has(view.sort) ? view.sort : "score"; state.source = filters.source || ""; state.remote = Boolean(filters.remote); state.scrollTop = 0; syncInboxUrl(); renderInbox();
 }
 
-function saveCurrentView() {
+async function saveCurrentView() {
   const name = savedViewName.value.trim();
   if (!name) { savedViewName.focus(); savedViewName.setAttribute("aria-invalid", "true"); return; }
   savedViewName.removeAttribute("aria-invalid");
-  const view = { name, query: state.query, status: state.status, sort: state.sort, source: state.source, remote: state.remote };
-  const existing = state.savedViews.findIndex((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
-  if (existing >= 0) state.savedViews[existing] = view; else state.savedViews.push(view);
-  state.savedViews = state.savedViews.slice(-8); storeSavedViews(); filterDialog.close(); renderInbox(); showSnackbar(`Saved view “${name}”.`);
+  try {
+    const response = await fetch("/api/v1/saved-views", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ name, filters: { query: state.query, status: state.status, source: state.source, remote: state.remote }, sort: state.sort, pinned: true }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be saved.");
+    const saved = (await response.json()).saved_view;
+    const existing = state.savedViews.findIndex((candidate) => candidate.id === saved.id);
+    if (existing >= 0) state.savedViews[existing] = saved; else state.savedViews.push(saved);
+    filterDialog.close(); renderInbox(); showSnackbar(`Saved view “${name}”.`);
+  } catch (error) {
+    showSnackbar(error instanceof Error ? error.message : "The view could not be saved.");
+  }
+}
+
+async function deleteSavedView(viewId) {
+  const index = state.savedViews.findIndex((view) => view.id === viewId);
+  const removed = state.savedViews[index];
+  const response = await fetch(`/api/v1/saved-views/${viewId}`, {
+    method: "DELETE", credentials: "same-origin",
+    headers: { "X-CSRF-Token": state.csrf, Accept: "application/json" },
+  });
+  if (!response.ok) { showSnackbar((await response.json().catch(() => ({}))).error || "The view could not be deleted."); return; }
+  state.savedViews = state.savedViews.filter((view) => view.id !== viewId);
+  renderInbox();
+  requestAnimationFrame(() => {
+    const target = document.querySelectorAll("[data-saved-view]")[Math.min(index, state.savedViews.length - 1)] || document.querySelector("[data-open-filters]");
+    target?.focus();
+  });
+  showSnackbar("Saved view deleted.", { action: "Undo", onAction: () => restoreSavedView(removed), duration: 6000 });
+}
+
+async function restoreSavedView(view) {
+  if (!view) return;
+  try {
+    const response = await fetch("/api/v1/saved-views", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ name: view.name, filters: view.filters, sort: view.sort, pinned: view.pinned }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be restored.");
+    state.savedViews.push((await response.json()).saved_view);
+    renderInbox(); showSnackbar("Saved view restored.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The view could not be restored."); }
 }
 
 function showSnackbar(message, { action = "", onAction = null, duration = 4000 } = {}) {
@@ -661,8 +913,20 @@ function handleGlobalKeydown(event) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && routeRoot() === "inbox" && shortcutScopeAllows(event)) { event.preventDefault(); undoLastDecision(); return; }
   if (commandDialog.open || shortcutDialog.open || filterDialog.open || !shortcutScopeAllows(event)) return;
   if (event.key === "?") { event.preventDefault(); openShortcuts(document.activeElement); return; }
+  const now = performance.now();
+  const key = event.key.toLowerCase();
+  if (event.key === "Escape" && state.quickFillOpen) { event.preventDefault(); closeQuickFill(); return; }
+  if (state.quickFillEnabled && now > goChordUntil && key === "c") { event.preventDefault(); state.quickFillOpen ? closeQuickFill() : openQuickFill(); return; }
+  if (state.quickFillEnabled && now > goChordUntil && key === "p") { event.preventDefault(); popOutQuickFill(); return; }
+  if (state.quickFillOpen && key === "/") { event.preventDefault(); quickFillSheet.querySelector("input")?.focus(); return; }
+  if (state.quickFillOpen && /^[1-9]$/.test(key)) {
+    const activeGroup = document.activeElement?.closest(".quick-fill-group") || quickFillSheet.querySelector(".quick-fill-group");
+    const rows = [...(activeGroup?.querySelectorAll("[data-copy-index]") || [])];
+    const row = rows[Number(key) - 1];
+    if (row) { event.preventDefault(); copyQuickFillItem(Number(row.dataset.copyIndex)); }
+    return;
+  }
   if (routeRoot() === "inbox" && state.loaded) {
-    const key = event.key.toLowerCase();
     if (key === "/") { event.preventDefault(); document.querySelector("#job-search")?.focus(); return; }
     if (key === "j" || key === "k") { event.preventDefault(); moveSelection(key === "j" ? 1 : -1); return; }
     if (event.key === "Enter") { event.preventDefault(); document.querySelector("#job-title")?.focus({ preventScroll: true }); return; }
@@ -677,8 +941,6 @@ function handleGlobalKeydown(event) {
     }
     if (key === "u") { event.preventDefault(); undoLastDecision(); return; }
   }
-  const now = performance.now();
-  const key = event.key.toLowerCase();
   if (key === "g") { goChordUntil = now + 1000; return; }
   if (now <= goChordUntil) {
     const routes = { i: "/inbox", q: "/queue", t: "/tracker", c: "/companies", p: "/profile" };
@@ -727,11 +989,14 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-clear-all-filters]")) { clearAllFilters(); return; }
   const savedView = event.target.closest("[data-saved-view]");
   if (savedView) { applySavedView(Number(savedView.dataset.savedView)); return; }
+  const deleteView = event.target.closest("[data-delete-saved-view]");
+  if (deleteView) { deleteSavedView(Number(deleteView.dataset.deleteSavedView)); return; }
   if (event.target.closest("[data-exit-focus]")) { state.focus = false; syncInboxUrl(); renderInbox({ focus: true }); return; }
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
   if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey); renderInbox(); return; }
   if (event.target.closest("[data-open-command]")) { openCommand(event.target.closest("[data-open-command]")); return; }
   if (event.target.closest("[data-open-shortcuts]")) { openShortcuts(event.target.closest("[data-open-shortcuts]")); return; }
+  if (event.target.closest("[data-quick-fill-toggle]")) { state.quickFillOpen ? closeQuickFill() : openQuickFill(); return; }
   const close = event.target.closest("[data-close-dialog]");
   if (close) { close.closest("dialog")?.close(); return; }
   const command = event.target.closest("[data-command]");
@@ -776,6 +1041,8 @@ for (const dialog of [commandDialog, shortcutDialog, filterDialog]) {
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
 }
+
+bindQuickFillSurface(quickFillSheet);
 
 window.addEventListener("popstate", (event) => { state.scrollTop = Number(event.state?.inboxScroll) || 0; renderRoute({ focus: true }); });
 window.addEventListener("resize", () => { if (filterDialog.open) filterDialog.close(); if (routeRoot() === "inbox") renderVirtualRows(); });

@@ -160,15 +160,32 @@ For a database-free visual preview:
 python -m jobscout dashboard --demo
 ```
 
-The Phase 1 workspace provides the responsive Carrel shell, history-aware
-routes, navigation rail or compact bottom bar, command palette and scoped
-keyboard navigation. API reads require the Authentik forward-auth username
-header. Writes additionally require a same-origin CSRF cookie and header.
+The workspace provides the responsive Carrel shell and a virtualized Inbox for
+triage. Saved views are stored in Postgres, application decisions are
+optimistic with rollback, and the reading pane fetches provider descriptions
+on demand. API reads require the Authentik forward-auth username header.
+Writes additionally require a same-origin CSRF cookie and header.
 
-`config/profile.yaml` is a non-secret shape for local development. Production
+`config/profile.seed.json` is fictional, non-secret local data. Production
 values belong in a private `JOBSCOUT_PROFILE` mount or `JOBSCOUT_PROFILE_*`
-environment variables. The dashboard deliberately does not expose a profile
-API until the protected ingress is deployment-verified.
+environment variables. Profile API and Quick-fill are one feature boundary:
+they return 404 and render no UI unless `JOBSCOUT_QUICK_FILL_ENABLED=true`.
+Use the flag only in local development until the protected ingress verification
+passes:
+
+```bash
+JOBSCOUT_QUICK_FILL_ENABLED=true python -m jobscout dashboard --demo
+```
+
+Quick-fill is copy-only and never submits an application. Its editable ATS
+field orders and review notes live in `src/jobscout/static/ats-ordering.json`.
+
+The repeatable Phase 2 browser audit uses a deterministic 2,000-job fixture and
+the system Chromium, with no added package dependency:
+
+```bash
+node scripts/audit-phase2.mjs
+```
 
 Database schema changes are not run by the scout or dashboard processes. An
 Argo CD PreSync Job runs `python -m jobscout migrate` under a PostgreSQL
