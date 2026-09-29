@@ -187,6 +187,20 @@ the system Chromium, with no added package dependency:
 node scripts/audit-phase2.mjs
 ```
 
+Run the full test suite, including PostgreSQL integration tests, in a disposable
+Postgres 16 container with either Podman or Docker:
+
+```bash
+make test-pg
+```
+
+The target auto-detects a running container engine, publishes PostgreSQL only
+on loopback, and removes the container on success, failure, or interruption.
+Set `CONTAINER_RUNTIME=podman` or `CONTAINER_RUNTIME=docker` to choose one.
+
+Approved requirements deferred to later phases are tracked in
+`docs/product-roadmap.md`.
+
 Database schema changes are not run by the scout or dashboard processes. An
 Argo CD PreSync Job runs `python -m jobscout migrate` under a PostgreSQL
 advisory lock. See `docs/migrations.md` for the CNPG backup and real-dump test
