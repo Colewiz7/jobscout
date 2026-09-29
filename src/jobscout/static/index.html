@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f8faf4">
+  <title>jobscout — application desk</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-mobile-view="jobs">
+  <a class="skip-link" href="#job-detail">Skip to selected job</a>
+
+  <header class="top-app-bar">
+    <a class="brand" href="/" aria-label="JobScout home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5v-13Zm4 2.25h8M8 12h8m-8 4.25h5"/></svg>
+      </span>
+      <span><strong>jobscout</strong><small>application desk</small></span>
+    </a>
+    <div class="header-summary" aria-label="Application summary">
+      <span><strong id="ready-count">—</strong> ready</span>
+      <span><strong id="active-count">—</strong> in progress</span>
+    </div>
+    <div class="header-actions">
+      <span class="sync-state"><i aria-hidden="true"></i><span id="sync-label">loading jobs</span></span>
+      <button class="icon-button" id="theme-button" type="button" aria-label="Change color theme" title="Change theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2m-3.64-6.36-1.42 1.42M8.06 16.94l-1.42 1.42m0-12.72 1.42 1.42m7.88 9.88 1.42 1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>
+      </button>
+      <div class="avatar" aria-hidden="true">CW</div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="queue-pane" aria-label="Job queue">
+      <div class="queue-heading">
+        <div>
+          <p class="eyebrow">your queue</p>
+          <h1>Jobs worth a look</h1>
+        </div>
+        <span class="count-badge" id="job-count">0</span>
+      </div>
+
+      <label class="search-box" for="job-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+        <input id="job-search" type="search" placeholder="Search jobs, companies, locations" autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+
+      <div class="filter-row" role="group" aria-label="Filter jobs">
+        <button class="filter-chip selected" type="button" data-filter="all">All</button>
+        <button class="filter-chip" type="button" data-filter="new">New</button>
+        <button class="filter-chip" type="button" data-filter="saved">Saved</button>
+        <button class="filter-chip" type="button" data-filter="active">Applied</button>
+      </div>
+
+      <div class="queue-tools">
+        <p id="queue-description">Best match first</p>
+        <label>Sort
+          <select id="job-sort">
+            <option value="score">Best match</option>
+            <option value="newest">Newest</option>
+            <option value="company">Company</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="job-list" id="job-list" role="listbox" aria-label="Jobs"></div>
+    </aside>
+
+    <section class="detail-pane" id="job-detail" tabindex="-1">
+      <div class="detail-loading" id="detail-empty">
+        <div class="empty-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path d="M12 8h24a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Zm7 9h10M19 24h14m-14 7h8"/></svg>
+        </div>
+        <h2>Choose a job to start</h2>
+        <p>Its match signals, tailored material, notes, and application actions will stay together here.</p>
+      </div>
+      <div id="detail-content" hidden></div>
+    </section>
+
+    <aside class="kit-pane" id="application-kit" aria-label="Application kit">
+      <div class="kit-heading">
+        <div>
+          <p class="eyebrow">application kit</p>
+          <h2>Ready to paste</h2>
+        </div>
+        <button class="tonal-button compact" id="copy-all" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          Copy all
+        </button>
+      </div>
+      <p class="kit-intro">Click any row to copy it. Tailored material updates with the selected role.</p>
+      <div id="kit-content" class="kit-content"></div>
+    </aside>
+  </main>
+
+  <nav class="mobile-nav" aria-label="Workspace views">
+    <button class="selected" type="button" data-view="jobs">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M5 12h14M5 19h9"/></svg>
+      Jobs
+    </button>
+    <button type="button" data-view="detail">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10a2 2 0 0 1 2 2v16l-7-4-7 4V5a2 2 0 0 1 2-2Z"/></svg>
+      Apply
+    </button>
+    <button type="button" data-view="kit">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8m-7 0v3h6V4m-8 3h10a2 2 0 0 1 2 2v11H5V9a2 2 0 0 1 2-2Zm2 5h6m-6 4h4"/></svg>
+      Kit
+    </button>
+  </nav>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
