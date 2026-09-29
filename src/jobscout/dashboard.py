@@ -1,6 +1,7 @@
 """Dependency-free HTTP boundary for the JobSeer application workspace."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import hmac
 import json
@@ -101,6 +102,11 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.profile_data(conn)
+
+    def save_profile(self, payload: dict) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.replace_profile_data(conn, payload)
 
     def healthy(self) -> bool:
         try:
@@ -246,6 +252,7 @@ class DemoStore:
         self._saved_views: list[dict] = []
         self._next_view_id = 1
         self._profile_path = profile_path or DEFAULT_PROFILE
+        self._profile = load_profile(self._profile_path)
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         return [dict(row) for row in self.rows if include_closed or not row["closed"]]
@@ -291,7 +298,11 @@ class DemoStore:
         return len(self._saved_views) != before
 
     def profile(self) -> dict:
-        return load_profile(self._profile_path)
+        return copy.deepcopy(self._profile)
+
+    def save_profile(self, payload: dict) -> dict:
+        self._profile = database.normalize_profile_data(payload)
+        return copy.deepcopy(self._profile)
 
     def healthy(self) -> bool:
         return True
@@ -574,6 +585,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the view. Retry shortly.")
             return
         self._json({"saved_view": saved}, HTTPStatus.CREATED)
+
+    def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path != "/api/v1/profile":
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if self._require_api_auth() is None:
+            return
+        if not self.app.quick_fill_enabled:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if not self._same_origin() or not self._valid_csrf():
+            self._error(HTTPStatus.FORBIDDEN, "Security token missing or expired. Reload and retry.")
+            return
+        try:
+            payload = self._read_json()
+            profile = self.app.store.save_profile(
+                payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not save Quick-fill profile")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save Quick-fill. Retry shortly.")
+            return
+        self._json({"profile": profile})
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)

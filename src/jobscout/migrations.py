@@ -113,6 +113,24 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        5,
+        "quick_fill_story_bank",
+        """
+        create table if not exists story_bank (
+            key          text primary key,
+            title        text not null,
+            situation    text not null default '',
+            task         text not null default '',
+            action       text not null default '',
+            result       text not null default '',
+            reflection   text not null default '',
+            competencies text[] not null default '{}',
+            sort_order   integer not null default 0,
+            updated_at   timestamptz not null default now()
+        );
+        """,
+    ),
 )
 
 

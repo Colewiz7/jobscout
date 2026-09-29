@@ -6,6 +6,7 @@ and dashboard processes only verify that the recorded version is current.
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import logging
 
 import psycopg
@@ -488,7 +489,145 @@ def profile_data(conn: psycopg.Connection) -> dict:
             """
         )
         documents = cur.fetchall()
-    return {"fields": fields, "answer_templates": templates, "documents": documents}
+        cur.execute(
+            """
+            select key as id, title, situation, task, action, result, reflection,
+                   competencies, sort_order
+              from story_bank
+             order by sort_order, lower(title), key
+            """
+        )
+        stories = cur.fetchall()
+    return {
+        "fields": fields,
+        "answer_templates": templates,
+        "documents": documents,
+        "stories": stories,
+    }
+
+
+def normalize_profile_data(payload: dict) -> dict:
+    """Validate the complete Quick-fill document before replacing any rows."""
+    if not isinstance(payload, dict):
+        raise ValueError("profile must be an object")
+
+    def objects(name: str, limit: int) -> list[dict]:
+        value = payload.get(name, [])
+        if not isinstance(value, list) or len(value) > limit or not all(isinstance(row, dict) for row in value):
+            raise ValueError(f"{name} must be a list of at most {limit} objects")
+        return value
+
+    fields = []
+    seen_keys: set[str] = set()
+    for index, row in enumerate(objects("fields", 100)):
+        key = str(row.get("key", "")).strip()
+        label = str(row.get("label", "")).strip()
+        group = str(row.get("group", "")).strip()
+        value = str(row.get("value", ""))
+        if not key or len(key) > 80 or key in seen_keys:
+            raise ValueError(f"fields[{index}].key is missing, duplicate, or too long")
+        if not label or len(label) > 120 or not group or len(group) > 80 or len(value) > 10_000:
+            raise ValueError(f"fields[{index}] has an invalid label, group, or value")
+        seen_keys.add(key)
+        fields.append({
+            "key": key, "label": label, "group": group, "value": value,
+            "pinned": bool(row.get("pinned", False)), "sort_order": int(row.get("sort_order", index * 10)),
+        })
+
+    templates = []
+    seen_names: set[str] = set()
+    for index, row in enumerate(objects("answer_templates", 50)):
+        name = str(row.get("name", "")).strip()
+        body = str(row.get("body", ""))
+        if not name or len(name) > 120 or name.casefold() in seen_names or len(body) > 10_000:
+            raise ValueError(f"answer_templates[{index}] has an invalid or duplicate name/body")
+        seen_names.add(name.casefold())
+        templates.append({
+            "id": row.get("id", f"template-{index + 1}"), "name": name, "body": body,
+            "sort_order": int(row.get("sort_order", index * 10)),
+        })
+
+    documents = []
+    for index, row in enumerate(objects("documents", 50)):
+        name = str(row.get("name", "")).strip()
+        url = str(row.get("url", ""))
+        date = str(row.get("date", "")).strip() or None
+        if not name or len(name) > 160 or len(url) > 2_000:
+            raise ValueError(f"documents[{index}] has an invalid name or URL")
+        if date:
+            try:
+                dt.date.fromisoformat(date)
+            except ValueError as error:
+                raise ValueError(f"documents[{index}].date must be YYYY-MM-DD") from error
+        documents.append({
+            "id": row.get("id", f"document-{index + 1}"),
+            "name": name, "url": url, "date": date,
+        })
+
+    stories = []
+    seen_story_keys: set[str] = set()
+    for index, row in enumerate(objects("stories", 10)):
+        key = str(row.get("id", row.get("key", ""))).strip()
+        title = str(row.get("title", "")).strip()
+        competencies = row.get("competencies", [])
+        if not key or len(key) > 80 or key in seen_story_keys or not title or len(title) > 160:
+            raise ValueError(f"stories[{index}] has an invalid or duplicate id/title")
+        if not isinstance(competencies, list) or len(competencies) > 12:
+            raise ValueError(f"stories[{index}].competencies must be a list")
+        clean_competencies = [str(value).strip() for value in competencies if str(value).strip()]
+        if any(len(value) > 60 for value in clean_competencies):
+            raise ValueError(f"stories[{index}] has a competency tag that is too long")
+        story = {
+            "id": key, "title": title, "competencies": clean_competencies,
+            "sort_order": int(row.get("sort_order", index * 10)),
+        }
+        for part in ("situation", "task", "action", "result", "reflection"):
+            value = str(row.get(part, ""))
+            if len(value) > 5_000:
+                raise ValueError(f"stories[{index}].{part} is too long")
+            story[part] = value
+        seen_story_keys.add(key)
+        stories.append(story)
+
+    return {"fields": fields, "answer_templates": templates, "documents": documents, "stories": stories}
+
+
+def replace_profile_data(conn: psycopg.Connection, payload: dict) -> dict:
+    """Atomically replace the feature-gated single-user Quick-fill profile."""
+    clean = normalize_profile_data(payload)
+    with conn.cursor() as cur:
+        cur.execute("delete from profile_fields")
+        cur.executemany(
+            """
+            insert into profile_fields (key, group_name, label, value, pinned, sort_order)
+            values (%s, %s, %s, %s, %s, %s)
+            """,
+            [(row["key"], row["group"], row["label"], row["value"], row["pinned"], row["sort_order"]) for row in clean["fields"]],
+        )
+        cur.execute("delete from answer_templates")
+        cur.executemany(
+            "insert into answer_templates (name, body, sort_order) values (%s, %s, %s)",
+            [(row["name"], row["body"], row["sort_order"]) for row in clean["answer_templates"]],
+        )
+        cur.execute("delete from documents")
+        cur.executemany(
+            "insert into documents (name, document_date, url) values (%s, %s, %s)",
+            [(row["name"], row["date"], row["url"]) for row in clean["documents"]],
+        )
+        cur.execute("delete from story_bank")
+        cur.executemany(
+            """
+            insert into story_bank
+                (key, title, situation, task, action, result, reflection, competencies, sort_order)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [(
+                row["id"], row["title"], row["situation"], row["task"], row["action"],
+                row["result"], row["reflection"], row["competencies"], row["sort_order"],
+            ) for row in clean["stories"]],
+        )
+    conn.commit()
+    return profile_data(conn)
 
 
 def description_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None:

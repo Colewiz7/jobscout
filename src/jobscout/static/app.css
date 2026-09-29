@@ -1463,15 +1463,24 @@ dialog[open]::backdrop {
 }
 
 .quick-fill-header h2 {
-  flex: 1;
   margin: 0;
   font: 500 18px/1.35 var(--font-sans);
+}
+
+.quick-fill-header > div:first-child {
+  min-width: 0;
+  flex: 1;
 }
 
 .quick-fill-header p {
   margin: 0;
   color: var(--on-surface-variant);
   font-size: 12px;
+}
+
+.quick-fill-edit-toggle {
+  min-width: auto;
+  padding-inline: var(--s-3);
 }
 
 .quick-fill-search {
@@ -1629,6 +1638,81 @@ dialog[open]::backdrop {
   font-size: 14px;
   text-align: center;
 }
+
+.quick-fill-editor {
+  flex: 1;
+  padding: var(--s-4) var(--s-4) calc(var(--s-4) + env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.quick-fill-editor > section + section {
+  margin-top: var(--s-6);
+}
+
+.quick-fill-editor h3 {
+  margin: 0 0 var(--s-3);
+  color: var(--on-surface-variant);
+  font: 500 12px/1.25 var(--font-sans);
+}
+
+.quick-fill-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-bottom: var(--s-3);
+}
+
+.quick-fill-edit-field > span,
+.quick-fill-edit-card small {
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.quick-fill-edit-field input,
+.quick-fill-edit-field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--s-3);
+  border: 1px solid var(--outline);
+  border-radius: var(--r-md);
+  outline: 0;
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  font: 400 14px/1.55 var(--font-sans);
+  resize: vertical;
+}
+
+.quick-fill-edit-field input:focus,
+.quick-fill-edit-field textarea:focus {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.quick-fill-edit-card {
+  margin-bottom: var(--s-2);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+}
+
+.quick-fill-edit-card summary {
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.quick-fill-edit-card[open] summary {
+  margin-bottom: var(--s-3);
+}
+
+.quick-fill-data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+}
+
 
 body.quick-fill-popout {
   min-width: 320px;

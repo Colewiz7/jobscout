@@ -116,7 +116,9 @@ def test_wrong_authentik_application_or_user_is_rejected(dashboard):
 def test_profile_is_not_shipped_in_phase_one(dashboard):
     base, _ = dashboard
     response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
+    write = httpx.put(f"{base}/api/v1/profile", headers=AUTH, json={}, timeout=2)
     assert response.status_code == 404
+    assert write.status_code == 404
 
 
 def test_quick_fill_profile_requires_explicit_feature_flag():
@@ -135,11 +137,25 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
     thread.start()
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
-        session = httpx.get(f"{base}/api/v1/session", headers=AUTH, timeout=2)
+        with httpx.Client(base_url=base, headers=AUTH, timeout=2) as client:
+            session = client.get("/api/v1/session")
+            response = client.get("/api/v1/profile")
+            csrf = session.json()["csrf_token"]
+            profile = response.json()["profile"]
+            profile["fields"][0]["value"] = "Edited Applicant"
+            rejected = client.put("/api/v1/profile", json={"profile": profile})
+            saved = client.put(
+                "/api/v1/profile",
+                headers={"X-CSRF-Token": csrf},
+                json={"profile": profile},
+            )
         assert response.status_code == 200
         assert response.json()["profile"]["fields"][0]["key"] == "name"
+        assert len(response.json()["profile"]["stories"]) == 5
         assert session.json()["features"]["quick_fill"] is True
+        assert rejected.status_code == 403
+        assert saved.status_code == 200
+        assert saved.json()["profile"]["fields"][0]["value"] == "Edited Applicant"
     finally:
         server.shutdown()
         server.server_close()

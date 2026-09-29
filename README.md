@@ -177,8 +177,11 @@ passes:
 JOBSCOUT_QUICK_FILL_ENABLED=true python -m jobscout dashboard --demo
 ```
 
-Quick-fill is copy-only and never submits an application. Its editable ATS
-field orders and review notes live in `src/jobscout/static/ats-ordering.json`.
+Quick-fill is copy-only and never submits an application. It includes
+server-backed edit/autosave with rollback, JSON export/import with undo, answer
+templates, documents, and a five-story fictional STAR+Reflection seed. Its
+editable ATS field orders and review notes live in
+`src/jobscout/static/ats-ordering.json`.
 
 The repeatable Phase 2 browser audit uses a deterministic 2,000-job fixture and
 the system Chromium, with no added package dependency:

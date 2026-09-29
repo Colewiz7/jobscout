@@ -23,5 +23,62 @@
   ],
   "answer_templates": [
     {"id": "why-role", "name": "Why this role", "body": "I'm interested in {role} at {company} because…", "sort_order": 10}
+  ],
+  "stories": [
+    {
+      "id": "incident-triage",
+      "title": "Stabilized a failing service",
+      "situation": "A fictional student service began timing out during a launch.",
+      "task": "Find the failure and restore a dependable path for users.",
+      "action": "Used logs and metrics to isolate a connection-pool bottleneck, reduced load, and documented the recovery steps.",
+      "result": "The service recovered and the same failure became easier to diagnose.",
+      "reflection": "I learned to preserve evidence before changing a stressed system.",
+      "competencies": ["Incident response", "Observability"],
+      "sort_order": 10
+    },
+    {
+      "id": "infrastructure-drift",
+      "title": "Removed infrastructure drift",
+      "situation": "A fictional lab had repeated manual configuration differences.",
+      "task": "Make environments reproducible without slowing small experiments.",
+      "action": "Captured the shared baseline as code and added a reviewable validation step.",
+      "result": "Rebuilds became consistent and exceptions stayed visible.",
+      "reflection": "Automation is most useful when its escape hatches are explicit.",
+      "competencies": ["Infrastructure as code", "Systems thinking"],
+      "sort_order": 20
+    },
+    {
+      "id": "delivery-pipeline",
+      "title": "Shortened a delivery pipeline",
+      "situation": "A fictional project had a slow feedback loop with repeated test work.",
+      "task": "Reduce wait time while keeping the same quality gates.",
+      "action": "Separated independent checks, cached safe inputs, and measured the critical path.",
+      "result": "Contributors received useful failures sooner.",
+      "reflection": "Speed came from removing serialization, not removing checks.",
+      "competencies": ["CI/CD", "Performance"],
+      "sort_order": 30
+    },
+    {
+      "id": "onboarding-runbook",
+      "title": "Turned tribal knowledge into a runbook",
+      "situation": "A fictional team relied on one person to explain local setup.",
+      "task": "Make onboarding repeatable for the next contributor.",
+      "action": "Observed a clean setup, wrote the smallest complete runbook, and tested it with someone new.",
+      "result": "The next setup completed without an ad hoc handoff.",
+      "reflection": "Documentation should be exercised like code, not merely published.",
+      "competencies": ["Documentation", "Collaboration"],
+      "sort_order": 40
+    },
+    {
+      "id": "capacity-tradeoff",
+      "title": "Made a capacity tradeoff visible",
+      "situation": "A fictional service had rising load and an unclear scaling threshold.",
+      "task": "Recommend the next change using evidence rather than intuition.",
+      "action": "Built a small load test, measured saturation, and compared the cost of two options.",
+      "result": "The team chose a bounded change with a clear follow-up trigger.",
+      "reflection": "A reversible decision with a measurement plan can beat a larger redesign.",
+      "competencies": ["Capacity planning", "Communication"],
+      "sort_order": 50
+    }
   ]
 }
