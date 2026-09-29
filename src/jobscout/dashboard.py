@@ -9,6 +9,7 @@ import mimetypes
 import os
 import pathlib
 import secrets
+import threading
 import urllib.parse
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -18,6 +19,8 @@ from typing import Any
 import yaml
 
 from . import db as database
+from .descriptions import ProviderDescriptionFetcher
+from .http import Fetcher
 
 log = logging.getLogger("jobscout.dashboard")
 STATIC_ROOT = pathlib.Path(__file__).with_name("static")
@@ -49,6 +52,10 @@ def load_profile(path: str | os.PathLike | None = None) -> dict:
 class PostgresStore:
     def __init__(self, dsn: str):
         self.dsn = dsn
+        self._fetcher = Fetcher(timeout=15, retry_seconds=20)
+        self._descriptions = ProviderDescriptionFetcher(self._fetcher)
+        self._prefetch_lock = threading.Lock()
+        self._prefetching: set[str] = set()
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -69,6 +76,68 @@ class PostgresStore:
             log.exception("database health check failed")
             return False
 
+    def description(self, key: str) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            cached = database.cached_description(conn, key)
+            if cached and cached.get("description_text"):
+                return cached
+            if cached and cached.get("description_error"):
+                fetched_at = cached.get("description_fetched_at")
+                now = dt.datetime.now(dt.timezone.utc)
+                if fetched_at and now - fetched_at < dt.timedelta(minutes=15):
+                    return cached
+            target = database.description_target(conn, key)
+        if target is None:
+            return None
+
+        try:
+            detail = self._descriptions.fetch(target)
+            if detail is None:
+                values = dict(
+                    html=None,
+                    text=None,
+                    error="This provider did not return a readable description.",
+                )
+            else:
+                values = dict(
+                    html=detail.html,
+                    text=detail.text,
+                    sections=detail.sections,
+                    deadline=detail.deadline,
+                    deadline_source=detail.deadline_source,
+                    error=None,
+                )
+        except Exception:
+            log.exception("description fetch failed for %s", key)
+            values = dict(
+                html=None,
+                text=None,
+                error="The posting description could not be fetched. Retry shortly.",
+            )
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            database.save_description(conn, target["id"], **values)
+            return database.cached_description(conn, key)
+
+    def prefetch_description(self, key: str) -> None:
+        with self._prefetch_lock:
+            if key in self._prefetching:
+                return
+            self._prefetching.add(key)
+
+        def load() -> None:
+            try:
+                self.description(key)
+            finally:
+                with self._prefetch_lock:
+                    self._prefetching.discard(key)
+
+        threading.Thread(target=load, name="jobseer-description", daemon=True).start()
+
+    def close(self) -> None:
+        self._fetcher.__exit__()
+
 
 class DemoStore:
     """Representative local data for visual development; never used by default."""
@@ -84,7 +153,7 @@ class DemoStore:
                 "last_seen": now, "url": "https://example.com/apply", "sources": "greenhouse",
                 "closed": False, "notified": True, "score": 160,
                 "score_detail": {"role_named": 100, "internship": 20, "wanted_term": 30, "fresh": 10},
-                "status": "preparing", "notes": "Mention the homelab incident response story.",
+                "status": "queued", "notes": "Mention the homelab incident response story.",
                 "application_updated_at": now,
             },
             {
@@ -117,6 +186,27 @@ class DemoStore:
 
     def healthy(self) -> bool:
         return True
+
+    def description(self, key: str) -> dict | None:
+        if not any(row["dedupe_key"] == key for row in self.rows):
+            return None
+        return {
+            "description_text": "Build reliable systems with a thoughtful engineering team.",
+            "sections": [
+                {"key": "about", "text": "Build reliable systems with a thoughtful engineering team."},
+                {"key": "requirements", "text": "Linux\nPython\nClear technical communication"},
+            ],
+            "description_fetched_at": dt.datetime.now(dt.timezone.utc),
+            "description_error": None,
+            "deadline": None,
+            "deadline_source": None,
+        }
+
+    def prefetch_description(self, key: str) -> None:
+        del key
+
+    def close(self) -> None:
+        pass
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -252,6 +342,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
                 return
+            detail_prefix = "/api/v1/jobs/"
+            detail_suffix = "/description"
+            if parsed.path.startswith(detail_prefix) and parsed.path.endswith(detail_suffix):
+                key = urllib.parse.unquote(
+                    parsed.path[len(detail_prefix):-len(detail_suffix)].rstrip("/")
+                )
+                if not key:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                detail = self.app.store.description(key)
+                if detail is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                # Raw provider HTML is cached for reparsing, not trusted as UI
+                # markup. The browser receives deterministic plain text only.
+                detail.pop("description_html", None)
+                self._json({"description": detail})
+                return
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
         if parsed.path.startswith("/static/"):
@@ -303,6 +411,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not saved:
             self._error(HTTPStatus.NOT_FOUND, "job not found")
             return
+        if status in {"saved", "queued"}:
+            self.app.store.prefetch_description(key)
         self._json({"ok": True, "status": status, "notes": notes})
 
 
@@ -351,3 +461,4 @@ def serve(
         pass
     finally:
         server.server_close()
+        store.close()

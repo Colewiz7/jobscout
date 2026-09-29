@@ -24,6 +24,46 @@ class Migration:
 
 MIGRATIONS = (
     Migration(1, "baseline", db.SCHEMA),
+    Migration(
+        2,
+        "inbox_descriptions_and_status_history",
+        """
+        alter table postings add column if not exists description_html text;
+        alter table postings add column if not exists description_text text;
+        alter table postings add column if not exists description_sections jsonb;
+        alter table postings add column if not exists description_fetched_at timestamptz;
+        alter table postings add column if not exists description_error text;
+        alter table postings add column if not exists deadline date;
+        alter table postings add column if not exists deadline_source text
+            check (deadline_source in ('description', 'provider', 'manual'));
+
+        alter table application_states
+            drop constraint if exists application_states_status_check;
+        update application_states
+           set status = case status
+               when 'preparing' then 'queued'
+               when 'interview' then 'interviewing'
+               when 'skipped' then 'archived'
+               else status
+           end;
+        alter table application_states
+            add constraint application_states_status_check
+            check (status in (
+                'new', 'saved', 'queued', 'applying', 'applied',
+                'interviewing', 'offer', 'rejected', 'archived'
+            ));
+
+        create table if not exists application_status_history (
+            id          bigserial primary key,
+            dedupe_key  text not null,
+            from_status text not null,
+            to_status   text not null,
+            changed_at  timestamptz not null default now()
+        );
+        create index if not exists application_status_history_job_idx
+            on application_status_history (dedupe_key, changed_at desc);
+        """,
+    ),
 )
 
 

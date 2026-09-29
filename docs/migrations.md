@@ -6,10 +6,9 @@ PreSync migration Job has not completed. The runner holds a PostgreSQL session
 advisory lock for its full transaction, so an Argo retry cannot race another
 migration process.
 
-`docs/deploy/migration-job.yaml` is the manifest to copy into the JobScout
-GitOps kustomization. Pin its image to the same immutable `sha-*` tag as the
-CronJob and dashboard before syncing; `latest` is only a visible placeholder
-in this application repository.
+The production manifest lives in the homelab GitOps repository at
+`apps/jobscout/migration-job.yaml`. It is a PreSync hook at sync wave `-10`, so
+a failed migration blocks rollout of the wave `0` scout and dashboard images.
 
 ## Before the first migration
 
