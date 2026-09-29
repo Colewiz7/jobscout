@@ -23,6 +23,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists story_bank")
         cur.execute("drop table if exists documents")
         cur.execute("drop table if exists answer_templates")
         cur.execute("drop table if exists profile_fields")
@@ -58,6 +59,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 2, "name": "inbox_descriptions_and_status_history"},
             {"version": 3, "name": "saved_views"},
             {"version": 4, "name": "quick_fill"},
+            {"version": 5, "name": "quick_fill_story_bank"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -294,3 +296,20 @@ def test_dashboard_warns_about_another_recent_company_application(conn):
     rows = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}
     assert rows[second.dedupe_key]["recent_company_application_at"] is not None
     assert rows[first.dedupe_key]["recent_company_application_at"] is None
+
+
+def test_profile_replacement_round_trips_story_bank(conn):
+    profile = database.replace_profile_data(conn, {
+        "fields": [{"key": "email", "group": "Contact", "label": "Email", "value": "me@example.invalid", "pinned": True}],
+        "answer_templates": [{"name": "Why", "body": "Because {company}"}],
+        "documents": [{"name": "Resume", "date": "2026-09-01", "url": "/resume.pdf"}],
+        "stories": [{
+            "id": "recovery", "title": "Recovered a service", "situation": "It failed",
+            "task": "Restore it", "action": "Used evidence", "result": "Recovered",
+            "reflection": "Preserve logs", "competencies": ["Incident response"],
+        }],
+    })
+
+    assert profile["fields"][0]["value"] == "me@example.invalid"
+    assert profile["stories"][0]["id"] == "recovery"
+    assert profile["stories"][0]["competencies"] == ["Incident response"]

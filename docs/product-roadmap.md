@@ -6,11 +6,12 @@ tables early: each migration lands only with the first UI that uses it.
 
 ## Phase 3 — Quick-fill
 
-- Add a story bank with 5–10 STAR+Reflection stories.
-- A story can carry multiple competency tags and appears as its own Quick-fill
-  group.
+- Implemented: a story bank capped at 10 STAR+Reflection stories. Stories carry
+  multiple competency tags, appear as their own Quick-fill group, participate
+  in server-backed edit/autosave and JSON import/export, and remain behind the
+  same production-disabled feature flag as the rest of Profile.
 - Story facts are an approved source for later local-model drafts. Empty story
-  fields remain hidden.
+  fields remain hidden outside edit mode.
 
 ## Phase 4 — Queue and apply sessions
 
