@@ -11,6 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = JSON.parse(await readFile(join(root, "tests/fixtures/dashboard_2000.seed.json"), "utf8"));
 const profile = join(root, "config/profile.seed.json");
 const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
+const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
 
 async function freePort() {
   const server = createServer();
@@ -84,6 +85,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
   },
@@ -185,6 +187,68 @@ try {
     content: document.documentElement.scrollWidth,
     hasHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
   }))()`);
+  let quickFill = null;
+  if (auditQuickFill) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    quickFill = await cdp.evaluate(`(async () => {
+      const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      document.querySelector('#quick-fill-trigger')?.click();
+      for (let attempt = 0; attempt < 40 && !document.querySelector('.copy-row'); attempt += 1) await wait(50);
+      document.querySelector('[data-quick-fill-edit]')?.click();
+      await wait(50);
+      const set = (control, value, eventName = 'input') => {
+        control.value = value;
+        control.dispatchEvent(new Event(eventName, { bubbles: true }));
+      };
+      const override = document.querySelector('[data-context-kind="override"]');
+      const exists = document.querySelector('select[data-context-property="account_exists"]');
+      const email = document.querySelector('[data-context-property="sign_in_email"]');
+      const manager = document.querySelector('[data-context-property="password_manager_url"]');
+      if (!override || !exists || !email || !manager) return { error: 'context controls unavailable' };
+      set(override, 'A job-specific answer for {company}.');
+      set(exists, 'yes', 'change');
+      set(email, 'audit@example.invalid');
+      set(manager, 'https://vault.example.invalid/jobseer');
+      await wait(900);
+      const jobs = await fetch('/api/v1/jobs').then((response) => response.json()).then((data) => data.jobs);
+      const selectedKey = () => decodeURIComponent(location.pathname.split('/').slice(2).join('/'));
+      const firstJob = jobs.find((job) => job.dedupe_key === selectedKey());
+      const firstParams = new URLSearchParams({ job: firstJob.dedupe_key, company: firstJob.company });
+      const stored = await fetch('/api/v1/profile?' + firstParams).then((response) => response.json()).then((data) => data.profile);
+      document.querySelector('[data-quick-fill-edit]')?.click();
+      await wait(50);
+      const passwordManagerLink = document.querySelector('.quick-fill-password-link')?.href || '';
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+      [...document.querySelectorAll('.copy-row')].find((row) => row.querySelector('strong')?.textContent === 'Email')?.click();
+      await wait(300);
+      const copied = await fetch('/api/v1/profile?' + firstParams).then((response) => response.json()).then((data) => data.profile.copied_fields);
+      const nextJob = jobs.find((job) => job.dedupe_key !== firstJob.dedupe_key && job.company !== firstJob.company);
+      history.pushState({}, '', '/inbox/' + encodeURIComponent(nextJob.dedupe_key) + '?status=all');
+      window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+      await wait(300);
+      const secondJob = jobs.find((job) => job.dedupe_key === selectedKey());
+      const secondParams = new URLSearchParams({ job: secondJob.dedupe_key, company: secondJob.company });
+      const isolated = await fetch('/api/v1/profile?' + secondParams).then((response) => response.json()).then((data) => data.profile);
+      const controls = [...document.querySelectorAll('#quick-fill-sheet button, #quick-fill-sheet a[href], #quick-fill-sheet input, #quick-fill-sheet textarea, #quick-fill-sheet select')]
+        .filter((element) => element.getClientRects().length > 0);
+      const unnamed = controls.filter((element) => !(
+        element.getAttribute('aria-label') || element.textContent.trim() || element.closest('label') ||
+        (element.id && document.querySelector('label[for="' + CSS.escape(element.id) + '"]'))
+      ));
+      return {
+        override: stored.answer_overrides['Why this role'],
+        accountEmail: stored.company_account?.sign_in_email || '',
+        passwordManagerLink,
+        copiedEmail: copied.includes('field:email'),
+        contextIsolated: Object.keys(isolated.answer_overrides).length === 0 && isolated.company_account === null,
+        firstContext: firstJob ? firstJob.dedupe_key + ' / ' + firstJob.company : '',
+        secondContext: secondJob ? secondJob.dedupe_key + ' / ' + secondJob.company : '',
+        unnamedControls: unnamed.length,
+      };
+    })()`);
+  }
   const report = {
     fixture,
     metrics: {
@@ -201,6 +265,7 @@ try {
       unnamedControls: desktop.unnamedControls,
       horizontalOverflowAt320: compact.hasHorizontalOverflow,
     },
+    ...(quickFill ? { quickFill } : {}),
   };
   console.log(JSON.stringify(report, null, 2));
 
@@ -215,6 +280,13 @@ try {
   if (desktop.duplicateIds.length) failures.push("duplicate IDs found");
   if (desktop.unnamedControls.length) failures.push("unnamed interactive controls found");
   if (compact.hasHorizontalOverflow) failures.push(`320px layout overflowed to ${compact.content}px`);
+  if (quickFill?.error) failures.push(quickFill.error);
+  if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
+  if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");
+  if (auditQuickFill && quickFill?.passwordManagerLink !== "https://vault.example.invalid/jobseer") failures.push("password-manager link missing");
+  if (auditQuickFill && !quickFill?.copiedEmail) failures.push("per-job copy marker did not persist");
+  if (auditQuickFill && !quickFill?.contextIsolated) failures.push("Quick-fill context leaked between jobs");
+  if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
   if (failures.length) throw new Error(failures.join("; "));
 } finally {
   cdp?.close();

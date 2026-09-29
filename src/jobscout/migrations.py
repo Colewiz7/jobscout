@@ -131,6 +131,33 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        6,
+        "quick_fill_job_context",
+        """
+        create table if not exists quick_fill_copy_state (
+            dedupe_key text not null,
+            target_key text not null,
+            copied_at timestamptz not null default now(),
+            primary key (dedupe_key, target_key)
+        );
+        create table if not exists answer_template_overrides (
+            dedupe_key    text not null,
+            template_name text not null,
+            body          text not null,
+            updated_at    timestamptz not null default now(),
+            primary key (dedupe_key, template_name)
+        );
+        create table if not exists company_accounts (
+            company_key          text primary key,
+            company_name         text not null,
+            account_exists       boolean,
+            sign_in_email        text not null default '',
+            password_manager_url text not null default '',
+            updated_at           timestamptz not null default now()
+        );
+        """,
+    ),
 )
 
 

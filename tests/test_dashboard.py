@@ -117,8 +117,12 @@ def test_profile_is_not_shipped_in_phase_one(dashboard):
     base, _ = dashboard
     response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
     write = httpx.put(f"{base}/api/v1/profile", headers=AUTH, json={}, timeout=2)
+    context = httpx.put(f"{base}/api/v1/profile/context", headers=AUTH, json={}, timeout=2)
+    copied = httpx.post(f"{base}/api/v1/profile/copy", headers=AUTH, json={}, timeout=2)
     assert response.status_code == 404
     assert write.status_code == 404
+    assert context.status_code == 404
+    assert copied.status_code == 404
 
 
 def test_quick_fill_profile_requires_explicit_feature_flag():
@@ -149,6 +153,42 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
                 headers={"X-CSRF-Token": csrf},
                 json={"profile": profile},
             )
+            rejected_context = client.put(
+                "/api/v1/profile/context",
+                json={"dedupe_key": "demo:2", "company": "Datadog"},
+            )
+            context = client.put(
+                "/api/v1/profile/context",
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "dedupe_key": "demo:2",
+                    "company": "Datadog",
+                    "answer_overrides": {"Why this role?": "This answer is specific to Datadog."},
+                    "company_account": {
+                        "account_exists": True,
+                        "sign_in_email": "applicant@example.invalid",
+                        "password_manager_url": "https://vault.example.invalid/datadog",
+                    },
+                },
+            )
+            copied = client.post(
+                "/api/v1/profile/copy",
+                headers={"X-CSRF-Token": csrf},
+                json={"dedupe_key": "demo:2", "target_key": "field:email"},
+            )
+            contextual_profile = client.get(
+                "/api/v1/profile", params={"job": "demo:2", "company": "Datadog"}
+            )
+            unsafe_link = client.put(
+                "/api/v1/profile/context",
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "dedupe_key": "demo:2",
+                    "company": "Datadog",
+                    "answer_overrides": {},
+                    "company_account": {"password_manager_url": "javascript:alert(1)"},
+                },
+            )
         assert response.status_code == 200
         assert response.json()["profile"]["fields"][0]["key"] == "name"
         assert len(response.json()["profile"]["stories"]) == 5
@@ -156,6 +196,15 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
         assert rejected.status_code == 403
         assert saved.status_code == 200
         assert saved.json()["profile"]["fields"][0]["value"] == "Edited Applicant"
+        assert rejected_context.status_code == 403
+        assert context.status_code == 200
+        assert copied.status_code == 201
+        contextual = contextual_profile.json()["profile"]
+        assert contextual_profile.status_code == 200
+        assert contextual["copied_fields"] == ["field:email"]
+        assert contextual["answer_overrides"]["Why this role?"] == "This answer is specific to Datadog."
+        assert contextual["company_account"]["account_exists"] is True
+        assert unsafe_link.status_code == 400
     finally:
         server.shutdown()
         server.server_close()

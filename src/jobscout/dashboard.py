@@ -98,15 +98,31 @@ class PostgresStore:
             database.require_schema(conn)
             return database.delete_saved_view(conn, view_id)
 
-    def profile(self) -> dict:
+    def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.profile_data(conn)
+            return database.profile_data(conn, dedupe_key=dedupe_key, company=company)
 
     def save_profile(self, payload: dict) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.replace_profile_data(conn, payload)
+
+    def mark_copy(self, dedupe_key: str, target_key: str) -> None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            database.mark_quick_fill_copy(conn, dedupe_key, target_key)
+
+    def save_profile_context(self, payload: dict) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_quick_fill_context(
+                conn,
+                dedupe_key=str(payload.get("dedupe_key", "")),
+                company=str(payload.get("company", "")),
+                answer_overrides=payload.get("answer_overrides", {}),
+                company_account=payload.get("company_account", {}),
+            )
 
     def healthy(self) -> bool:
         try:
@@ -253,6 +269,9 @@ class DemoStore:
         self._next_view_id = 1
         self._profile_path = profile_path or DEFAULT_PROFILE
         self._profile = load_profile(self._profile_path)
+        self._copied_fields: dict[str, set[str]] = {}
+        self._answer_overrides: dict[str, dict[str, str]] = {}
+        self._company_accounts: dict[str, dict] = {}
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         return [dict(row) for row in self.rows if include_closed or not row["closed"]]
@@ -297,12 +316,34 @@ class DemoStore:
         self._saved_views = [view for view in self._saved_views if view["id"] != view_id]
         return len(self._saved_views) != before
 
-    def profile(self) -> dict:
-        return copy.deepcopy(self._profile)
+    def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
+        profile = copy.deepcopy(self._profile)
+        profile["copied_fields"] = sorted(self._copied_fields.get(dedupe_key or "", set()))
+        profile["answer_overrides"] = copy.deepcopy(self._answer_overrides.get(dedupe_key or "", {}))
+        profile["company_account"] = copy.deepcopy(self._company_accounts.get((company or "").casefold().strip()))
+        return profile
 
     def save_profile(self, payload: dict) -> dict:
         self._profile = database.normalize_profile_data(payload)
-        return copy.deepcopy(self._profile)
+        return self.profile()
+
+    def mark_copy(self, dedupe_key: str, target_key: str) -> None:
+        if not dedupe_key or len(dedupe_key) > 500 or not target_key or len(target_key) > 200:
+            raise ValueError("invalid job or copy target")
+        self._copied_fields.setdefault(dedupe_key, set()).add(target_key)
+
+    def save_profile_context(self, payload: dict) -> dict:
+        clean = database.normalize_quick_fill_context(
+            dedupe_key=str(payload.get("dedupe_key", "")),
+            company=str(payload.get("company", "")),
+            answer_overrides=payload.get("answer_overrides", {}),
+            company_account=payload.get("company_account", {}),
+        )
+        dedupe_key = clean["dedupe_key"]
+        company = clean["company"]
+        self._answer_overrides[dedupe_key] = clean["answer_overrides"]
+        self._company_accounts[company.casefold()] = clean["company_account"]
+        return self.profile(dedupe_key, company)
 
     def healthy(self) -> bool:
         return True
@@ -423,6 +464,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _require_quick_fill_write(self) -> bool:
+        if self._require_api_auth() is None:
+            return False
+        if not self.app.quick_fill_enabled:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return False
+        if not self._same_origin() or not self._valid_csrf():
+            self._error(HTTPStatus.FORBIDDEN, "Security token missing or expired. Reload and retry.")
+            return False
+        return True
+
     def _read_json(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -493,7 +545,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not self.app.quick_fill_enabled:
                     self._error(HTTPStatus.NOT_FOUND, "not found")
                     return
-                self._json({"profile": self.app.store.profile()})
+                query = urllib.parse.parse_qs(parsed.query)
+                self._json({
+                    "profile": self.app.store.profile(
+                        dedupe_key=query.get("job", [None])[0],
+                        company=query.get("company", [None])[0],
+                    )
+                })
                 return
             detail_prefix = "/api/v1/jobs/"
             detail_suffix = "/description"
@@ -570,6 +628,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/profile/copy":
+            if not self._require_quick_fill_write():
+                return
+            try:
+                payload = self._read_json()
+                self.app.store.mark_copy(
+                    str(payload.get("dedupe_key", "")), str(payload.get("target_key", ""))
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save Quick-fill copy state")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save copy state. Retry shortly.")
+                return
+            self._json({"ok": True}, HTTPStatus.CREATED)
+            return
         if parsed.path != "/api/v1/saved-views":
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
@@ -588,22 +663,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        if parsed.path != "/api/v1/profile":
+        if parsed.path not in {"/api/v1/profile", "/api/v1/profile/context"}:
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
-        if self._require_api_auth() is None:
-            return
-        if not self.app.quick_fill_enabled:
-            self._error(HTTPStatus.NOT_FOUND, "not found")
-            return
-        if not self._same_origin() or not self._valid_csrf():
-            self._error(HTTPStatus.FORBIDDEN, "Security token missing or expired. Reload and retry.")
+        if not self._require_quick_fill_write():
             return
         try:
             payload = self._read_json()
-            profile = self.app.store.save_profile(
-                payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
-            )
+            if parsed.path == "/api/v1/profile/context":
+                profile = self.app.store.save_profile_context(payload)
+            else:
+                profile = self.app.store.save_profile(
+                    payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+                )
         except (json.JSONDecodeError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
             return

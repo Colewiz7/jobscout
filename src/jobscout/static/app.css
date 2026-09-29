@@ -1669,7 +1669,8 @@ dialog[open]::backdrop {
 }
 
 .quick-fill-edit-field input,
-.quick-fill-edit-field textarea {
+.quick-fill-edit-field textarea,
+.quick-fill-edit-field select {
   width: 100%;
   min-height: 44px;
   padding: var(--s-3);
@@ -1683,9 +1684,32 @@ dialog[open]::backdrop {
 }
 
 .quick-fill-edit-field input:focus,
-.quick-fill-edit-field textarea:focus {
+.quick-fill-edit-field textarea:focus,
+.quick-fill-edit-field select:focus {
   border-color: transparent;
   box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.quick-fill-privacy {
+  margin: 0;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.quick-fill-password-link {
+  display: inline-flex;
+  min-height: 44px;
+  margin: 0 var(--s-4);
+  align-items: center;
+  color: var(--primary);
+  font-size: 13px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.quick-fill-password-link:hover {
+  text-decoration-thickness: 2px;
 }
 
 .quick-fill-edit-card {

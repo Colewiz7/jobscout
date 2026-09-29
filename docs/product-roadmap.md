@@ -6,12 +6,19 @@ tables early: each migration lands only with the first UI that uses it.
 
 ## Phase 3 — Quick-fill
 
+- Implemented behind the production-disabled Profile flag: docked and pop-out
+  Quick-fill, ATS-specific group ordering, keyboard copy, persistent per-job
+  copy markers, global templates with per-job overrides, dated documents,
+  server-backed autosave with rollback, and JSON import/export with undo.
+- Implemented: password-free per-company ATS account metadata. It records
+  yes/no/unknown, sign-in email, and an HTTPS link to the user's password
+  manager; it never accepts or stores a password.
 - Implemented: a story bank capped at 10 STAR+Reflection stories. Stories carry
-  multiple competency tags, appear as their own Quick-fill group, participate
-  in server-backed edit/autosave and JSON import/export, and remain behind the
-  same production-disabled feature flag as the rest of Profile.
+  multiple competency tags and appear as their own Quick-fill group.
 - Story facts are an approved source for later local-model drafts. Empty story
   fields remain hidden outside edit mode.
+- Resume-used-per-application moves with the Application/Snapshot work in
+  Phase 4, where there is an application record to attach it to.
 
 ## Phase 4 — Queue and apply sessions
 
