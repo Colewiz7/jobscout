@@ -64,6 +64,55 @@ MIGRATIONS = (
             on application_status_history (dedupe_key, changed_at desc);
         """,
     ),
+    Migration(
+        3,
+        "saved_views",
+        """
+        create table if not exists saved_views (
+            id         bigserial primary key,
+            name       text not null unique,
+            filters    jsonb not null default '{}'::jsonb,
+            sort       text not null default 'score',
+            pinned     boolean not null default true,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        );
+        create index if not exists postings_company_lower_idx
+            on postings (lower(company), dedupe_key);
+        create index if not exists application_history_applied_idx
+            on application_status_history (dedupe_key, changed_at desc)
+            where to_status = 'applied';
+        """,
+    ),
+    Migration(
+        4,
+        "quick_fill",
+        """
+        create table if not exists profile_fields (
+            key        text primary key,
+            group_name text not null,
+            label      text not null,
+            value      text not null default '',
+            pinned     boolean not null default false,
+            sort_order integer not null default 0,
+            updated_at timestamptz not null default now()
+        );
+        create table if not exists answer_templates (
+            id         bigserial primary key,
+            name       text not null unique,
+            body       text not null default '',
+            sort_order integer not null default 0,
+            updated_at timestamptz not null default now()
+        );
+        create table if not exists documents (
+            id         bigserial primary key,
+            name       text not null,
+            document_date date,
+            url        text not null default '',
+            created_at timestamptz not null default now()
+        );
+        """,
+    ),
 )
 
 

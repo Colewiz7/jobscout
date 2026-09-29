@@ -365,6 +365,19 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                   from postings p
                  where (%s or not p.closed)
                  group by p.dedupe_key
+            ), application_events as (
+                select h.dedupe_key, h.changed_at
+                  from application_status_history h
+                 where h.to_status = 'applied'
+                union all
+                select s.dedupe_key, s.updated_at
+                  from application_states s
+                 where s.status in ('applied', 'interviewing', 'offer', 'rejected')
+                   and not exists (
+                       select 1 from application_status_history h
+                        where h.dedupe_key = s.dedupe_key
+                          and h.to_status = 'applied'
+                   )
             )
             select g.dedupe_key, g.company, g.title, g.terms, g.age_days,
                    g.first_seen, g.last_seen, coalesce(g.url, '') as url,
@@ -373,6 +386,14 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                    coalesce(s.status, 'new') as status,
                    coalesce(s.notes, '') as notes,
                    s.updated_at as application_updated_at,
+                   (
+                       select max(e.changed_at)
+                         from application_events e
+                         join postings other on other.dedupe_key = e.dedupe_key
+                        where lower(other.company) = lower(g.company)
+                          and other.dedupe_key <> g.dedupe_key
+                          and e.changed_at >= now() - interval '30 days'
+                   ) as recent_company_application_at,
                    (select coalesce(
                        string_agg(distinct btrim(part), '; ' order by btrim(part)), '')
                       from unnest(string_to_array(g.locations_raw, ';')) as part
@@ -385,6 +406,89 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
             (include_closed,),
         )
         return cur.fetchall()
+
+
+def saved_views(conn: psycopg.Connection) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, name, filters, sort, pinned, created_at, updated_at
+              from saved_views
+             order by pinned desc, lower(name), id
+            """
+        )
+        return cur.fetchall()
+
+
+def save_view(
+    conn: psycopg.Connection,
+    *,
+    name: str,
+    filters: dict,
+    sort: str,
+    pinned: bool = True,
+) -> dict:
+    name = name.strip()
+    if not name or len(name) > 40:
+        raise ValueError("view name must be between 1 and 40 characters")
+    if sort not in {"score", "newest", "company"}:
+        raise ValueError("unknown saved-view sort")
+    allowed = {"query", "status", "source", "remote"}
+    clean = {key: filters[key] for key in allowed if key in filters}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into saved_views (name, filters, sort, pinned)
+            values (%s, %s, %s, %s)
+            on conflict (name) do update set
+                filters = excluded.filters,
+                sort = excluded.sort,
+                pinned = excluded.pinned,
+                updated_at = now()
+            returning id, name, filters, sort, pinned, created_at, updated_at
+            """,
+            (name, Json(clean), sort, pinned),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return row
+
+
+def delete_saved_view(conn: psycopg.Connection, view_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("delete from saved_views where id = %s", (view_id,))
+        changed = cur.rowcount == 1
+    conn.commit()
+    return changed
+
+
+def profile_data(conn: psycopg.Connection) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select key, group_name as "group", label, value, pinned, sort_order
+              from profile_fields
+             order by pinned desc, sort_order, key
+            """
+        )
+        fields = cur.fetchall()
+        cur.execute(
+            """
+            select id, name, body, sort_order
+              from answer_templates
+             order by sort_order, lower(name), id
+            """
+        )
+        templates = cur.fetchall()
+        cur.execute(
+            """
+            select id, name, document_date as date, url
+              from documents
+             order by document_date desc nulls last, lower(name), id
+            """
+        )
+        documents = cur.fetchall()
+    return {"fields": fields, "answer_templates": templates, "documents": documents}
 
 
 def description_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None:

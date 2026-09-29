@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import pathlib
+import random
 import secrets
 import threading
 import urllib.parse
@@ -24,7 +25,7 @@ from .http import Fetcher
 
 log = logging.getLogger("jobscout.dashboard")
 STATIC_ROOT = pathlib.Path(__file__).with_name("static")
-DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "profile.yaml"
+DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "profile.seed.json"
 MAX_BODY = 64 * 1024
 CSRF_COOKIE = "jobseer_csrf"
 APP_ROUTE_ROOTS = frozenset({"inbox", "queue", "tracker", "companies", "profile"})
@@ -39,14 +40,22 @@ def _json_value(value: Any) -> Any:
 def load_profile(path: str | os.PathLike | None = None) -> dict:
     """Load the non-secret seed and overlay private scalar fields from env."""
     profile_path = pathlib.Path(path or os.environ.get("JOBSCOUT_PROFILE") or DEFAULT_PROFILE)
-    raw = yaml.safe_load(profile_path.read_text()) or {}
+    content = profile_path.read_text()
+    raw = json.loads(content) if profile_path.suffix == ".json" else (yaml.safe_load(content) or {})
     if not isinstance(raw, dict):
         raise ValueError("profile YAML must contain a mapping")
     for field in ("name", "email", "phone", "location"):
         value = os.environ.get(f"JOBSCOUT_PROFILE_{field.upper()}")
         if value is not None:
             raw[field] = value
+            for item in raw.get("fields", []):
+                if item.get("key") == field:
+                    item["value"] = value
     return raw
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class PostgresStore:
@@ -66,6 +75,32 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.save_application_state(conn, key, status, notes)
+
+    def saved_views(self) -> list[dict]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.saved_views(conn)
+
+    def save_view(self, payload: dict) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_view(
+                conn,
+                name=str(payload.get("name", "")),
+                filters=payload.get("filters") if isinstance(payload.get("filters"), dict) else {},
+                sort=str(payload.get("sort", "score")),
+                pinned=bool(payload.get("pinned", True)),
+            )
+
+    def delete_view(self, view_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_saved_view(conn, view_id)
+
+    def profile(self) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.profile_data(conn)
 
     def healthy(self) -> bool:
         try:
@@ -139,12 +174,50 @@ class PostgresStore:
         self._fetcher.__exit__()
 
 
+def _demo_rows(count: int, seed: int, now: dt.datetime) -> list[dict]:
+    """Deterministic large Inbox fixture for performance and accessibility QA."""
+    rng = random.Random(seed)
+    companies = [f"Company {index:02d}" for index in range(50)]
+    roles = (
+        "Platform Engineering Intern", "Site Reliability Co-op",
+        "Cloud Infrastructure Intern", "DevOps Engineering Intern",
+    )
+    statuses = ("new", "new", "new", "saved", "queued", "applied", "archived")
+    rows = []
+    for index in range(count):
+        age = index % 61
+        company = companies[index % len(companies)]
+        status = statuses[index % len(statuses)]
+        applied_at = now - dt.timedelta(days=(index % 27) + 1)
+        rows.append({
+            "dedupe_key": f"fixture:{index:04d}",
+            "company": company,
+            "title": f"{roles[index % len(roles)]} {index + 1}",
+            "location": "Remote in USA" if index % 4 == 0 else f"City {index % 20}, NY",
+            "terms": "Summer 2027" if index % 3 == 0 else "",
+            "age_days": age,
+            "first_seen": now - dt.timedelta(days=age),
+            "last_seen": now,
+            "url": f"https://example.com/apply/{index}",
+            "sources": "greenhouse, simplify-s27" if index % 9 == 0 else "greenhouse",
+            "closed": False,
+            "notified": True,
+            "score": 200 - (index % 120) + rng.randint(0, 5),
+            "score_detail": {"fixture": True},
+            "status": status,
+            "notes": "",
+            "application_updated_at": applied_at if status != "new" else None,
+            "recent_company_application_at": applied_at if index >= len(companies) else None,
+        })
+    return rows
+
+
 class DemoStore:
     """Representative local data for visual development; never used by default."""
 
-    def __init__(self):
+    def __init__(self, *, count: int = 2, seed: int = 0, profile_path=None):
         now = dt.datetime.now(dt.timezone.utc)
-        self.rows = [
+        base_rows = [
             {
                 "dedupe_key": "demo:1", "company": "Cloudflare",
                 "title": "Site Reliability Engineer Intern — Summer 2027",
@@ -155,6 +228,7 @@ class DemoStore:
                 "score_detail": {"role_named": 100, "internship": 20, "wanted_term": 30, "fresh": 10},
                 "status": "queued", "notes": "Mention the homelab incident response story.",
                 "application_updated_at": now,
+                "recent_company_application_at": None,
             },
             {
                 "dedupe_key": "demo:2", "company": "Datadog",
@@ -165,8 +239,13 @@ class DemoStore:
                 "closed": False, "notified": True, "score": 130,
                 "score_detail": {"role_named": 100, "internship": 20, "fresh": 10},
                 "status": "new", "notes": "", "application_updated_at": None,
+                "recent_company_application_at": None,
             },
         ]
+        self.rows = _demo_rows(count, seed, now) if count > 2 else base_rows[:count]
+        self._saved_views: list[dict] = []
+        self._next_view_id = 1
+        self._profile_path = profile_path or DEFAULT_PROFILE
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         return [dict(row) for row in self.rows if include_closed or not row["closed"]]
@@ -183,6 +262,36 @@ class DemoStore:
                 )
                 return True
         return False
+
+    def saved_views(self) -> list[dict]:
+        return [dict(view) for view in self._saved_views]
+
+    def save_view(self, payload: dict) -> dict:
+        name = str(payload.get("name", "")).strip()
+        if not name or len(name) > 40:
+            raise ValueError("view name must be between 1 and 40 characters")
+        sort = str(payload.get("sort", "score"))
+        if sort not in {"score", "newest", "company"}:
+            raise ValueError("unknown saved-view sort")
+        existing = next((view for view in self._saved_views if view["name"] == name), None)
+        if existing is None:
+            existing = {"id": self._next_view_id, "name": name}
+            self._next_view_id += 1
+            self._saved_views.append(existing)
+        existing.update(
+            filters=dict(payload.get("filters") or {}),
+            sort=sort,
+            pinned=bool(payload.get("pinned", True)),
+        )
+        return dict(existing)
+
+    def delete_view(self, view_id: int) -> bool:
+        before = len(self._saved_views)
+        self._saved_views = [view for view in self._saved_views if view["id"] != view_id]
+        return len(self._saved_views) != before
+
+    def profile(self) -> dict:
+        return load_profile(self._profile_path)
 
     def healthy(self) -> bool:
         return True
@@ -295,6 +404,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             and hmac.compare_digest(header, self.app.csrf_token)
         )
 
+    def _require_write_security(self) -> bool:
+        if self._require_api_auth() is None:
+            return False
+        if not self._same_origin() or not self._valid_csrf():
+            self._error(HTTPStatus.FORBIDDEN, "Security token missing or expired. Reload and retry.")
+            return False
+        return True
+
+    def _read_json(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as error:
+            raise ValueError("invalid content length") from error
+        if length <= 0 or length > MAX_BODY:
+            raise ValueError("invalid request size")
+        payload = json.loads(self.rfile.read(length))
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be an object")
+        return payload
+
     def _static(self, relative: str) -> None:
         path = (STATIC_ROOT / relative).resolve()
         if STATIC_ROOT.resolve() not in path.parents or not path.is_file():
@@ -327,7 +456,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     + ("; Secure" if secure else "")
                 )
                 self._json(
-                    {"user": user, "csrf_token": self.app.csrf_token},
+                    {
+                        "user": user,
+                        "csrf_token": self.app.csrf_token,
+                        "features": {"quick_fill": self.app.quick_fill_enabled},
+                    },
                     headers={"Set-Cookie": cookie},
                 )
                 return
@@ -341,6 +474,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load jobs. Retry shortly.")
                     return
                 self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
+                return
+            if parsed.path == "/api/v1/saved-views":
+                self._json({"saved_views": self.app.store.saved_views()})
+                return
+            if parsed.path == "/api/v1/profile":
+                if not self.app.quick_fill_enabled:
+                    self._error(HTTPStatus.NOT_FOUND, "not found")
+                    return
+                self._json({"profile": self.app.store.profile()})
                 return
             detail_prefix = "/api/v1/jobs/"
             detail_suffix = "/description"
@@ -415,6 +557,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.app.store.prefetch_description(key)
         self._json({"ok": True, "status": status, "notes": notes})
 
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path != "/api/v1/saved-views":
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if not self._require_write_security():
+            return
+        try:
+            saved = self.app.store.save_view(self._read_json())
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not save view")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the view. Retry shortly.")
+            return
+        self._json({"saved_view": saved}, HTTPStatus.CREATED)
+
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib.parse.urlsplit(self.path)
+        prefix = "/api/v1/saved-views/"
+        if not parsed.path.startswith(prefix):
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if not self._require_write_security():
+            return
+        try:
+            view_id = int(parsed.path.removeprefix(prefix))
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, "invalid saved view")
+            return
+        if not self.app.store.delete_view(view_id):
+            self._error(HTTPStatus.NOT_FOUND, "saved view not found")
+            return
+        self._json({"ok": True})
+
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -427,12 +605,14 @@ class DashboardServer(ThreadingHTTPServer):
         require_auth: bool = True,
         authentik_app: str = "jobseer",
         authentik_user: str | None = None,
+        quick_fill_enabled: bool = False,
     ):
         super().__init__(address, DashboardHandler)
         self.store = store
         self.require_auth = require_auth
         self.authentik_app = authentik_app
         self.authentik_user = authentik_user
+        self.quick_fill_enabled = quick_fill_enabled
         self.csrf_token = secrets.token_urlsafe(32)
 
 
@@ -443,16 +623,16 @@ def serve(
     profile_path: str | os.PathLike | None = None,
     demo: bool = False,
 ) -> None:
-    # Kept for CLI compatibility. Phase 1 deliberately does not load or expose
-    # structured personal data until the Authentik path is deployment-verified.
-    del profile_path
-    store = DemoStore() if demo else PostgresStore(dsn or "")
+    demo_count = int(os.environ.get("JOBSCOUT_DEMO_COUNT", "2"))
+    demo_seed = int(os.environ.get("JOBSCOUT_DEMO_SEED", "0"))
+    store = DemoStore(count=demo_count, seed=demo_seed, profile_path=profile_path) if demo else PostgresStore(dsn or "")
     server = DashboardServer(
         (host, port),
         store,
         require_auth=not demo,
         authentik_app=os.environ.get("JOBSCOUT_AUTHENTIK_APP", "jobseer"),
         authentik_user=os.environ.get("JOBSCOUT_AUTHENTIK_USER"),
+        quick_fill_enabled=_env_enabled("JOBSCOUT_QUICK_FILL_ENABLED"),
     )
     log.info("application workspace listening on http://%s:%d", host, port)
     try:

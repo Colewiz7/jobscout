@@ -1,4 +1,6 @@
 """The dashboard is a small HTTP boundary, so exercise it as one."""
+import json
+import pathlib
 import threading
 
 import httpx
@@ -54,6 +56,18 @@ def test_private_profile_scalars_can_come_from_environment(monkeypatch):
     assert load_profile()["email"] == "private@example.com"
 
 
+def test_seeded_performance_fixture_has_2000_deterministic_jobs():
+    fixture = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "dashboard_2000.seed.json").read_text()
+    )
+    first = DemoStore(**fixture).jobs()
+    second = DemoStore(**fixture).jobs()
+
+    assert len(first) == 2_000
+    assert [job["dedupe_key"] for job in first] == [job["dedupe_key"] for job in second]
+    assert [job["score"] for job in first] == [job["score"] for job in second]
+
+
 def test_dashboard_serves_shell_and_history_routes(dashboard):
     base, _ = dashboard
     shell = httpx.get(f"{base}/inbox", timeout=2)
@@ -103,6 +117,33 @@ def test_profile_is_not_shipped_in_phase_one(dashboard):
     base, _ = dashboard
     response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
     assert response.status_code == 404
+
+
+def test_quick_fill_profile_requires_explicit_feature_flag():
+    store = DemoStore()
+    try:
+        server = DashboardServer(
+            ("127.0.0.1", 0),
+            store,
+            require_auth=True,
+            authentik_user="cole",
+            quick_fill_enabled=True,
+        )
+    except PermissionError:
+        pytest.skip("the test sandbox does not permit a loopback listener")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
+        session = httpx.get(f"{base}/api/v1/session", headers=AUTH, timeout=2)
+        assert response.status_code == 200
+        assert response.json()["profile"]["fields"][0]["key"] == "name"
+        assert session.json()["features"]["quick_fill"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_authenticated_jobs_round_trip(dashboard):
@@ -182,3 +223,30 @@ def test_application_state_rejects_cross_origin_write(dashboard):
     finally:
         client.close()
     assert response.status_code == 403
+
+
+def test_saved_views_round_trip_on_server_with_csrf(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        created = client.post(
+            "/api/v1/saved-views",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "Remote new",
+                "filters": {"status": "new", "remote": True},
+                "sort": "newest",
+                "pinned": True,
+            },
+        )
+        views = client.get("/api/v1/saved-views")
+        view_id = created.json()["saved_view"]["id"]
+        deleted = client.delete(
+            f"/api/v1/saved-views/{view_id}",
+            headers={"X-CSRF-Token": csrf},
+        )
+    finally:
+        client.close()
+    assert created.status_code == 201
+    assert views.json()["saved_views"][0]["name"] == "Remote new"
+    assert deleted.status_code == 200
