@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import logging
+import urllib.parse
 
 import psycopg
 from psycopg.types.json import Json
@@ -463,7 +464,12 @@ def delete_saved_view(conn: psycopg.Connection, view_id: int) -> bool:
     return changed
 
 
-def profile_data(conn: psycopg.Connection) -> dict:
+def profile_data(
+    conn: psycopg.Connection,
+    *,
+    dedupe_key: str | None = None,
+    company: str | None = None,
+) -> dict:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -498,12 +504,146 @@ def profile_data(conn: psycopg.Connection) -> dict:
             """
         )
         stories = cur.fetchall()
+        copied_fields = []
+        answer_overrides = {}
+        if dedupe_key:
+            cur.execute(
+                "select target_key from quick_fill_copy_state where dedupe_key = %s order by target_key",
+                (dedupe_key,),
+            )
+            copied_fields = [row["target_key"] for row in cur.fetchall()]
+            cur.execute(
+                "select template_name, body from answer_template_overrides where dedupe_key = %s",
+                (dedupe_key,),
+            )
+            answer_overrides = {row["template_name"]: row["body"] for row in cur.fetchall()}
+        company_account = None
+        if company:
+            cur.execute(
+                """
+                select company_name, account_exists, sign_in_email, password_manager_url, updated_at
+                  from company_accounts where company_key = %s
+                """,
+                (company.casefold().strip(),),
+            )
+            company_account = cur.fetchone()
     return {
         "fields": fields,
         "answer_templates": templates,
         "documents": documents,
         "stories": stories,
+        "copied_fields": copied_fields,
+        "answer_overrides": answer_overrides,
+        "company_account": company_account,
     }
+
+
+def mark_quick_fill_copy(conn: psycopg.Connection, dedupe_key: str, target_key: str) -> None:
+    if not dedupe_key or len(dedupe_key) > 500 or not target_key or len(target_key) > 200:
+        raise ValueError("invalid job or copy target")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into quick_fill_copy_state (dedupe_key, target_key)
+            values (%s, %s)
+            on conflict (dedupe_key, target_key) do update set copied_at = now()
+            """,
+            (dedupe_key, target_key),
+        )
+    conn.commit()
+
+
+def normalize_quick_fill_context(
+    *,
+    dedupe_key: str,
+    company: str,
+    answer_overrides: dict,
+    company_account: dict,
+) -> dict:
+    """Validate job-specific answers and password-free ATS account metadata."""
+    dedupe_key = dedupe_key.strip()
+    company = company.strip()
+    if not dedupe_key or len(dedupe_key) > 500 or not company or len(company) > 240:
+        raise ValueError("invalid job or company")
+    if not isinstance(answer_overrides, dict) or len(answer_overrides) > 50:
+        raise ValueError("answer_overrides must be an object with at most 50 entries")
+    overrides = {}
+    for name, body in answer_overrides.items():
+        clean_name = str(name).strip()
+        clean_body = str(body)
+        if not clean_name or len(clean_name) > 120 or len(clean_body) > 10_000:
+            raise ValueError("answer override name or body is invalid")
+        overrides[clean_name] = clean_body
+    if not isinstance(company_account, dict):
+        raise ValueError("company_account must be an object")
+    exists = company_account.get("account_exists")
+    if exists not in {True, False, None}:
+        raise ValueError("account_exists must be true, false, or null")
+    email = str(company_account.get("sign_in_email", "")).strip()
+    manager_url = str(company_account.get("password_manager_url", "")).strip()
+    if len(email) > 320 or len(manager_url) > 2_000:
+        raise ValueError("company account email or URL is too long")
+    if manager_url:
+        parsed = urllib.parse.urlsplit(manager_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("password manager link must be a valid HTTPS URL")
+    return {
+        "dedupe_key": dedupe_key,
+        "company": company,
+        "answer_overrides": overrides,
+        "company_account": {
+            "company_name": company,
+            "account_exists": exists,
+            "sign_in_email": email,
+            "password_manager_url": manager_url,
+        },
+    }
+
+
+def save_quick_fill_context(
+    conn: psycopg.Connection,
+    *,
+    dedupe_key: str,
+    company: str,
+    answer_overrides: dict,
+    company_account: dict,
+) -> dict:
+    clean = normalize_quick_fill_context(
+        dedupe_key=dedupe_key,
+        company=company,
+        answer_overrides=answer_overrides,
+        company_account=company_account,
+    )
+    dedupe_key = clean["dedupe_key"]
+    company = clean["company"]
+    overrides = clean["answer_overrides"]
+    account = clean["company_account"]
+
+    with conn.cursor() as cur:
+        cur.execute("delete from answer_template_overrides where dedupe_key = %s", (dedupe_key,))
+        cur.executemany(
+            "insert into answer_template_overrides (dedupe_key, template_name, body) values (%s, %s, %s)",
+            [(dedupe_key, name, body) for name, body in overrides.items()],
+        )
+        cur.execute(
+            """
+            insert into company_accounts
+                (company_key, company_name, account_exists, sign_in_email, password_manager_url)
+            values (%s, %s, %s, %s, %s)
+            on conflict (company_key) do update set
+                company_name = excluded.company_name,
+                account_exists = excluded.account_exists,
+                sign_in_email = excluded.sign_in_email,
+                password_manager_url = excluded.password_manager_url,
+                updated_at = now()
+            """,
+            (
+                company.casefold(), company, account["account_exists"],
+                account["sign_in_email"], account["password_manager_url"],
+            ),
+        )
+    conn.commit()
+    return profile_data(conn, dedupe_key=dedupe_key, company=company)
 
 
 def normalize_profile_data(payload: dict) -> dict:

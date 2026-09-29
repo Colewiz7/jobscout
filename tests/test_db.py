@@ -23,6 +23,9 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists company_accounts")
+        cur.execute("drop table if exists answer_template_overrides")
+        cur.execute("drop table if exists quick_fill_copy_state")
         cur.execute("drop table if exists story_bank")
         cur.execute("drop table if exists documents")
         cur.execute("drop table if exists answer_templates")
@@ -60,6 +63,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 3, "name": "saved_views"},
             {"version": 4, "name": "quick_fill"},
             {"version": 5, "name": "quick_fill_story_bank"},
+            {"version": 6, "name": "quick_fill_job_context"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -313,3 +317,24 @@ def test_profile_replacement_round_trips_story_bank(conn):
     assert profile["fields"][0]["value"] == "me@example.invalid"
     assert profile["stories"][0]["id"] == "recovery"
     assert profile["stories"][0]["competencies"] == ["Incident response"]
+
+
+def test_quick_fill_job_context_is_server_backed(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    database.mark_quick_fill_copy(conn, posting.dedupe_key, "field:email")
+    profile = database.save_quick_fill_context(
+        conn,
+        dedupe_key=posting.dedupe_key,
+        company="Acme",
+        answer_overrides={"Why this role": "Because the work is concrete."},
+        company_account={
+            "account_exists": True,
+            "sign_in_email": "me@example.invalid",
+            "password_manager_url": "https://passwords.example.invalid/acme",
+        },
+    )
+
+    assert profile["copied_fields"] == ["field:email"]
+    assert profile["answer_overrides"] == {"Why this role": "Because the work is concrete."}
+    assert profile["company_account"]["account_exists"] is True

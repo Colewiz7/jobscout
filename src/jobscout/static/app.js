@@ -63,6 +63,8 @@ const state = {
   copiedByJob: new Map(), copiedKey: "", quickFillPopout: null,
   quickFillEdit: false, quickFillSaveState: "", quickFillSaveTimer: null,
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
+  quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
+  quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
 };
 
 let commandSelection = 0;
@@ -412,7 +414,11 @@ function renderInbox({ focus = false } = {}) {
     renderVirtualRows();
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
-  if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) renderQuickFill();
+  if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) {
+    const job = currentJob();
+    const contextKey = job ? `${job.dedupe_key}\u0000${job.company}` : "";
+    if (contextKey && contextKey !== state.quickFillContextKey) loadQuickFillContext(); else renderQuickFill();
+  }
   if (focus) document.querySelector("#job-title, .inbox-list h1")?.focus({ preventScroll: true });
 }
 
@@ -512,6 +518,13 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function safeHttpsUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" ? url.href : "";
+  } catch { return ""; }
+}
+
 function quickFillGroups() {
   const profile = state.quickFillProfile || {};
   const query = state.quickFillQuery.trim().toLowerCase();
@@ -524,16 +537,21 @@ function quickFillGroups() {
   const documents = (Array.isArray(profile.documents) ? profile.documents : [])
     .filter((document) => document?.name)
     .map((document) => ({
-      key: `document:${document.id}`, label: document.name,
+      key: `document:${document.name}`, label: document.name,
       value: String(document.url || document.name), group: "Documents",
       detail: document.date ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(`${document.date}T00:00:00`)) : "",
     }));
   const templates = (Array.isArray(profile.answer_templates) ? profile.answer_templates : [])
     .filter((template) => String(template?.body || "").trim())
     .map((template) => {
-      const value = templateValue(template.body);
-      return { key: `template:${template.id}`, label: template.name, value, group: "Short answers", detail: `${new Intl.NumberFormat().format(value.length)} characters` };
+      const value = templateValue(profile.answer_overrides?.[template.name] ?? template.body);
+      return { key: `template:${template.name}`, label: template.name, value, group: "Short answers", detail: `${new Intl.NumberFormat().format(value.length)} characters` };
     });
+  const account = profile.company_account;
+  const accountItems = account?.sign_in_email ? [{
+    key: "account:email", label: "ATS sign-in email", value: account.sign_in_email,
+    group: "ATS account", detail: account.account_exists === true ? "Account confirmed" : account.account_exists === false ? "No account yet" : "Account status unknown",
+  }] : [];
   const stories = (Array.isArray(profile.stories) ? profile.stories : [])
     .filter((story) => story?.title)
     .map((story) => {
@@ -546,7 +564,7 @@ function quickFillGroups() {
         detail: (story.competencies || []).join(" · "),
       };
     }).filter((story) => story.value);
-  const all = [...fields, ...documents, ...templates, ...stories];
+  const all = [...fields, ...documents, ...templates, ...stories, ...accountItems];
   const order = state.atsOrdering[detectedAts()] || state.atsOrdering.default || [];
   const groups = [];
   const candidates = [
@@ -561,22 +579,30 @@ function quickFillGroups() {
   return groups;
 }
 
-function editorField(label, value, attributes, { multiline = false } = {}) {
+function editorField(label, value, attributes, {
+  multiline = false, type = "text", inputmode = "", autocomplete = "",
+  spellcheck = "", autocapitalize = "",
+} = {}) {
+  const nativeAttributes = `${inputmode ? ` inputmode="${inputmode}"` : ""}${autocomplete ? ` autocomplete="${autocomplete}"` : ""}${spellcheck ? ` spellcheck="${spellcheck}"` : ""}${autocapitalize ? ` autocapitalize="${autocapitalize}"` : ""}`;
   const control = multiline
     ? `<textarea rows="3" ${attributes}>${escapeHtml(value)}</textarea>`
-    : `<input type="text" value="${escapeHtml(value)}" ${attributes}>`;
+    : `<input type="${type}" value="${escapeHtml(value)}"${nativeAttributes} ${attributes}>`;
   return `<label class="quick-fill-edit-field"><span>${escapeHtml(label)}</span>${control}</label>`;
 }
 
 function quickFillEditorMarkup() {
   const profile = state.quickFillProfile || {};
+  const job = currentJob();
   const fields = (profile.fields || []).map((field, index) => editorField(
     field.label || field.key, field.value || "", `data-profile-kind="fields" data-profile-index="${index}" data-profile-property="value"`,
   )).join("");
   const templates = (profile.answer_templates || []).map((template, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Template", template.body || "", `data-profile-kind="answer_templates" data-profile-index="${index}" data-profile-property="body"`, { multiline: true })}<small>${new Intl.NumberFormat().format(String(template.body || "").length)} characters before variables are replaced</small></details>`).join("");
   const documents = (profile.documents || []).map((document, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}</summary>${editorField("Name", document.name || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="name"`)}${editorField("Date", document.date || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="date"`)}${editorField("Path or URL", document.url || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="url"`)}</details>`).join("");
   const stories = (profile.stories || []).map((story, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(story.title)}</summary>${editorField("Title", story.title || "", `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="title"`)}${editorField("Competencies", (story.competencies || []).join(", "), `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="competencies"`)}${["situation", "task", "action", "result", "reflection"].map((part) => editorField(statusLabel(part), story[part] || "", `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="${part}"`, { multiline: true })).join("")}</details>`).join("");
-  return `<div class="quick-fill-editor"><section><h3>Profile fields</h3>${fields}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section><section><h3>Story bank</h3>${stories || '<p class="quick-fill-empty">No stories yet.</p>'}</section><div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
+  const account = profile.company_account || {};
+  const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section><section><h3>Story bank</h3>${stories || '<p class="quick-fill-empty">No stories yet.</p>'}</section><div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false } = {}) {
@@ -598,9 +624,13 @@ function quickFillInnerMarkup({ popout = false } = {}) {
   }).join("");
   const status = ats === "default" ? "Standard order" : `${ats.slice(0, 1).toUpperCase()}${ats.slice(1)} order`;
   const guidance = state.atsOrdering._guidance?.[ats] || state.atsOrdering._guidance?.default || "";
+  const passwordManagerUrl = safeHttpsUrl(state.quickFillProfile?.company_account?.password_manager_url);
+  const passwordManagerLink = passwordManagerUrl
+    ? `<a class="quick-fill-password-link" href="${escapeHtml(passwordManagerUrl)}" target="_blank" rel="noopener noreferrer">Open password manager</a>`
+    : "";
   const body = state.quickFillEdit
     ? quickFillEditorMarkup()
-    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || '<p class="quick-fill-empty">No filled fields match this search.</p>'}</div>`;
+    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || '<p class="quick-fill-empty">No filled fields match this search.</p>'}</div>`;
   return `<div class="quick-fill-header"><div><h2>Quick-fill</h2><p>${state.quickFillEdit ? `<span class="quick-fill-save-state">${escapeHtml(state.quickFillSaveState || "Changes save automatically")}</span>` : escapeHtml(status)}</p></div><button class="text-button interactive quick-fill-edit-toggle" type="button" data-quick-fill-edit>${state.quickFillEdit ? "Done" : "Edit"}</button><button class="icon-button interactive" type="button" data-quick-fill-popout aria-label="Pop out Quick-fill" ${popout ? "hidden" : ""}>${icons.external}</button><button class="icon-button interactive" type="button" data-quick-fill-close aria-label="Close Quick-fill">${icons.close}</button></div>${body}`;
 }
 
@@ -621,6 +651,10 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
     }
   });
   root.addEventListener("input", (event) => {
+    if (event.target.matches("[data-context-kind]:not(select)")) {
+      updateQuickFillContext(event.target);
+      return;
+    }
     if (event.target.matches("[data-profile-kind]")) {
       updateQuickFillProfile(event.target);
       return;
@@ -632,6 +666,7 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
     search?.focus(); search?.setSelectionRange(state.quickFillQuery.length, state.quickFillQuery.length);
   });
   root.addEventListener("change", (event) => {
+    if (event.target.matches("select[data-context-kind]")) { updateQuickFillContext(event.target); return; }
     if (event.target.matches("[data-profile-import]") && event.target.files?.[0]) {
       const [file] = event.target.files; event.target.value = ""; importQuickFillProfile(file);
     }
@@ -667,6 +702,15 @@ function profileDocument(profile = state.quickFillProfile) {
   };
 }
 
+function profileContextDocument(profile = state.quickFillProfile) {
+  return {
+    answer_overrides: cloneJson(profile?.answer_overrides || {}),
+    company_account: cloneJson(profile?.company_account || {
+      account_exists: null, sign_in_email: "", password_manager_url: "",
+    }),
+  };
+}
+
 async function persistQuickFillProfile(profile) {
   const response = await fetch("/api/v1/profile", {
     method: "PUT", credentials: "same-origin",
@@ -674,6 +718,21 @@ async function persistQuickFillProfile(profile) {
     body: JSON.stringify({ profile }),
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Quick-fill could not be saved.");
+  return (await response.json()).profile;
+}
+
+async function persistQuickFillContext(context, job) {
+  if (!job) throw new Error("Choose a job before saving its Quick-fill details.");
+  const response = await fetch("/api/v1/profile/context", {
+    method: "PUT", credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+    body: JSON.stringify({
+      dedupe_key: job.dedupe_key, company: job.company,
+      answer_overrides: context.answer_overrides,
+      company_account: context.company_account,
+    }),
+  });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Job-specific Quick-fill details could not be saved.");
   return (await response.json()).profile;
 }
 
@@ -696,6 +755,7 @@ function updateQuickFillProfile(control) {
     setQuickFillSaveState("Saving…");
     try {
       const saved = await persistQuickFillProfile(snapshot);
+      Object.assign(saved, profileContextDocument());
       state.quickFillSavedProfile = cloneJson(saved);
       if (version === state.quickFillSaveVersion) {
         state.quickFillProfile = saved;
@@ -704,6 +764,51 @@ function updateQuickFillProfile(control) {
     } catch (error) {
       if (version === state.quickFillSaveVersion && state.quickFillSavedProfile) {
         state.quickFillProfile = cloneJson(state.quickFillSavedProfile);
+        renderQuickFill();
+      }
+      assertiveRegion.textContent = `${error.message} Changes rolled back.`;
+      showSnackbar(`${error.message} Changes rolled back.`);
+    }
+  }, 600);
+}
+
+function updateQuickFillContext(control) {
+  if (!state.quickFillProfile) return;
+  const job = currentJob();
+  if (!job) return;
+  const contextKey = `${job.dedupe_key}\u0000${job.company}`;
+  if (!state.quickFillProfile.answer_overrides) state.quickFillProfile.answer_overrides = {};
+  if (!state.quickFillProfile.company_account) state.quickFillProfile.company_account = {
+    account_exists: null, sign_in_email: "", password_manager_url: "",
+  };
+  if (control.dataset.contextKind === "override") {
+    const key = control.dataset.contextKey;
+    if (control.value) state.quickFillProfile.answer_overrides[key] = control.value;
+    else delete state.quickFillProfile.answer_overrides[key];
+  } else if (control.dataset.contextKind === "account") {
+    const property = control.dataset.contextProperty;
+    state.quickFillProfile.company_account[property] = property === "account_exists"
+      ? control.value === "" ? null : control.value === "yes"
+      : control.value;
+  }
+  state.quickFillContextVersion += 1;
+  const version = state.quickFillContextVersion;
+  const snapshot = profileContextDocument();
+  clearTimeout(state.quickFillContextTimer);
+  setQuickFillSaveState("Unsaved changes");
+  state.quickFillContextTimer = setTimeout(async () => {
+    setQuickFillSaveState("Saving…");
+    try {
+      const saved = await persistQuickFillContext(snapshot, job);
+      if (version === state.quickFillContextVersion && contextKey === state.quickFillContextKey) {
+        state.quickFillSavedContext = profileContextDocument(saved);
+        state.quickFillProfile.answer_overrides = saved.answer_overrides;
+        state.quickFillProfile.company_account = saved.company_account;
+        setQuickFillSaveState("Saved automatically");
+      }
+    } catch (error) {
+      if (version === state.quickFillContextVersion && contextKey === state.quickFillContextKey && state.quickFillSavedContext) {
+        Object.assign(state.quickFillProfile, cloneJson(state.quickFillSavedContext));
         renderQuickFill();
       }
       assertiveRegion.textContent = `${error.message} Changes rolled back.`;
@@ -723,11 +828,13 @@ function exportQuickFillProfile() {
 
 async function importQuickFillProfile(file) {
   const previous = profileDocument();
+  const context = profileContextDocument();
   setQuickFillSaveState("Importing…");
   try {
     const parsed = JSON.parse(await file.text());
     const candidate = parsed.profile && typeof parsed.profile === "object" ? parsed.profile : parsed;
     const saved = await persistQuickFillProfile(candidate);
+    Object.assign(saved, context);
     state.quickFillProfile = saved;
     state.quickFillSavedProfile = cloneJson(saved);
     state.quickFillSaveVersion += 1;
@@ -738,6 +845,7 @@ async function importQuickFillProfile(file) {
       onAction: async () => {
         try {
           const restored = await persistQuickFillProfile(previous);
+          Object.assign(restored, context);
           state.quickFillProfile = restored; state.quickFillSavedProfile = cloneJson(restored); renderQuickFill(); showSnackbar("Import undone.");
         } catch (error) { showSnackbar(error.message || "The import could not be undone."); }
       },
@@ -776,12 +884,53 @@ async function loadQuickFillData() {
     state.quickFillError = error instanceof Error ? error.message : "Quick-fill data did not respond.";
   }
   renderQuickFill();
+  if (state.quickFillProfile && (state.quickFillOpen || state.quickFillPopout) && currentJob()) {
+    loadQuickFillContext();
+  }
+}
+
+async function loadQuickFillContext() {
+  const job = currentJob();
+  if (!job || !state.quickFillProfile) return;
+  const contextKey = `${job.dedupe_key}\u0000${job.company}`;
+  if (contextKey === state.quickFillContextPendingKey) return;
+  state.quickFillContextPendingKey = contextKey;
+  state.quickFillContextKey = contextKey;
+  state.quickFillContextLoadVersion += 1;
+  const version = state.quickFillContextLoadVersion;
+  state.quickFillProfile.answer_overrides = {};
+  state.quickFillProfile.company_account = null;
+  state.copiedByJob.set(job.dedupe_key, new Set());
+  renderQuickFill();
+  try {
+    const params = new URLSearchParams({ job: job.dedupe_key, company: job.company });
+    const response = await fetch(`/api/v1/profile?${params}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Job-specific Quick-fill details did not respond.");
+    const profile = (await response.json()).profile || {};
+    const selected = currentJob();
+    if (version !== state.quickFillContextLoadVersion || !selected || `${selected.dedupe_key}\u0000${selected.company}` !== contextKey) return;
+    state.quickFillProfile = profile;
+    state.quickFillSavedProfile = cloneJson(profile);
+    state.quickFillSavedContext = profileContextDocument(profile);
+    state.copiedByJob.set(job.dedupe_key, new Set(profile.copied_fields || []));
+    state.quickFillError = "";
+  } catch (error) {
+    if (version === state.quickFillContextLoadVersion) {
+      state.quickFillError = error instanceof Error ? error.message : "Job-specific Quick-fill details did not respond.";
+    }
+  } finally {
+    if (version === state.quickFillContextLoadVersion) {
+      state.quickFillContextPendingKey = "";
+      renderQuickFill();
+    }
+  }
 }
 
 function openQuickFill() {
   if (!state.quickFillEnabled) return;
   state.quickFillOpen = true;
   renderQuickFill();
+  loadQuickFillContext();
   requestAnimationFrame(() => quickFillSheet.querySelector("input")?.focus());
 }
 
@@ -814,6 +963,19 @@ async function copyQuickFillItem(index) {
   state.copiedKey = item.key;
   renderQuickFill();
   showSnackbar(`Copied ${item.label.toLowerCase()}.`);
+  if (jobKey !== "none") {
+    fetch("/api/v1/profile/copy", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ dedupe_key: jobKey, target_key: item.key }),
+    }).then(async (response) => {
+      if (response.ok) return;
+      state.copiedByJob.get(jobKey)?.delete(item.key); renderQuickFill();
+      showSnackbar((await response.json().catch(() => ({}))).error || "Copy marker could not be saved.");
+    }).catch(() => {
+      state.copiedByJob.get(jobKey)?.delete(item.key); renderQuickFill(); showSnackbar("Copy marker could not be saved.");
+    });
+  }
   setTimeout(() => { if (state.copiedKey === item.key) { state.copiedKey = ""; renderQuickFill(); } }, 1500);
 }
 
