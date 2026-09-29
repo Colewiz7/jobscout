@@ -143,6 +143,40 @@ JOBSCOUT_SEED=true python -m jobscout run               # record, push nothing
 python -m jobscout discover-boards                      # derive slugs
 ```
 
+## Application dashboard
+
+The dashboard is a separate, long-running process over the same Postgres. It
+does not change the six-hour scout: discovery still wakes, stores, notifies and
+exits. The dashboard adds the human half of the workflow on top.
+
+```bash
+DATABASE_URL=postgresql://... python -m jobscout dashboard
+```
+
+Open `http://localhost:8080`. Use `--host` and `--port` to change the listener.
+For a database-free visual preview:
+
+```bash
+python -m jobscout dashboard --demo
+```
+
+The workspace includes:
+
+- a searchable, sortable job queue with the scout's score and explanation
+- persistent saved, preparing, applied, interview, offer and rejection states
+- per-job notes with autosave
+- one-click access to the original application
+- a copy kit for personal details, common form answers, links and resume
+- role-matched project evidence and a tailored first-person introduction
+- desktop three-pane, tablet drawer and phone navigation layouts
+
+Public application details live in `config/profile.yaml`. Set
+`JOBSCOUT_PROFILE` or pass `--profile` to mount a private version containing a
+phone number or other details that should not be committed. The dashboard sets
+a self-only Content Security Policy and refuses cross-origin state changes; it
+is still intended to sit behind the same authenticated private ingress as the
+rest of the operator tools.
+
 `JOBSCOUT_SEED` exists because the first run after adding boards treats every
 existing match as new. Seeding records them and pushes nothing, so the first
 real notification is a genuinely new posting.
@@ -156,7 +190,9 @@ src/jobscout/
   filters.py       the four gates, scoring, ranking
   models.py        Posting, and the dedupe key
   db.py            schema, upsert, the close rule, scores
+  dashboard.py     application workspace HTTP service and API
   notify.py        ntfy
+  static/          dependency-free Material 3 dashboard
   sources/
     boards.py      every provider
     simplify.py    the community lists

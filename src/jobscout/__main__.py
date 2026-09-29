@@ -354,6 +354,24 @@ def cmd_selftest(args) -> int:
     return 0
 
 
+def cmd_dashboard(args) -> int:
+    """Serve the focused application workspace."""
+    from .dashboard import serve
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not args.demo and not dsn:
+        log.error("DATABASE_URL is not set (or pass --demo for a local preview)")
+        return 2
+    serve(
+        dsn=dsn,
+        host=args.host,
+        port=args.port,
+        profile_path=args.profile,
+        demo=args.demo,
+    )
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="jobscout")
     parser.add_argument("--config", default=None, help="path to filters YAML")
@@ -366,6 +384,11 @@ def main(argv=None) -> int:
     discover_parser.add_argument("-o", "--out", help="write YAML here instead of stdout")
     export_parser = sub.add_parser("export", help="dump open postings as markdown")
     export_parser.add_argument("-o", "--out", help="write markdown here instead of stdout")
+    dashboard_parser = sub.add_parser("dashboard", help="serve the application workspace")
+    dashboard_parser.add_argument("--host", default="0.0.0.0")
+    dashboard_parser.add_argument("--port", default=8080, type=int)
+    dashboard_parser.add_argument("--profile", default=None, help="path to profile YAML")
+    dashboard_parser.add_argument("--demo", action="store_true", help="serve sample jobs without Postgres")
     sub.add_parser("selftest", help="import and filter smoke test")
 
     args = parser.parse_args(argv)
@@ -378,6 +401,7 @@ def main(argv=None) -> int:
         "discover-boards": cmd_discover,
         "export": cmd_export,
         "selftest": cmd_selftest,
+        "dashboard": cmd_dashboard,
         "check": cmd_check,
         None: cmd_run,
     }[args.command](args)

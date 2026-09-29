@@ -56,6 +56,17 @@ create table if not exists board_notices (
     first_seen timestamptz not null default now()
 );
 
+create table if not exists application_states (
+    dedupe_key text primary key,
+    status     text not null default 'new'
+               check (status in (
+                   'new', 'saved', 'preparing', 'applied', 'interview',
+                   'offer', 'rejected', 'skipped'
+               )),
+    notes      text not null default '',
+    updated_at timestamptz not null default now()
+);
+
 create index if not exists postings_dedupe_key_idx on postings (dedupe_key);
 create index if not exists postings_fallback_key_idx on postings (fallback_key);
 create index if not exists postings_pending_idx on postings (notified_at)
@@ -303,3 +314,84 @@ def notice_once(conn: psycopg.Connection, key: str) -> bool:
         fresh = cur.rowcount == 1
     conn.commit()
     return fresh
+
+
+APPLICATION_STATUSES = frozenset(
+    {"new", "saved", "preparing", "applied", "interview", "offer", "rejected", "skipped"}
+)
+
+
+def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -> list[dict]:
+    """Every posting needed by the application desk, collapsed to one job.
+
+    Notification state and application state are deliberately independent. A
+    notification says the scout surfaced a posting; application state records
+    what the person did with it afterwards.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            with grouped as (
+                select p.dedupe_key,
+                       min(p.company) as company,
+                       min(p.title) as title,
+                       min(p.terms) as terms,
+                       min(p.age_days) as age_days,
+                       min(p.first_seen) as first_seen,
+                       max(p.last_seen) as last_seen,
+                       min(p.url) filter (where p.url <> '') as url,
+                       string_agg(p.location, ';') as locations_raw,
+                       string_agg(distinct p.source, ', ' order by p.source) as sources,
+                       bool_and(p.closed) as closed,
+                       bool_or(p.notified_at is not null) as notified,
+                       max(p.score) as score,
+                       (array_agg(p.score_detail order by p.score desc nulls last)
+                           filter (where p.score_detail is not null))[1] as score_detail
+                  from postings p
+                 where (%s or not p.closed)
+                 group by p.dedupe_key
+            )
+            select g.dedupe_key, g.company, g.title, g.terms, g.age_days,
+                   g.first_seen, g.last_seen, coalesce(g.url, '') as url,
+                   g.sources, g.closed, g.notified, g.score,
+                   coalesce(g.score_detail, '{}'::jsonb) as score_detail,
+                   coalesce(s.status, 'new') as status,
+                   coalesce(s.notes, '') as notes,
+                   s.updated_at as application_updated_at,
+                   (select coalesce(
+                       string_agg(distinct btrim(part), '; ' order by btrim(part)), '')
+                      from unnest(string_to_array(g.locations_raw, ';')) as part
+                     where btrim(part) <> '') as location
+              from grouped g
+              left join application_states s on s.dedupe_key = g.dedupe_key
+             order by g.score desc nulls last, g.age_days asc nulls last,
+                      lower(g.company), lower(g.title)
+            """,
+            (include_closed,),
+        )
+        return cur.fetchall()
+
+
+def save_application_state(
+    conn: psycopg.Connection, dedupe_key: str, status: str, notes: str
+) -> bool:
+    """Persist a person's workflow state, if the posting actually exists."""
+    if status not in APPLICATION_STATUSES:
+        raise ValueError(f"unknown application status: {status}")
+    with conn.cursor() as cur:
+        cur.execute("select 1 from postings where dedupe_key = %s limit 1", (dedupe_key,))
+        if cur.fetchone() is None:
+            return False
+        cur.execute(
+            """
+            insert into application_states (dedupe_key, status, notes)
+            values (%s, %s, %s)
+            on conflict (dedupe_key) do update set
+                status = excluded.status,
+                notes = excluded.notes,
+                updated_at = now()
+            """,
+            (dedupe_key, status, notes),
+        )
+    conn.commit()
+    return True

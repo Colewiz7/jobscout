@@ -193,3 +193,27 @@ def test_age_is_stored_and_open_postings_can_be_exported(conn):
     # Seeding silences notifications but must not hide rows from an export.
     assert database.pending(conn) == []
     assert len(database.open_postings(conn, only_unnotified=False)) == 2
+
+
+def test_dashboard_combines_posting_and_application_state(conn):
+    posting = _p(age_days=2)
+    database.upsert_open(conn, [posting])
+    database.record_scores(conn, [(posting.dedupe_key, 130, {"role_named": 100})])
+
+    assert database.save_application_state(
+        conn, posting.dedupe_key, "preparing", "Tailor the platform bullets"
+    )
+    rows = database.dashboard_postings(conn)
+
+    assert len(rows) == 1
+    assert rows[0]["score"] == 130
+    assert rows[0]["score_detail"] == {"role_named": 100}
+    assert rows[0]["status"] == "preparing"
+    assert rows[0]["notes"] == "Tailor the platform bullets"
+
+
+def test_application_state_only_accepts_known_postings_and_statuses(conn):
+    assert not database.save_application_state(conn, "missing", "saved", "")
+    database.upsert_open(conn, [_p()])
+    with pytest.raises(ValueError, match="unknown application status"):
+        database.save_application_state(conn, _p().dedupe_key, "thinking", "")
