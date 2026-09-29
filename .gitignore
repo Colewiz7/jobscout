@@ -6,3 +6,10 @@ __pycache__/
 # discover-boards output: a working file to prune, not a tracked artifact
 boards.discovered.yaml
 matches.md
+# Private migration fixtures and local profile overrides never belong in git.
+*.dump
+*.backup
+.env
+.env.*
+!.env.example
+config/profile.local.yaml

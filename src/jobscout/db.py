@@ -1,7 +1,7 @@
 """Postgres persistence and the dedupe/close rules.
 
-Schema is created by the job itself, idempotently, so there is no separate
-migration step to forget on a fresh CNPG cluster.
+Schema changes belong to the locked one-shot migration runner. Runtime scout
+and dashboard processes only verify that the recorded version is current.
 """
 from __future__ import annotations
 
@@ -79,9 +79,21 @@ def connect(dsn: str) -> psycopg.Connection:
 
 
 def ensure_schema(conn: psycopg.Connection) -> None:
-    with conn.cursor() as cur:
-        cur.execute(SCHEMA)
-    conn.commit()
+    """Test/bootstrap compatibility wrapper around the migration runner.
+
+    Production scout and dashboard processes call ``require_current`` instead;
+    only the one-shot migration Job is allowed to mutate schema.
+    """
+    from . import migrations
+
+    migrations.run(conn)
+
+
+def require_schema(conn: psycopg.Connection) -> None:
+    """Verify that the deployment migration hook has brought the schema current."""
+    from . import migrations
+
+    migrations.require_current(conn)
 
 
 def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:

@@ -118,7 +118,7 @@ def cmd_run(args) -> int:
 
         conn = database.connect(dsn)
         try:
-            database.ensure_schema(conn)
+            database.require_schema(conn)
             new_rows = database.upsert_open(
                 conn, matched_simplify + matched_boards + matched_mail
             )
@@ -372,6 +372,23 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def cmd_migrate(args) -> int:
+    """Apply schema changes for the Argo CD PreSync Job."""
+    from . import migrations
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        log.error("DATABASE_URL is not set")
+        return 2
+    with database.connect(dsn) as conn:
+        applied = migrations.run(conn)
+    if applied:
+        log.info("applied %d migration(s); database is current", len(applied))
+    else:
+        log.info("database is current")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="jobscout")
     parser.add_argument("--config", default=None, help="path to filters YAML")
@@ -389,6 +406,7 @@ def main(argv=None) -> int:
     dashboard_parser.add_argument("--port", default=8080, type=int)
     dashboard_parser.add_argument("--profile", default=None, help="path to profile YAML")
     dashboard_parser.add_argument("--demo", action="store_true", help="serve sample jobs without Postgres")
+    sub.add_parser("migrate", help="apply database migrations and exit")
     sub.add_parser("selftest", help="import and filter smoke test")
 
     args = parser.parse_args(argv)
@@ -402,6 +420,7 @@ def main(argv=None) -> int:
         "export": cmd_export,
         "selftest": cmd_selftest,
         "dashboard": cmd_dashboard,
+        "migrate": cmd_migrate,
         "check": cmd_check,
         None: cmd_run,
     }[args.command](args)

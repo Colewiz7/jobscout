@@ -21,7 +21,7 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-jobscout = ["static/*"]
+jobscout = ["static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

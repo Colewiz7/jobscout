@@ -1,18 +1,17 @@
-"""Small, dependency-free HTTP service for the job application workspace.
-
-The scout remains a short-lived CronJob. This process is a separate deployment
-which reads the same Postgres and owns only the human application workflow.
-"""
+"""Dependency-free HTTP boundary for the JobSeer application workspace."""
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
 import logging
 import mimetypes
 import os
 import pathlib
+import secrets
 import urllib.parse
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -24,6 +23,8 @@ log = logging.getLogger("jobscout.dashboard")
 STATIC_ROOT = pathlib.Path(__file__).with_name("static")
 DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "profile.yaml"
 MAX_BODY = 64 * 1024
+CSRF_COOKIE = "jobseer_csrf"
+APP_ROUTE_ROOTS = frozenset({"inbox", "queue", "tracker", "companies", "profile"})
 
 
 def _json_value(value: Any) -> Any:
@@ -33,10 +34,15 @@ def _json_value(value: Any) -> Any:
 
 
 def load_profile(path: str | os.PathLike | None = None) -> dict:
+    """Load the non-secret seed and overlay private scalar fields from env."""
     profile_path = pathlib.Path(path or os.environ.get("JOBSCOUT_PROFILE") or DEFAULT_PROFILE)
     raw = yaml.safe_load(profile_path.read_text()) or {}
     if not isinstance(raw, dict):
         raise ValueError("profile YAML must contain a mapping")
+    for field in ("name", "email", "phone", "location"):
+        value = os.environ.get(f"JOBSCOUT_PROFILE_{field.upper()}")
+        if value is not None:
+            raw[field] = value
     return raw
 
 
@@ -46,12 +52,12 @@ class PostgresStore:
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         with database.connect(self.dsn) as conn:
-            database.ensure_schema(conn)
+            database.require_schema(conn)
             return database.dashboard_postings(conn, include_closed=include_closed)
 
     def save(self, key: str, status: str, notes: str) -> bool:
         with database.connect(self.dsn) as conn:
-            database.ensure_schema(conn)
+            database.require_schema(conn)
             return database.save_application_state(conn, key, status, notes)
 
     def healthy(self) -> bool:
@@ -84,44 +90,12 @@ class DemoStore:
             {
                 "dedupe_key": "demo:2", "company": "Datadog",
                 "title": "Cloud Platform Engineering Intern",
-                "location": "New York, NY", "terms": "",
-                "age_days": 3, "first_seen": now - dt.timedelta(days=3),
-                "last_seen": now, "url": "https://example.com/apply", "sources": "greenhouse, simplify-s27",
+                "location": "New York, NY", "terms": "", "age_days": 3,
+                "first_seen": now - dt.timedelta(days=3), "last_seen": now,
+                "url": "https://example.com/apply", "sources": "greenhouse, simplify-s27",
                 "closed": False, "notified": True, "score": 130,
                 "score_detail": {"role_named": 100, "internship": 20, "fresh": 10},
                 "status": "new", "notes": "", "application_updated_at": None,
-            },
-            {
-                "dedupe_key": "demo:3", "company": "Fastly",
-                "title": "Infrastructure Engineering Co-op",
-                "location": "Remote in USA", "terms": "Spring 2027",
-                "age_days": 6, "first_seen": now - dt.timedelta(days=6),
-                "last_seen": now, "url": "https://example.com/apply", "sources": "lever",
-                "closed": False, "notified": True, "score": 180,
-                "score_detail": {"role_named": 100, "co_op": 40, "wanted_term": 30, "fresh": 10},
-                "status": "saved", "notes": "", "application_updated_at": now,
-            },
-            {
-                "dedupe_key": "demo:4", "company": "Grafana Labs",
-                "title": "Developer Infrastructure Intern",
-                "location": "Remote — United States", "terms": "Summer 2027",
-                "age_days": 9, "first_seen": now - dt.timedelta(days=9),
-                "last_seen": now, "url": "https://example.com/apply", "sources": "greenhouse",
-                "closed": False, "notified": True, "score": 150,
-                "score_detail": {"role_named": 100, "internship": 20, "wanted_term": 30},
-                "status": "applied", "notes": "Applied through Greenhouse.",
-                "application_updated_at": now,
-            },
-            {
-                "dedupe_key": "demo:5", "company": "Tailscale",
-                "title": "Systems Engineering Intern",
-                "location": "New York, NY", "terms": "",
-                "age_days": 12, "first_seen": now - dt.timedelta(days=12),
-                "last_seen": now, "url": "https://example.com/apply", "sources": "ashby",
-                "closed": False, "notified": True, "score": 120,
-                "score_detail": {"role_named": 100, "internship": 20},
-                "status": "interview", "notes": "Technical screen Tuesday at 2 PM.",
-                "application_updated_at": now,
             },
         ]
 
@@ -133,7 +107,11 @@ class DemoStore:
             raise ValueError(f"unknown application status: {status}")
         for row in self.rows:
             if row["dedupe_key"] == key:
-                row.update(status=status, notes=notes, application_updated_at=dt.datetime.now(dt.timezone.utc))
+                row.update(
+                    status=status,
+                    notes=notes,
+                    application_updated_at=dt.datetime.now(dt.timezone.utc),
+                )
                 return True
         return False
 
@@ -142,7 +120,7 @@ class DemoStore:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    server_version = "jobscout-dashboard"
+    server_version = "jobseer-dashboard"
 
     @property
     def app(self):
@@ -155,7 +133,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'self'; connect-src 'self'; "
-            "font-src 'self'; form-action 'none'; frame-ancestors 'none'; "
+            "font-src 'self'; form-action 'self'; frame-ancestors 'none'; "
             "img-src 'self' data:; object-src 'none'; script-src 'self'; "
             "style-src 'self'",
         )
@@ -164,12 +142,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
-    def _json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _json(
+        self,
+        payload: Any,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, default=_json_value, separators=(",", ":")).encode()
         self.send_response(status)
         self._security_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -177,11 +162,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _error(self, status: HTTPStatus, message: str) -> None:
         self._json({"error": message}, status)
 
+    def _auth_user(self) -> str | None:
+        if not self.app.require_auth:
+            return "demo"
+        return self.headers.get("X-authentik-username") or None
+
+    def _require_api_auth(self) -> str | None:
+        user = self._auth_user()
+        if user is None:
+            self._error(
+                HTTPStatus.UNAUTHORIZED,
+                "Authentik session missing. Open JobSeer through its protected URL.",
+            )
+        return user
+
     def _same_origin(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
             return True
         return urllib.parse.urlsplit(origin).netloc == self.headers.get("Host", "")
+
+    def _valid_csrf(self) -> bool:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        morsel = cookie.get(CSRF_COOKIE)
+        header = self.headers.get("X-CSRF-Token", "")
+        return bool(
+            morsel
+            and header
+            and hmac.compare_digest(morsel.value, header)
+            and hmac.compare_digest(header, self.app.csrf_token)
+        )
 
     def _static(self, relative: str) -> None:
         path = (STATIC_ROOT / relative).resolve()
@@ -198,42 +208,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _is_app_route(self, path: str) -> bool:
+        root = path.strip("/").split("/", 1)[0]
+        return path in {"/", "/index.html"} or root in APP_ROUTE_ROOTS
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        if parsed.path in {"/", "/index.html"}:
-            self._static("index.html")
+        if parsed.path.startswith("/api/v1/"):
+            user = self._require_api_auth()
+            if user is None:
+                return
+            if parsed.path == "/api/v1/session":
+                secure = self.headers.get("X-Forwarded-Proto") == "https"
+                cookie = (
+                    f"{CSRF_COOKIE}={self.app.csrf_token}; Path=/; SameSite=Strict; HttpOnly"
+                    + ("; Secure" if secure else "")
+                )
+                self._json(
+                    {"user": user, "csrf_token": self.app.csrf_token},
+                    headers={"Set-Cookie": cookie},
+                )
+                return
+            if parsed.path == "/api/v1/jobs":
+                query = urllib.parse.parse_qs(parsed.query)
+                include_closed = query.get("closed", [""])[0].lower() in {"1", "true", "yes"}
+                try:
+                    jobs = self.app.store.jobs(include_closed=include_closed)
+                except Exception:
+                    log.exception("could not load dashboard jobs")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load jobs. Retry shortly.")
+                    return
+                self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
+                return
+            self._error(HTTPStatus.NOT_FOUND, "not found")
             return
         if parsed.path.startswith("/static/"):
             self._static(parsed.path.removeprefix("/static/"))
-            return
-        if parsed.path == "/api/profile":
-            self._json(self.app.profile)
-            return
-        if parsed.path == "/api/jobs":
-            query = urllib.parse.parse_qs(parsed.query)
-            include_closed = query.get("closed", [""])[0].lower() in {"1", "true", "yes"}
-            try:
-                jobs = self.app.store.jobs(include_closed=include_closed)
-            except Exception:
-                log.exception("could not load dashboard jobs")
-                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "could not load jobs")
-                return
-            self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
             return
         if parsed.path == "/healthz":
             ok = self.app.store.healthy()
             self._json({"ok": ok}, HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE)
             return
+        if self._is_app_route(parsed.path):
+            self._static("index.html")
+            return
         self._error(HTTPStatus.NOT_FOUND, "not found")
 
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        prefix = "/api/jobs/"
+        prefix = "/api/v1/jobs/"
         if not parsed.path.startswith(prefix):
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
-        if not self._same_origin():
-            self._error(HTTPStatus.FORBIDDEN, "cross-origin update refused")
+        if self._require_api_auth() is None:
+            return
+        if not self._same_origin() or not self._valid_csrf():
+            self._error(HTTPStatus.FORBIDDEN, "Security token missing or expired. Reload and retry.")
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -256,7 +286,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         except Exception:
             log.exception("could not save application state")
-            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "could not save application state")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
             return
         if not saved:
             self._error(HTTPStatus.NOT_FOUND, "job not found")
@@ -267,10 +297,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store, profile):
+    def __init__(self, address, store, *, require_auth: bool = True):
         super().__init__(address, DashboardHandler)
         self.store = store
-        self.profile = profile
+        self.require_auth = require_auth
+        self.csrf_token = secrets.token_urlsafe(32)
 
 
 def serve(
@@ -280,9 +311,11 @@ def serve(
     profile_path: str | os.PathLike | None = None,
     demo: bool = False,
 ) -> None:
-    profile = load_profile(profile_path)
+    # Kept for CLI compatibility. Phase 1 deliberately does not load or expose
+    # structured personal data until the Authentik path is deployment-verified.
+    del profile_path
     store = DemoStore() if demo else PostgresStore(dsn or "")
-    server = DashboardServer((host, port), store, profile)
+    server = DashboardServer((host, port), store, require_auth=not demo)
     log.info("application workspace listening on http://%s:%d", host, port)
     try:
         server.serve_forever()

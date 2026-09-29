@@ -160,22 +160,20 @@ For a database-free visual preview:
 python -m jobscout dashboard --demo
 ```
 
-The workspace includes:
+The Phase 1 workspace provides the responsive Carrel shell, history-aware
+routes, navigation rail or compact bottom bar, command palette and scoped
+keyboard navigation. API reads require the Authentik forward-auth username
+header. Writes additionally require a same-origin CSRF cookie and header.
 
-- a searchable, sortable job queue with the scout's score and explanation
-- persistent saved, preparing, applied, interview, offer and rejection states
-- per-job notes with autosave
-- one-click access to the original application
-- a copy kit for personal details, common form answers, links and resume
-- role-matched project evidence and a tailored first-person introduction
-- desktop three-pane, tablet drawer and phone navigation layouts
+`config/profile.yaml` is a non-secret shape for local development. Production
+values belong in a private `JOBSCOUT_PROFILE` mount or `JOBSCOUT_PROFILE_*`
+environment variables. The dashboard deliberately does not expose a profile
+API until the protected ingress is deployment-verified.
 
-Public application details live in `config/profile.yaml`. Set
-`JOBSCOUT_PROFILE` or pass `--profile` to mount a private version containing a
-phone number or other details that should not be committed. The dashboard sets
-a self-only Content Security Policy and refuses cross-origin state changes; it
-is still intended to sit behind the same authenticated private ingress as the
-rest of the operator tools.
+Database schema changes are not run by the scout or dashboard processes. An
+Argo CD PreSync Job runs `python -m jobscout migrate` under a PostgreSQL
+advisory lock. See `docs/migrations.md` for the CNPG backup and real-dump test
+procedure.
 
 `JOBSCOUT_SEED` exists because the first run after adding boards treats every
 existing match as new. Seeding records them and pushes nothing, so the first
@@ -185,14 +183,14 @@ real notification is a genuinely new posting.
 
 ```
 src/jobscout/
-  __main__.py      CLI: run, check, discover-boards, export
+  __main__.py      CLI: run, check, discover-boards, export, migrate
   config.py        the ConfigMap, typed
   filters.py       the four gates, scoring, ranking
   models.py        Posting, and the dedupe key
   db.py            schema, upsert, the close rule, scores
   dashboard.py     application workspace HTTP service and API
   notify.py        ntfy
-  static/          dependency-free Material 3 dashboard
+  static/          dependency-free Carrel dashboard
   sources/
     boards.py      every provider
     simplify.py    the community lists
