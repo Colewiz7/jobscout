@@ -1,116 +1,111 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-accent="clay">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f8faf4">
-  <title>jobscout — application desk</title>
+  <meta name="theme-color" content="">
+  <title>Inbox — JobSeer</title>
+  <script src="/static/theme.js"></script>
+  <link rel="preload" href="/static/fonts/rubik-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/newsreader-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js" type="module"></script>
 </head>
-<body data-mobile-view="jobs">
-  <a class="skip-link" href="#job-detail">Skip to selected job</a>
+<body>
+  <a class="skip-link" href="#route-view">Skip to content</a>
 
-  <header class="top-app-bar">
-    <a class="brand" href="/" aria-label="JobScout home">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5v-13Zm4 2.25h8M8 12h8m-8 4.25h5"/></svg>
-      </span>
-      <span><strong>jobscout</strong><small>application desk</small></span>
-    </a>
-    <div class="header-summary" aria-label="Application summary">
-      <span><strong id="ready-count">—</strong> ready</span>
-      <span><strong id="active-count">—</strong> in progress</span>
-    </div>
-    <div class="header-actions">
-      <span class="sync-state"><i aria-hidden="true"></i><span id="sync-label">loading jobs</span></span>
-      <button class="icon-button" id="theme-button" type="button" aria-label="Change color theme" title="Change theme">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2m-3.64-6.36-1.42 1.42M8.06 16.94l-1.42 1.42m0-12.72 1.42 1.42m7.88 9.88 1.42 1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>
+  <div class="app-shell">
+    <nav class="nav-rail" aria-label="Primary">
+      <a class="brand-mark interactive" href="/inbox" data-route aria-label="JobSeer inbox">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h12v15H6zM9 8h6m-6 4h6m-6 4h3"/></svg>
+      </a>
+
+      <div class="nav-items">
+        <a class="nav-item interactive" href="/inbox" data-route data-nav="inbox">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 14h5l2 2h2l2-2h5"/></svg>
+          <span>Inbox</span>
+        </a>
+        <a class="nav-item interactive" href="/queue" data-route data-nav="queue">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h12M6 12h12M6 19h8"/></svg>
+          <span>Queue</span>
+        </a>
+        <a class="nav-item interactive" href="/tracker" data-route data-nav="tracker">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9m7 10V4m7 15v-7"/></svg>
+          <span>Tracker</span>
+        </a>
+        <a class="nav-item interactive" href="/companies" data-route data-nav="companies">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V8l8-4v16m0-9h8v9M8 9h1m-1 4h1m-1 4h1m8-2h1"/></svg>
+          <span>Companies</span>
+        </a>
+        <a class="nav-item interactive" href="/profile" data-route data-nav="profile">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/></svg>
+          <span>Profile</span>
+        </a>
+      </div>
+
+      <button class="rail-action interactive" type="button" data-open-shortcuts aria-label="Show keyboard shortcuts">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 0 1 4.7.7c0 2.3-2.5 2.3-2.5 4.3m0 3h.01"/></svg>
+        <span>Shortcuts</span>
       </button>
-      <div class="avatar" aria-hidden="true">CW</div>
-    </div>
-  </header>
+    </nav>
 
-  <main class="workspace">
-    <aside class="queue-pane" aria-label="Job queue">
-      <div class="queue-heading">
-        <div>
-          <p class="eyebrow">your queue</p>
-          <h1>Jobs worth a look</h1>
-        </div>
-        <span class="count-badge" id="job-count">0</span>
-      </div>
-
-      <label class="search-box" for="job-search">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
-        <input id="job-search" type="search" placeholder="Search jobs, companies, locations" autocomplete="off">
-        <kbd>/</kbd>
-      </label>
-
-      <div class="filter-row" role="group" aria-label="Filter jobs">
-        <button class="filter-chip selected" type="button" data-filter="all">All</button>
-        <button class="filter-chip" type="button" data-filter="new">New</button>
-        <button class="filter-chip" type="button" data-filter="saved">Saved</button>
-        <button class="filter-chip" type="button" data-filter="active">Applied</button>
-      </div>
-
-      <div class="queue-tools">
-        <p id="queue-description">Best match first</p>
-        <label>Sort
-          <select id="job-sort">
-            <option value="score">Best match</option>
-            <option value="newest">Newest</option>
-            <option value="company">Company</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="job-list" id="job-list" role="listbox" aria-label="Jobs"></div>
-    </aside>
-
-    <section class="detail-pane" id="job-detail" tabindex="-1">
-      <div class="detail-loading" id="detail-empty">
-        <div class="empty-mark" aria-hidden="true">
-          <svg viewBox="0 0 48 48"><path d="M12 8h24a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Zm7 9h10M19 24h14m-14 7h8"/></svg>
-        </div>
-        <h2>Choose a job to start</h2>
-        <p>Its match signals, tailored material, notes, and application actions will stay together here.</p>
-      </div>
-      <div id="detail-content" hidden></div>
-    </section>
-
-    <aside class="kit-pane" id="application-kit" aria-label="Application kit">
-      <div class="kit-heading">
-        <div>
-          <p class="eyebrow">application kit</p>
-          <h2>Ready to paste</h2>
-        </div>
-        <button class="tonal-button compact" id="copy-all" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
-          Copy all
+    <div class="workspace">
+      <header class="global-header">
+        <a class="wordmark" href="/inbox" data-route aria-label="JobSeer inbox">JobSeer</a>
+        <button class="command-trigger interactive" type="button" data-open-command aria-label="Open command palette">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
+          <span>Search or run a command</span>
+          <kbd>Ctrl K</kbd>
         </button>
-      </div>
-      <p class="kit-intro">Click any row to copy it. Tailored material updates with the selected role.</p>
-      <div id="kit-content" class="kit-content"></div>
-    </aside>
-  </main>
+        <p class="quiet-state"><span aria-hidden="true"></span>Quiet by default</p>
+      </header>
 
-  <nav class="mobile-nav" aria-label="Workspace views">
-    <button class="selected" type="button" data-view="jobs">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M5 12h14M5 19h9"/></svg>
-      Jobs
-    </button>
-    <button type="button" data-view="detail">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10a2 2 0 0 1 2 2v16l-7-4-7 4V5a2 2 0 0 1 2-2Z"/></svg>
-      Apply
-    </button>
-    <button type="button" data-view="kit">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8m-7 0v3h6V4m-8 3h10a2 2 0 0 1 2 2v11H5V9a2 2 0 0 1 2-2Zm2 5h6m-6 4h4"/></svg>
-      Kit
-    </button>
-  </nav>
+      <section class="today-strip" id="today-strip" aria-label="Today" hidden></section>
+      <main class="route-view" id="route-view" tabindex="-1"></main>
+    </div>
+  </div>
 
-  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <dialog class="command-dialog" id="command-dialog" aria-labelledby="command-title">
+    <div class="dialog-heading">
+      <h2 id="command-title">Where to?</h2>
+      <button class="icon-button interactive" type="button" data-close-dialog aria-label="Close command palette">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <label class="command-search" for="command-input">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
+      <input id="command-input" type="search" autocomplete="off" placeholder="Type a command">
+      <kbd>Esc</kbd>
+    </label>
+    <div class="command-results" id="command-results" role="listbox" aria-label="Commands"></div>
+  </dialog>
+
+  <dialog class="shortcut-dialog" id="shortcut-dialog" aria-labelledby="shortcut-title">
+    <div class="dialog-heading">
+      <h2 id="shortcut-title">Keyboard shortcuts</h2>
+      <button class="icon-button interactive" type="button" data-close-dialog aria-label="Close shortcuts">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="shortcut-list">
+      <div><span>Command palette</span><kbd>Ctrl K</kbd></div>
+      <div><span>Go to Inbox</span><span><kbd>G</kbd> <kbd>I</kbd></span></div>
+      <div><span>Go to Queue</span><span><kbd>G</kbd> <kbd>Q</kbd></span></div>
+      <div><span>Go to Tracker</span><span><kbd>G</kbd> <kbd>T</kbd></span></div>
+      <div><span>Go to Companies</span><span><kbd>G</kbd> <kbd>C</kbd></span></div>
+      <div><span>Go to Profile</span><span><kbd>G</kbd> <kbd>P</kbd></span></div>
+      <div><span>Show shortcuts</span><kbd>?</kbd></div>
+    </div>
+    <p class="shortcut-note">Single-key shortcuts pause while you type in a field or edit content.</p>
+  </dialog>
+
+  <div class="snackbar-region" id="snackbar-region" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

@@ -1,42 +1,23 @@
-# Public application details used by the dashboard's copy kit. Keep secrets and
-# anything you do not want in the public repository in a separately mounted
-# file and point JOBSCOUT_PROFILE at it.
-name: Cole Wisniewski
-email: colewizbiz@gmail.com
+# Non-secret seed shape for local development. Production values come from a
+# private JOBSCOUT_PROFILE mount or JOBSCOUT_PROFILE_* environment variables.
+# Never commit private contact details or document URLs here.
+name: Example Applicant
+email: applicant@example.invalid
 phone: ""
-location: Rochester, New York
-citizenship: U.S. Citizen
-school: Rochester Institute of Technology
-degree: B.S. Computing and Information Technologies
+location: ""
+citizenship: ""
+school: Example University
+degree: B.S. Computing
 graduation: Expected 2028
-gpa: "3.6"
-availability: Spring 2027 or later
-headline: CIT student at RIT focused on DevOps and platform engineering
-summary: >-
-  CIT student at RIT who runs a GitOps-managed Kubernetes cluster end to end,
-  from bare hypervisor provisioning with OpenTofu to SSO-protected services.
-application_intro: >-
-  I run a GitOps-managed Kubernetes platform end to end, from
-  OpenTofu-provisioned infrastructure to SSO, observability, and backups, and
-  would bring that hands-on operational experience to the team.
+gpa: ""
+availability: ""
+headline: ""
+summary: ""
+application_intro: ""
 links:
-  Portfolio: https://colewiz.dev
-  GitHub: https://github.com/Colewiz7
-  LinkedIn: https://www.linkedin.com/in/colewiz
-resume_url: https://colewiz.dev/resume.pdf
-quick_answers:
-  Work authorization: Authorized to work in the United States
-  Sponsorship: Does not require sponsorship
-  Education: B.S. Computing and Information Technologies, RIT, expected 2028
-  Availability: Spring 2027 or later
-highlights:
-  - tags: [devops, platform, kubernetes, sre, cloud]
-    text: Operate a GitOps-managed k3s platform with Argo CD, Cilium, Authentik, CloudNativePG, Prometheus, and off-site backups.
-  - tags: [automation, python, linux, systems]
-    text: Build automation in Python and Bash across Linux, systemd, containers, CI, infrastructure, and operational workflows.
-  - tags: [network, security, infrastructure]
-    text: Provision Proxmox, Cloudflare, DNS, tunnels, object storage, and access policy with OpenTofu and encrypted configuration.
-  - tags: [observability, sre, reliability]
-    text: Run Prometheus, Grafana, Alertmanager, Hubble, ZFS snapshots, and documented recovery paths for a live homelab platform.
-  - tags: [support, operations, it]
-    text: Two summers of hands-on IT support across ChromeOS, Windows, macOS, inventory, diagnostics, and on-site network requests.
+  Portfolio: ""
+  GitHub: ""
+  LinkedIn: ""
+resume_url: ""
+quick_answers: {}
+highlights: []

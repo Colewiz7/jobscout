@@ -12,6 +12,7 @@ import os
 import pytest
 
 from jobscout import db as database
+from jobscout import migrations
 from jobscout.models import Posting
 
 DSN = os.environ.get("JOBSCOUT_TEST_DSN")
@@ -22,7 +23,10 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists application_states")
+        cur.execute("drop table if exists board_notices")
         cur.execute("drop table if exists postings")
+        cur.execute("drop table if exists schema_migrations")
     connection.commit()
     database.ensure_schema(connection)
     yield connection
@@ -39,6 +43,20 @@ def _p(**kw):
 def test_ensure_schema_is_idempotent(conn):
     database.ensure_schema(conn)
     database.ensure_schema(conn)
+
+
+def test_migration_is_recorded_and_advisory_lock_is_released(conn):
+    with conn.cursor() as cur:
+        cur.execute("select version, name from schema_migrations")
+        assert cur.fetchall() == [{"version": 1, "name": "baseline"}]
+    with database.connect(DSN) as other, other.cursor() as cur:
+        cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
+        assert cur.fetchone()["acquired"] is True
+        cur.execute("select pg_advisory_unlock(%s)", (migrations.MIGRATION_LOCK_ID,))
+
+
+def test_runtime_schema_check_is_read_only(conn):
+    database.require_schema(conn)
 
 
 def test_upsert_counts_only_new_rows(conn):

@@ -6,15 +6,14 @@ import pytest
 
 from jobscout.dashboard import DashboardServer, DemoStore, load_profile
 
+AUTH = {"X-authentik-username": "cole"}
+
 
 @pytest.fixture
 def dashboard():
     store = DemoStore()
     try:
-        server = DashboardServer(
-            ("127.0.0.1", 0), store,
-            {"name": "Cole", "email": "cole@example.com", "highlights": []},
-        )
+        server = DashboardServer(("127.0.0.1", 0), store, require_auth=True)
     except PermissionError:
         pytest.skip("the test sandbox does not permit a loopback listener")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -26,33 +25,71 @@ def dashboard():
     thread.join(timeout=2)
 
 
-def test_default_profile_is_valid_and_keeps_phone_empty():
+def authenticated_client(base):
+    client = httpx.Client(base_url=base, headers=AUTH, timeout=2)
+    session = client.get("/api/v1/session")
+    assert session.status_code == 200
+    return client, session.json()["csrf_token"]
+
+
+def test_default_profile_is_a_non_secret_seed(monkeypatch):
+    monkeypatch.delenv("JOBSCOUT_PROFILE_NAME", raising=False)
     profile = load_profile()
-    assert profile["name"] == "Cole Wisniewski"
+    assert profile["name"] == "Example Applicant"
     assert profile["phone"] == ""
-    assert profile["highlights"]
+    assert profile["highlights"] == []
 
 
-def test_dashboard_serves_shell_jobs_and_security_headers(dashboard):
+def test_private_profile_scalars_can_come_from_environment(monkeypatch):
+    monkeypatch.setenv("JOBSCOUT_PROFILE_EMAIL", "private@example.com")
+    assert load_profile()["email"] == "private@example.com"
+
+
+def test_dashboard_serves_shell_and_history_routes(dashboard):
     base, _ = dashboard
-    shell = httpx.get(base, timeout=2)
-    jobs = httpx.get(f"{base}/api/jobs", timeout=2)
+    shell = httpx.get(f"{base}/inbox", timeout=2)
+    nested = httpx.get(f"{base}/queue/session/example", timeout=2)
 
     assert shell.status_code == 200
-    assert "application desk" in shell.text
+    assert "Search or run a command" in shell.text
     assert "default-src 'self'" in shell.headers["content-security-policy"]
-    assert jobs.status_code == 200
-    assert len(jobs.json()["jobs"]) == 5
+    assert nested.status_code == 200
+    assert nested.text == shell.text
 
 
-def test_application_state_round_trips(dashboard):
+def test_v1_api_requires_authentik(dashboard):
     base, _ = dashboard
-    response = httpx.patch(
-        f"{base}/api/jobs/demo%3A2",
-        json={"status": "applied", "notes": "Submitted on Friday"},
-        timeout=2,
-    )
-    jobs = httpx.get(f"{base}/api/jobs", timeout=2).json()["jobs"]
+    response = httpx.get(f"{base}/api/v1/jobs", timeout=2)
+    assert response.status_code == 401
+    assert "Authentik" in response.json()["error"]
+
+
+def test_profile_is_not_shipped_in_phase_one(dashboard):
+    base, _ = dashboard
+    response = httpx.get(f"{base}/api/v1/profile", headers=AUTH, timeout=2)
+    assert response.status_code == 404
+
+
+def test_authenticated_jobs_round_trip(dashboard):
+    base, _ = dashboard
+    with httpx.Client(base_url=base, headers=AUTH, timeout=2) as client:
+        response = client.get("/api/v1/jobs")
+    assert response.status_code == 200
+    assert len(response.json()["jobs"]) == 2
+
+
+def test_application_state_round_trips_with_csrf(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        response = client.patch(
+            "/api/v1/jobs/demo%3A2",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "applied", "notes": "Submitted on Friday"},
+        )
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+    finally:
+        client.close()
     changed = next(job for job in jobs if job["dedupe_key"] == "demo:2")
 
     assert response.status_code == 200
@@ -60,22 +97,40 @@ def test_application_state_round_trips(dashboard):
     assert changed["notes"] == "Submitted on Friday"
 
 
-def test_application_state_rejects_unknown_status(dashboard):
+def test_application_state_rejects_missing_csrf(dashboard):
     base, _ = dashboard
     response = httpx.patch(
-        f"{base}/api/jobs/demo%3A2",
-        json={"status": "maybe", "notes": ""},
+        f"{base}/api/v1/jobs/demo%3A2",
+        headers=AUTH,
+        json={"status": "saved", "notes": ""},
         timeout=2,
     )
+    assert response.status_code == 403
+
+
+def test_application_state_rejects_unknown_status(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        response = client.patch(
+            "/api/v1/jobs/demo%3A2",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "maybe", "notes": ""},
+        )
+    finally:
+        client.close()
     assert response.status_code == 400
 
 
 def test_application_state_rejects_cross_origin_write(dashboard):
     base, _ = dashboard
-    response = httpx.patch(
-        f"{base}/api/jobs/demo%3A2",
-        headers={"Origin": "https://attacker.example"},
-        json={"status": "saved", "notes": ""},
-        timeout=2,
-    )
+    client, csrf = authenticated_client(base)
+    try:
+        response = client.patch(
+            "/api/v1/jobs/demo%3A2",
+            headers={"Origin": "https://attacker.example", "X-CSRF-Token": csrf},
+            json={"status": "saved", "notes": ""},
+        )
+    finally:
+        client.close()
     assert response.status_code == 403
