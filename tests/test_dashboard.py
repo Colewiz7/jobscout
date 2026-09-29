@@ -113,6 +113,19 @@ def test_authenticated_jobs_round_trip(dashboard):
     assert len(response.json()["jobs"]) == 2
 
 
+def test_job_description_is_plain_structured_data(dashboard):
+    base, _ = dashboard
+    response = httpx.get(
+        f"{base}/api/v1/jobs/demo%3A1/description",
+        headers=AUTH,
+        timeout=2,
+    )
+    assert response.status_code == 200
+    detail = response.json()["description"]
+    assert detail["sections"][0]["key"] == "about"
+    assert "description_html" not in detail
+
+
 def test_application_state_round_trips_with_csrf(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

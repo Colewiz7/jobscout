@@ -23,6 +23,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists application_status_history")
         cur.execute("drop table if exists application_states")
         cur.execute("drop table if exists board_notices")
         cur.execute("drop table if exists postings")
@@ -48,7 +49,10 @@ def test_ensure_schema_is_idempotent(conn):
 def test_migration_is_recorded_and_advisory_lock_is_released(conn):
     with conn.cursor() as cur:
         cur.execute("select version, name from schema_migrations")
-        assert cur.fetchall() == [{"version": 1, "name": "baseline"}]
+        assert cur.fetchall() == [
+            {"version": 1, "name": "baseline"},
+            {"version": 2, "name": "inbox_descriptions_and_status_history"},
+        ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
         assert cur.fetchone()["acquired"] is True
@@ -219,14 +223,14 @@ def test_dashboard_combines_posting_and_application_state(conn):
     database.record_scores(conn, [(posting.dedupe_key, 130, {"role_named": 100})])
 
     assert database.save_application_state(
-        conn, posting.dedupe_key, "preparing", "Tailor the platform bullets"
+        conn, posting.dedupe_key, "queued", "Tailor the platform bullets"
     )
     rows = database.dashboard_postings(conn)
 
     assert len(rows) == 1
     assert rows[0]["score"] == 130
     assert rows[0]["score_detail"] == {"role_named": 100}
-    assert rows[0]["status"] == "preparing"
+    assert rows[0]["status"] == "queued"
     assert rows[0]["notes"] == "Tailor the platform bullets"
 
 
@@ -235,3 +239,22 @@ def test_application_state_only_accepts_known_postings_and_statuses(conn):
     database.upsert_open(conn, [_p()])
     with pytest.raises(ValueError, match="unknown application status"):
         database.save_application_state(conn, _p().dedupe_key, "thinking", "")
+
+
+def test_application_status_changes_are_timestamped(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    database.save_application_state(conn, posting.dedupe_key, "saved", "")
+    database.save_application_state(conn, posting.dedupe_key, "queued", "")
+    database.save_application_state(conn, posting.dedupe_key, "queued", "note only")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "select from_status, to_status from application_status_history "
+            "where dedupe_key = %s order by id",
+            (posting.dedupe_key,),
+        )
+        assert cur.fetchall() == [
+            {"from_status": "new", "to_status": "saved"},
+            {"from_status": "saved", "to_status": "queued"},
+        ]

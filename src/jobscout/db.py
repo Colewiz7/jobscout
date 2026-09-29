@@ -329,7 +329,10 @@ def notice_once(conn: psycopg.Connection, key: str) -> bool:
 
 
 APPLICATION_STATUSES = frozenset(
-    {"new", "saved", "preparing", "applied", "interview", "offer", "rejected", "skipped"}
+    {
+        "new", "saved", "queued", "applying", "applied", "interviewing",
+        "offer", "rejected", "archived",
+    }
 )
 
 
@@ -384,6 +387,88 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
         return cur.fetchall()
 
 
+def description_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None:
+    """Best source row to use for an ATS detail request."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, dedupe_key, source, source_id, board, url
+              from postings
+             where dedupe_key = %s
+             order by
+                 case when source = split_part(dedupe_key, ':', 1) then 0 else 1 end,
+                 case source
+                     when 'greenhouse' then 0
+                     when 'lever' then 1
+                     when 'ashby' then 2
+                     when 'workday' then 3
+                     else 4
+                 end,
+                 id
+             limit 1
+            """,
+            (dedupe_key,),
+        )
+        return cur.fetchone()
+
+
+def cached_description(conn: psycopg.Connection, dedupe_key: str) -> dict | None:
+    """Cached provider detail for a deduplicated job, if it exists."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select description_html, description_text,
+                   coalesce(description_sections, '[]'::jsonb) as sections,
+                   description_fetched_at, description_error,
+                   deadline, deadline_source
+              from postings
+             where dedupe_key = %s
+               and description_fetched_at is not null
+             order by (description_text is not null) desc,
+                      description_fetched_at desc
+             limit 1
+            """,
+            (dedupe_key,),
+        )
+        return cur.fetchone()
+
+
+def save_description(
+    conn: psycopg.Connection,
+    posting_id: int,
+    *,
+    html: str | None,
+    text: str | None,
+    sections: tuple[dict[str, str], ...] = (),
+    deadline=None,
+    deadline_source: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Cache one provider response without overwriting a manual deadline."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update postings
+               set description_html = %s,
+                   description_text = %s,
+                   description_sections = %s,
+                   description_fetched_at = now(),
+                   description_error = %s,
+                   deadline = case
+                       when deadline_source = 'manual' then deadline
+                       else %s
+                   end,
+                   deadline_source = case
+                       when deadline_source = 'manual' then deadline_source
+                       else %s
+                   end
+             where id = %s
+            """,
+            (html, text, Json(list(sections)), error, deadline, deadline_source, posting_id),
+        )
+    conn.commit()
+
+
 def save_application_state(
     conn: psycopg.Connection, dedupe_key: str, status: str, notes: str
 ) -> bool:
@@ -395,6 +480,12 @@ def save_application_state(
         if cur.fetchone() is None:
             return False
         cur.execute(
+            "select status from application_states where dedupe_key = %s",
+            (dedupe_key,),
+        )
+        existing = cur.fetchone()
+        previous = existing["status"] if existing else "new"
+        cur.execute(
             """
             insert into application_states (dedupe_key, status, notes)
             values (%s, %s, %s)
@@ -405,5 +496,14 @@ def save_application_state(
             """,
             (dedupe_key, status, notes),
         )
+        if previous != status:
+            cur.execute(
+                """
+                insert into application_status_history
+                    (dedupe_key, from_status, to_status)
+                values (%s, %s, %s)
+                """,
+                (dedupe_key, previous, status),
+            )
     conn.commit()
     return True
