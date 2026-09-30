@@ -159,8 +159,18 @@ input:-webkit-autofill {
 
 .brand-mark img {
   display: block;
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
+  transition: filter var(--d-short2) var(--ease-standard);
+}
+
+.brand-mark.interactive::before {
+  display: none;
+}
+
+.brand-mark:hover img,
+.brand-mark:focus-visible img {
+  filter: brightness(1.2);
 }
 
 .nav-items {
@@ -2256,9 +2266,13 @@ dialog[open]::backdrop {
 
 :root[data-apply-session="true"] .workspace {
   height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 :root[data-apply-session="true"] .route-view {
+  min-width: 0;
+  width: 100%;
+  overflow-x: hidden;
   padding: 0;
 }
 
@@ -2298,11 +2312,14 @@ dialog[open]::backdrop {
 
 .session-columns {
   display: grid;
+  width: 100%;
+  min-width: 0;
   min-height: calc(100dvh - 64px);
   grid-template-columns: minmax(0, 1fr) minmax(320px, var(--side-sheet));
 }
 
 .session-job {
+  min-width: 0;
   width: min(100%, calc(var(--measure) + var(--s-16)));
   margin: 0 auto;
   padding: var(--s-12) var(--s-8) var(--s-16);
@@ -2326,6 +2343,7 @@ dialog[open]::backdrop {
   min-width: 0;
   padding: var(--s-8);
   background: var(--surface-container-low);
+  overflow-wrap: anywhere;
 }
 
 .session-review > h2 {

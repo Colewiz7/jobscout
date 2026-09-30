@@ -387,6 +387,9 @@ try {
       quickFillEmbedded: Boolean(document.querySelector('#session-quick-fill .copy-row')),
       postingReview: Boolean(document.querySelector('.session-review h2')),
       filledActions: document.querySelectorAll('.apply-session .filled-button').length,
+      routeHeight: Math.round(document.querySelector('#route-view').getBoundingClientRect().height),
+      jobVisible: (() => { const r = document.querySelector('.session-job')?.getBoundingClientRect(); return Boolean(r && r.top < innerHeight && r.bottom > 64); })(),
+      horizontalOverflow: document.querySelector('#route-view').scrollWidth > document.querySelector('#route-view').clientWidth,
     }))()`);
     await cdp.evaluate(`(() => {
       window.open = () => ({});
@@ -596,7 +599,7 @@ try {
   if (compact.hasHorizontalOverflow) failures.push(`320px layout overflowed to ${compact.content}px`);
   if (auditOverview && (overview.columns !== 2 || !overview.labels.includes("Skills") || !overview.values.includes("Python, leadership"))) failures.push(`overview fact grid failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
-  if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 56)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
+  if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 48)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
   if (auditOverview && overview.dividers.some((width) => width !== '1px')) failures.push(`reading pane dividers missing: ${JSON.stringify(overview.dividers)}`);
   if (quickFill?.error) failures.push(quickFill.error);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
@@ -607,6 +610,7 @@ try {
   if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
   if (auditApplySession && applySession?.queue.before[0] === applySession?.queue.after[0]) failures.push("queue reorder did not persist in the UI");
   if (auditApplySession && !applySession?.session.navHidden) failures.push("application session did not hide app chrome");
+  if (auditApplySession && (applySession?.session.routeHeight < 600 || !applySession?.session.jobVisible || applySession?.session.horizontalOverflow)) failures.push(`application session content is clipped: ${JSON.stringify(applySession?.session)}`);
   if (auditApplySession && !auditSessionNoProfile && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
   if (auditApplySession && auditSessionNoProfile && !applySession?.session.postingReview) failures.push("production session had no posting review");
   if (auditApplySession && applySession?.session.filledActions !== 1) failures.push("application session has more than one filled action");
