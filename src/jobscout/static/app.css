@@ -2318,6 +2318,12 @@ dialog[open]::backdrop {
   grid-template-columns: minmax(0, 1fr) minmax(320px, var(--side-sheet));
 }
 
+.apply-session--review .session-columns {
+  max-width: calc(var(--content-max) + var(--s-16));
+  margin-inline: auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+}
+
 .session-job {
   min-width: 0;
   width: min(100%, calc(var(--measure) + var(--s-16)));
@@ -2341,9 +2347,23 @@ dialog[open]::backdrop {
 
 .session-review {
   min-width: 0;
+  max-height: calc(100dvh - 64px);
   padding: var(--s-8);
   background: var(--surface-container-low);
+  overflow-y: auto;
   overflow-wrap: anywhere;
+}
+
+.session-review .parsed-section {
+  background: var(--surface-container);
+}
+
+.session-review .overview-grid {
+  gap: var(--s-4) var(--s-6);
+}
+
+.session-review .overview-cell dd {
+  overflow-wrap: break-word;
 }
 
 .session-review > h2 {
@@ -2386,10 +2406,45 @@ dialog[open]::backdrop {
 }
 
 .session-requirements {
-  min-height: 96px;
   color: var(--on-surface-variant);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.session-requirements ul {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding-left: var(--s-6);
+}
+
+.session-requirements li {
+  padding-left: var(--s-1);
+}
+
+.session-requirements button {
+  margin-top: var(--s-3);
+}
+
+.session-location-fact {
+  max-width: 100%;
+}
+
+.session-locations {
+  min-width: 0;
+}
+
+.session-locations summary {
+  cursor: pointer;
+}
+
+.session-locations summary span {
+  color: var(--primary);
+}
+
+.session-locations ul {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-6);
 }
 
 .session-quick-fill {
@@ -3884,6 +3939,14 @@ body.quick-fill-popout {
 
   .session-columns {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .apply-session--review .session-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-review {
+    max-height: none;
   }
 
   .session-quick-fill {

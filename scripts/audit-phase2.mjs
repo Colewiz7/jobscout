@@ -386,11 +386,21 @@ try {
       navHidden: getComputedStyle(document.querySelector('.nav-rail')).display === 'none',
       quickFillEmbedded: Boolean(document.querySelector('#session-quick-fill .copy-row')),
       postingReview: Boolean(document.querySelector('.session-review h2')),
+      reviewWidth: Math.round(document.querySelector('.session-review')?.getBoundingClientRect().width || 0),
+      previewItems: document.querySelectorAll('.session-requirements li').length,
+      expandedPostingSections: document.querySelectorAll('.session-review .parsed-section[open]').length,
       filledActions: document.querySelectorAll('.apply-session .filled-button').length,
       routeHeight: Math.round(document.querySelector('#route-view').getBoundingClientRect().height),
       jobVisible: (() => { const r = document.querySelector('.session-job')?.getBoundingClientRect(); return Boolean(r && r.top < innerHeight && r.bottom > 64); })(),
       horizontalOverflow: document.querySelector('#route-view').scrollWidth > document.querySelector('#route-view').clientWidth,
     }))()`);
+    session.readFullOpens = await cdp.evaluate(`(() => {
+      const link = document.querySelector('[data-session-see-requirements]');
+      const full = document.querySelector('.apply-session .parsed-section[data-section-key="requirements"]');
+      if (!link || !full) return false;
+      link.click();
+      return full.open;
+    })()`);
     await cdp.evaluate(`(() => {
       window.open = () => ({});
       document.querySelector('[data-session-apply]').click();
@@ -613,6 +623,8 @@ try {
   if (auditApplySession && (applySession?.session.routeHeight < 600 || !applySession?.session.jobVisible || applySession?.session.horizontalOverflow)) failures.push(`application session content is clipped: ${JSON.stringify(applySession?.session)}`);
   if (auditApplySession && !auditSessionNoProfile && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
   if (auditApplySession && auditSessionNoProfile && !applySession?.session.postingReview) failures.push("production session had no posting review");
+  if (auditApplySession && auditSessionNoProfile && (applySession?.session.reviewWidth < 480 || applySession?.session.previewItems > 4 || applySession?.session.expandedPostingSections)) failures.push(`production session is not compact: ${JSON.stringify(applySession?.session)}`);
+  if (auditApplySession && auditSessionNoProfile && !applySession?.session.readFullOpens) failures.push("requirements preview did not open the full section");
   if (auditApplySession && applySession?.session.filledActions !== 1) failures.push("application session has more than one filled action");
   if (auditApplySession && (!applySession?.prompt.visible || applySession?.prompt.resumeOptions < (auditSessionNoProfile ? 1 : 2))) failures.push("submission prompt or resume selector missing");
   if (auditApplySession && applySession?.prompt.filledActions !== 1) failures.push("submission prompt has more than one filled action");
