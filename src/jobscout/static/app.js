@@ -302,7 +302,8 @@ function jobRowMarkup(entry) {
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
   return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
     ${companyLogoMarkup(job.company)}
-    <span class="job-row-copy"><span class="job-row-title">${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
+    ${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}
+    <span class="job-row-copy"><span class="job-row-title">${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
     ${bulkSelected ? '<span class="selection-check" aria-label="Selected">✓</span>' : ""}
   </button>`;

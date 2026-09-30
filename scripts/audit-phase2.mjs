@@ -164,6 +164,7 @@ try {
     });
     const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
     const rowHeights = rows.map((row) => row.getBoundingClientRect().height);
+    const titleIndent = getComputedStyle(rows[0].querySelector('.job-row-title')).paddingInlineStart;
     const rowTops = rows.map((row) => Math.round(row.getBoundingClientRect().top));
     const selectedBefore = document.querySelector('#job-title')?.textContent.trim() || '';
     const start = performance.now();
@@ -172,6 +173,7 @@ try {
     return {
       renderedRows: rows.length,
       rowHeights,
+      titleIndent,
       rowTops,
       duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
       unnamedControls: unnamed.map((element) => element.outerHTML.slice(0, 120)),
@@ -511,6 +513,7 @@ try {
   if (jobCount !== fixture.count) failures.push(`expected ${fixture.count} jobs, got ${jobCount}`);
   if (desktop.renderedRows >= 50) failures.push(`virtual list rendered ${desktop.renderedRows} rows`);
   if (desktop.rowHeights.some((height) => height !== 72)) failures.push(`row heights were ${desktop.rowHeights.join(", ")}`);
+  if (desktop.titleIndent !== "0px") failures.push(`job title has unwanted indent: ${desktop.titleIndent}`);
   if (new Set(desktop.rowTops).size !== desktop.rowTops.length) failures.push("virtual rows overlap at the same position");
   if (desktop.selectedBefore === selectedAfter) failures.push("next-job shortcut did not update the reading pane");
   if (scrolledSelection.error || scrolledSelection.after !== scrolledSelection.before || scrolledSelection.actual !== scrolledSelection.expected || scrolledSelection.route !== scrolledSelection.key) failures.push(`scrolled row selection failed: ${JSON.stringify(scrolledSelection)}`);

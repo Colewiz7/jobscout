@@ -57,6 +57,20 @@ def test_plain_text_workday_headings_are_segmented():
     assert [section["key"] for section in sections] == ["role", "role", "requirements"]
 
 
+def test_short_what_and_who_lines_divide_sections_but_sentences_do_not():
+    sections = parse_sections(
+        "What makes this role different?\nBuild systems with the team.\n"
+        "Who you'll work with\nCollaborate with senior engineers.\n"
+        "What you'll need to succeed\nBring Python experience.\n"
+        "Who we are\nWe build useful software.\n"
+        "What you see here is a normal sentence. It stays in the paragraph."
+    )
+    assert [section["key"] for section in sections] == [
+        "responsibilities", "role", "requirements", "about",
+    ]
+    assert "normal sentence" in sections[-1]["text"]
+
+
 def test_greenhouse_detail_uses_public_job_endpoint_and_exact_deadline():
     client = FakeFetcher({
         "content": "<h2>Requirements</h2><p>Linux</p>",

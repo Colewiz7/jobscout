@@ -79,6 +79,18 @@ def _section_key(value: str) -> str | None:
             continue
         if normalized.startswith(label + " ") and len(normalized) <= len(label) + 32:
             return key
+    # Real ATS postings often use bespoke question headings. Treat a short,
+    # standalone What/Who line as a divider, never as body prose with a period.
+    if len(normalized) <= 80 and re.match(r"^(?:what|who)\b", normalized):
+        if re.search(r"\b(?:need|require|bring|looking for|qualif|eligible)\b", normalized):
+            return "requirements"
+        if re.search(r"\b(?:offer|benefit|perk|in it for you)\b", normalized):
+            return "benefits"
+        if normalized.startswith("who we") or normalized.startswith("who are we"):
+            return "about"
+        if normalized.startswith("who you are") or normalized.startswith("who are you"):
+            return "requirements"
+        return "responsibilities" if normalized.startswith("what") else "role"
     return None
 
 
