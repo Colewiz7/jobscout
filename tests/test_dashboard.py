@@ -369,6 +369,135 @@ def test_closed_posting_is_archived_instead_of_entering_queue(dashboard):
     assert closed["status"] == "archived"
 
 
+def test_tracker_followup_interview_calendar_and_next_step(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        applied = client.post(
+            "/api/v1/applications/demo%3A2/applied",
+            headers={"X-CSRF-Token": csrf},
+            json={"document_id": None},
+        )
+        tracker = client.get("/api/v1/tracker")
+        next_step = client.put(
+            "/api/v1/applications/demo%3A2/next-step",
+            headers={"X-CSRF-Token": csrf},
+            json={"next_step": "Send portfolio link"},
+        )
+        interview = client.post(
+            "/api/v1/interviews",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "dedupe_key": "demo:2",
+                "starts_at": "2026-10-10T14:00:00Z",
+                "ends_at": "2026-10-10T15:00:00Z",
+                "location": "Video call",
+                "notes": "System design",
+            },
+        )
+        after = client.get("/api/v1/tracker")
+        calendar = client.get("/api/v1/interviews.ics")
+    finally:
+        client.close()
+
+    assert applied.status_code == 200
+    assert tracker.json()["reminders"][0]["kind"] == "follow_up"
+    assert next_step.status_code == 200
+    assert interview.status_code == 201
+    assert after.json()["applications"][0]["status"] == "interviewing"
+    assert after.json()["reminders"] == []
+    assert "BEGIN:VCALENDAR" in calendar.text
+    assert "Video call" in calendar.text
+
+
+def test_company_notes_contacts_and_matched_connections(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        protected = client.get("/api/v1/companies", params={"name": "Datadog"})
+        note = client.put(
+            "/api/v1/companies/note",
+            headers={"X-CSRF-Token": csrf},
+            json={"company": "Datadog", "body": "Met the infrastructure team."},
+        )
+        manual = client.post(
+            "/api/v1/contacts",
+            headers={"X-CSRF-Token": csrf},
+            json={"company": "Datadog", "name": "Grace Example", "title": "Recruiter"},
+        )
+        imported = client.post(
+            "/api/v1/connections/import",
+            headers={"X-CSRF-Token": csrf},
+            json={"contacts": [{
+                "company": "Datadog, Inc.", "name": "Lin Example",
+                "title": "Engineer",
+                "linkedin_url": "https://www.linkedin.com/in/lin-example",
+            }]},
+        )
+        company = client.get("/api/v1/companies", params={"name": "Datadog"})
+        jobs = client.get("/api/v1/jobs")
+    finally:
+        client.close()
+
+    assert protected.json()["company"]["account_protected"] is True
+    assert protected.json()["company"]["account"] is None
+    assert note.status_code == 200
+    assert manual.status_code == 201
+    assert imported.json()["imported"] == 1
+    assert len(company.json()["company"]["contacts"]) == 2
+    assert company.json()["company"]["note"]["body"] == "Met the infrastructure team."
+    datadog = next(job for job in jobs.json()["jobs"] if job["company"] == "Datadog")
+    assert datadog["connections_count"] == 1
+
+
+def test_company_writes_reject_unknown_companies(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        contact = client.post(
+            "/api/v1/contacts",
+            headers={"X-CSRF-Token": csrf},
+            json={"company": "Unknown Example", "name": "Ada Example"},
+        )
+        note = client.put(
+            "/api/v1/companies/note",
+            headers={"X-CSRF-Token": csrf},
+            json={"company": "Unknown Example", "body": "Should not be stored."},
+        )
+    finally:
+        client.close()
+
+    assert contact.status_code == 400
+    assert contact.json()["error"] == "company not found"
+    assert note.status_code == 400
+    assert note.json()["error"] == "company not found"
+
+
+def test_tracker_and_company_writes_require_csrf(dashboard):
+    base, _ = dashboard
+    interview = httpx.post(
+        f"{base}/api/v1/interviews", headers=AUTH,
+        json={"dedupe_key": "demo:1", "starts_at": "2026-10-10T14:00:00Z"}, timeout=2,
+    )
+    contact = httpx.post(
+        f"{base}/api/v1/contacts", headers=AUTH,
+        json={"company": "Cloudflare", "name": "Example"}, timeout=2,
+    )
+    connections = httpx.post(
+        f"{base}/api/v1/connections/import", headers=AUTH, json={"contacts": []}, timeout=2,
+    )
+    note = httpx.put(
+        f"{base}/api/v1/companies/note", headers=AUTH,
+        json={"company": "Cloudflare", "body": "test"}, timeout=2,
+    )
+    next_step = httpx.put(
+        f"{base}/api/v1/applications/demo%3A1/next-step", headers=AUTH,
+        json={"next_step": "test"}, timeout=2,
+    )
+    assert {interview.status_code, contact.status_code, connections.status_code,
+            note.status_code, next_step.status_code} == {403}
+
+
 def test_saved_views_round_trip_on_server_with_csrf(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

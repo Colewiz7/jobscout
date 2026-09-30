@@ -7,6 +7,7 @@ JOBSCOUT_TEST_DSN, e.g.
         -p 55432:5432 postgres:16-alpine
     JOBSCOUT_TEST_DSN=postgresql://postgres:test@localhost:55432/jobscout pytest
 """
+import datetime as dt
 import os
 
 import pytest
@@ -23,6 +24,11 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists interviews")
+        cur.execute("drop table if exists reminders")
+        cur.execute("drop table if exists contacts")
+        cur.execute("drop table if exists company_notes")
+        cur.execute("drop table if exists companies")
         cur.execute("drop table if exists application_snapshots")
         cur.execute("drop table if exists company_accounts")
         cur.execute("drop table if exists answer_template_overrides")
@@ -66,6 +72,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 5, "name": "quick_fill_story_bank"},
             {"version": 6, "name": "quick_fill_job_context"},
             {"version": 7, "name": "apply_queue_and_snapshots"},
+            {"version": 8, "name": "tracker_companies_and_followups"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -401,3 +408,47 @@ def test_queue_order_rejects_missing_or_duplicate_jobs(conn):
         database.save_queue_order(conn, [])
     with pytest.raises(ValueError, match="duplicates"):
         database.save_queue_order(conn, [posting.dedupe_key, posting.dedupe_key])
+
+
+def test_tracker_followups_interviews_and_company_records(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    with conn.cursor() as cur:
+        cur.execute("select key, name from companies")
+        assert cur.fetchall() == [{"key": "acme", "name": "Acme"}]
+    database.save_application_state(conn, posting.dedupe_key, "applied", "")
+    support = database.tracker_support(conn)
+    assert len(support["reminders"]) == 1
+    assert support["reminders"][0]["kind"] == "follow_up"
+
+    starts_at = dt.datetime.now(dt.timezone.utc)
+    interview = database.add_interview(
+        conn,
+        dedupe_key=posting.dedupe_key,
+        starts_at=starts_at,
+        ends_at=starts_at + dt.timedelta(hours=1),
+        location="Video call",
+        notes="Bring architecture examples",
+    )
+    assert interview["location"] == "Video call"
+    assert database.tracker_support(conn)["reminders"] == []
+    tracked = database.dashboard_postings(conn)[0]
+    assert tracked["status"] == "interviewing"
+    assert tracked["next_step"].startswith("Interview ")
+
+    contact = database.save_contact(conn, {
+        "company": "Acme, Inc.",
+        "name": "Ada Example",
+        "title": "Platform Engineer",
+        "linkedin_url": "https://www.linkedin.com/in/ada-example",
+    }, source="linkedin_csv")
+    database.save_company_note(conn, "Acme", "Met at the fall career fair.")
+    assert contact["company_key"] == "acme"
+    assert database.contact_counts(conn) == {"acme": 1}
+    records = database.company_records(conn, "Acme Corporation")
+    assert records["contacts"][0]["name"] == "Ada Example"
+    assert records["note"]["body"] == "Met at the fall career fair."
+    with pytest.raises(ValueError, match="company not found"):
+        database.save_contact(conn, {"company": "Unknown", "name": "No One"})
+    with pytest.raises(ValueError, match="company not found"):
+        database.save_company_note(conn, "Unknown", "Not persisted")

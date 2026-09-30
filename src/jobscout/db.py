@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import logging
 import urllib.parse
 
@@ -14,7 +15,7 @@ import psycopg
 from psycopg.types.json import Json
 from psycopg.rows import dict_row
 
-from .models import Posting, merge_locations
+from .models import Posting, merge_locations, normalise
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +155,17 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
                 remote      = excluded.remote
             """,
             rows,
+        )
+        companies = {
+            company_key(posting.company): posting.company.strip()
+            for posting in merged.values() if company_key(posting.company)
+        }
+        cur.executemany(
+            """
+            insert into companies (key, name) values (%s, %s)
+            on conflict (key) do update set name = excluded.name, updated_at = now()
+            """,
+            list(companies.items()),
         )
         cur.execute("select count(*) as n from postings")
         after = cur.fetchone()["n"]
@@ -338,6 +350,17 @@ APPLICATION_STATUSES = frozenset(
 )
 
 
+def company_key(value: str) -> str:
+    """Stable, deliberately conservative key for company/contact matching."""
+    parts = normalise(value).split()
+    if parts and parts[0] == "the":
+        parts = parts[1:]
+    suffixes = {"co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"}
+    while len(parts) > 1 and parts[-1] in suffixes:
+        parts.pop()
+    return " ".join(parts)
+
+
 def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -> list[dict]:
     """Every posting needed by the application desk, collapsed to one job.
 
@@ -396,6 +419,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                    coalesce(s.notes, '') as notes,
                    s.updated_at as application_updated_at,
                    s.queue_position, s.applied_at, s.resume_document_id, s.resume_name,
+                   coalesce(s.next_step, '') as next_step,
                    (
                        select max(e.changed_at)
                          from application_events e
@@ -530,9 +554,12 @@ def profile_data(
             cur.execute(
                 """
                 select company_name, account_exists, sign_in_email, password_manager_url, updated_at
-                  from company_accounts where company_key = %s
+                  from company_accounts
+                 where company_key = any(%s)
+                 order by (company_key = %s) desc
+                 limit 1
                 """,
-                (company.casefold().strip(),),
+                ([company_key(company), company.casefold().strip()], company_key(company)),
             )
             company_account = cur.fetchone()
     return {
@@ -646,7 +673,7 @@ def save_quick_fill_context(
                 updated_at = now()
             """,
             (
-                company.casefold(), company, account["account_exists"],
+                company_key(company), company, account["account_exists"],
                 account["sign_in_email"], account["password_manager_url"],
             ),
         )
@@ -871,11 +898,12 @@ def save_application_state(
         if cur.fetchone() is None:
             return False
         cur.execute(
-            "select status from application_states where dedupe_key = %s",
+            "select status, notes from application_states where dedupe_key = %s",
             (dedupe_key,),
         )
         existing = cur.fetchone()
         previous = existing["status"] if existing else "new"
+        previous_notes = existing["notes"] if existing else ""
         cur.execute(
             """
             insert into application_states (dedupe_key, status, notes)
@@ -887,10 +915,24 @@ def save_application_state(
                     when excluded.status = 'queued' then application_states.queue_position
                     else null
                 end,
+                applied_at = case
+                    when excluded.status = 'applied'
+                        then coalesce(application_states.applied_at, now())
+                    else application_states.applied_at
+                end,
                 updated_at = now()
             """,
             (dedupe_key, status, notes),
         )
+        if status == "applied":
+            cur.execute(
+                """
+                update application_states
+                   set applied_at = coalesce(applied_at, now())
+                 where dedupe_key = %s
+                """,
+                (dedupe_key,),
+            )
         if previous != status:
             cur.execute(
                 """
@@ -899,6 +941,25 @@ def save_application_state(
                 values (%s, %s, %s)
                 """,
                 (dedupe_key, previous, status),
+            )
+        if status == "applied" and previous != "applied":
+            cur.execute(
+                """
+                insert into reminders (dedupe_key, kind, due_at)
+                values (%s, 'follow_up', now() + interval '7 days')
+                on conflict (dedupe_key, kind) do update set
+                    due_at = excluded.due_at, status = 'pending',
+                    snoozed_until = null, completed_at = null
+                """,
+                (dedupe_key,),
+            )
+        elif previous == "applied" and (status != "applied" or notes != previous_notes):
+            cur.execute(
+                """
+                update reminders set status = 'done', completed_at = now()
+                 where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
+                """,
+                (dedupe_key,),
             )
     conn.commit()
     return True
@@ -1030,6 +1091,16 @@ def mark_application_applied(
                 """,
                 (dedupe_key, previous),
             )
+        cur.execute(
+            """
+            insert into reminders (dedupe_key, kind, due_at)
+            values (%s, 'follow_up', now() + interval '7 days')
+            on conflict (dedupe_key, kind) do update set
+                due_at = excluded.due_at, status = 'pending',
+                snoozed_until = null, completed_at = null
+            """,
+            (dedupe_key,),
+        )
         locations = merge_locations(posting["locations_raw"] or "")
         sections = posting["description_sections"] or []
         cur.execute(
@@ -1058,3 +1129,270 @@ def mark_application_applied(
             snapshot = cur.fetchone()
     conn.commit()
     return snapshot
+
+
+def contact_counts(conn: psycopg.Connection) -> dict[str, int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select company_key, count(*)::integer as count
+              from contacts
+             where source = 'linkedin_csv'
+             group by company_key
+            """
+        )
+        return {row["company_key"]: row["count"] for row in cur.fetchall()}
+
+
+def tracker_support(conn: psycopg.Connection) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select r.id, r.dedupe_key, r.kind, r.due_at, r.status,
+                   r.snoozed_until, min(p.company) as company, min(p.title) as title
+              from reminders r
+              join postings p on p.dedupe_key = r.dedupe_key
+             where r.status <> 'done'
+             group by r.id
+             order by coalesce(r.snoozed_until, r.due_at), r.id
+            """
+        )
+        reminders = cur.fetchall()
+        cur.execute(
+            """
+            select i.id, i.dedupe_key, i.starts_at, i.ends_at, i.location, i.notes,
+                   min(p.company) as company, min(p.title) as title
+              from interviews i
+              join postings p on p.dedupe_key = i.dedupe_key
+             group by i.id
+             order by i.starts_at, i.id
+            """
+        )
+        interviews = cur.fetchall()
+        cur.execute(
+            """
+            select dedupe_key, from_status, to_status, changed_at
+              from application_status_history
+             order by changed_at, id
+            """
+        )
+        history = cur.fetchall()
+    return {"reminders": reminders, "interviews": interviews, "history": history}
+
+
+def save_reminder(conn: psycopg.Connection, reminder_id: int, action: str) -> dict | None:
+    if action not in {"done", "snooze"}:
+        raise ValueError("reminder action must be done or snooze")
+    with conn.cursor() as cur:
+        if action == "done":
+            cur.execute(
+                """
+                update reminders set status = 'done', completed_at = now()
+                 where id = %s returning *
+                """,
+                (reminder_id,),
+            )
+        else:
+            cur.execute(
+                """
+                update reminders
+                   set status = 'snoozed', snoozed_until = now() + interval '3 days',
+                       completed_at = null
+                 where id = %s returning *
+                """,
+                (reminder_id,),
+            )
+        saved = cur.fetchone()
+    conn.commit()
+    return saved
+
+
+def add_interview(
+    conn: psycopg.Connection,
+    *,
+    dedupe_key: str,
+    starts_at: dt.datetime,
+    ends_at: dt.datetime | None,
+    location: str,
+    notes: str,
+) -> dict:
+    if ends_at is not None and ends_at <= starts_at:
+        raise ValueError("interview end must be after its start")
+    with conn.cursor() as cur:
+        cur.execute("select 1 from postings where dedupe_key = %s limit 1", (dedupe_key,))
+        if cur.fetchone() is None:
+            raise ValueError("job not found")
+        cur.execute(
+            "select status from application_states where dedupe_key = %s for update",
+            (dedupe_key,),
+        )
+        application = cur.fetchone()
+        previous = application["status"] if application else "new"
+        cur.execute(
+            """
+            insert into interviews (dedupe_key, starts_at, ends_at, location, notes)
+            values (%s, %s, %s, %s, %s) returning *
+            """,
+            (dedupe_key, starts_at, ends_at, location[:500], notes[:20_000]),
+        )
+        interview = cur.fetchone()
+        if application is None:
+            cur.execute(
+                """
+                insert into application_states (dedupe_key, status, next_step)
+                values (%s, 'interviewing', %s)
+                """,
+                (dedupe_key, f"Interview {starts_at.isoformat()}"),
+            )
+            next_status = "interviewing"
+        else:
+            next_status = previous if previous in {"offer", "rejected"} else "interviewing"
+            cur.execute(
+                """
+                update application_states
+                   set status = %s, next_step = %s, updated_at = now()
+                 where dedupe_key = %s
+                """,
+                (next_status, f"Interview {starts_at.isoformat()}", dedupe_key),
+            )
+        if previous != next_status:
+            cur.execute(
+                """
+                insert into application_status_history (dedupe_key, from_status, to_status)
+                values (%s, %s, %s)
+                """,
+                (dedupe_key, previous, next_status),
+            )
+        cur.execute(
+            """
+            update reminders set status = 'done', completed_at = now()
+             where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
+            """,
+            (dedupe_key,),
+        )
+    conn.commit()
+    return interview
+
+
+def save_next_step(conn: psycopg.Connection, dedupe_key: str, value: str) -> bool:
+    if len(value) > 1_000:
+        raise ValueError("next step is too long")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update application_states set next_step = %s, updated_at = now()
+             where dedupe_key = %s returning dedupe_key
+            """,
+            (value.strip(), dedupe_key),
+        )
+        saved = cur.fetchone() is not None
+        if saved:
+            cur.execute(
+                """
+                update reminders set status = 'done', completed_at = now()
+                 where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
+                """,
+                (dedupe_key,),
+            )
+    conn.commit()
+    return saved
+
+
+def company_records(conn: psycopg.Connection, name: str) -> dict:
+    key = company_key(name)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, company_name, name, title, email, linkedin_url, source,
+                   created_at, updated_at
+              from contacts where company_key = %s
+             order by source desc, lower(name), id
+            """,
+            (key,),
+        )
+        contacts = cur.fetchall()
+        cur.execute(
+            "select body, updated_at from company_notes where company_key = %s",
+            (key,),
+        )
+        note = cur.fetchone()
+    return {"contacts": contacts, "note": note or {"body": "", "updated_at": None}}
+
+
+def company_account(conn: psycopg.Connection, name: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select account_exists, sign_in_email, password_manager_url, updated_at
+              from company_accounts
+             where company_key = any(%s)
+             order by (company_key = %s) desc
+             limit 1
+            """,
+            ([company_key(name), name.casefold().strip()], company_key(name)),
+        )
+        return cur.fetchone()
+
+
+def save_company_note(conn: psycopg.Connection, name: str, body: str) -> dict:
+    if len(body) > 20_000:
+        raise ValueError("company note is too long")
+    key = company_key(name)
+    if not key:
+        raise ValueError("company name is required")
+    with conn.cursor() as cur:
+        cur.execute("select name from companies where key = %s", (key,))
+        company = cur.fetchone()
+        if company is None:
+            raise ValueError("company not found")
+        cur.execute(
+            """
+            insert into company_notes (company_key, company_name, body)
+            values (%s, %s, %s)
+            on conflict (company_key) do update set
+                company_name = excluded.company_name, body = excluded.body, updated_at = now()
+            returning body, updated_at
+            """,
+            (key, company["name"], body),
+        )
+        note = cur.fetchone()
+    conn.commit()
+    return note
+
+
+def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual") -> dict:
+    company = str(payload.get("company") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not company or not name or source not in {"manual", "linkedin_csv"}:
+        raise ValueError("company and contact name are required")
+    title = str(payload.get("title") or "").strip()[:500]
+    email = str(payload.get("email") or "").strip()[:500]
+    linkedin_url = str(payload.get("linkedin_url") or "").strip()[:2_000]
+    if linkedin_url and not linkedin_url.startswith("https://"):
+        raise ValueError("LinkedIn URL must use HTTPS")
+    key = company_key(company)
+    import_key = None
+    if source == "linkedin_csv":
+        fingerprint = "\0".join((key, normalise(name), linkedin_url.casefold()))
+        import_key = hashlib.sha256(fingerprint.encode()).hexdigest()
+    with conn.cursor() as cur:
+        cur.execute("select name from companies where key = %s", (key,))
+        known_company = cur.fetchone()
+        if known_company is None:
+            raise ValueError("company not found")
+        cur.execute(
+            """
+            insert into contacts
+                (company_key, company_name, name, title, email, linkedin_url, source, import_key)
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict (import_key) do update set
+                company_name = excluded.company_name, name = excluded.name,
+                title = excluded.title, email = excluded.email,
+                linkedin_url = excluded.linkedin_url, updated_at = now()
+            returning *
+            """,
+            (key, known_company["name"], name, title, email, linkedin_url, source, import_key),
+        )
+        contact = cur.fetchone()
+    conn.commit()
+    return contact

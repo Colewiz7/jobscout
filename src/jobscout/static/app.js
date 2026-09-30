@@ -67,6 +67,11 @@ const state = {
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
   queueSaving: false, queueDraggedKey: "", sessionStarting: false,
   applySession: null, sessionTimer: null,
+  trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
+  trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
+  trackerQuery: "", trackerDraggedKey: "",
+  companiesData: null, companyLoadedName: null, companiesLoading: false,
+  companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
 };
 
 let commandSelection = 0;
@@ -264,6 +269,7 @@ function jobRowMarkup(entry) {
   const fresh = isNewSinceVisit(job);
   const chips = [];
   if (isRemote(job)) chips.push("Remote");
+  if (job.connections_count) chips.push(`${new Intl.NumberFormat().format(job.connections_count)} connections`);
   if (sources.length > 1) chips.push(`${sources.length} sources`);
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
   return `<button class="job-row interactive" type="button" role="option" style="transform:translateY(${entry.offset}px)" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
@@ -332,15 +338,19 @@ function detailMarkup(job) {
   const pending = state.pending.has(job.dedupe_key);
   const description = state.descriptions.get(job.dedupe_key)?.value;
   const visibleStatus = job.liveness_status === "closed" ? "Posting closed" : statusLabel(job.status || "new");
+  const history = (state.trackerData?.history || []).filter((item) => item.dedupe_key === job.dedupe_key).slice(-6).reverse();
+  const interviews = (state.trackerData?.interviews || []).filter((item) => item.dedupe_key === job.dedupe_key);
+  const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div>${statusMarkup(item.to_status)}<time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time></div>`).join("")}</div>` : "";
+  const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>Interview</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
   return `<article class="job-detail" aria-labelledby="job-title">
-    <header class="job-detail-header"><div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies?company=${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a></div>
+    <header class="job-detail-header"><div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a></div>
       <dl class="fact-strip">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
       <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!job.url || pending ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
     <div class="job-detail-body">
-      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
+      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
       ${descriptionMarkup(job)}
-      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
+      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
   </article>`;
@@ -479,6 +489,428 @@ function renderQueue({ focus = false } = {}) {
     routeView.innerHTML = `<section class="queue-page" aria-labelledby="queue-title"><header class="queue-heading"><div><h1 id="queue-title" tabindex="-1">Apply queue</h1><p>${jobs.length ? `${new Intl.NumberFormat().format(jobs.length)} ${jobs.length === 1 ? "role" : "roles"}, ordered for a focused pass.` : "Your next application session starts here."}</p></div>${jobs.length ? `<button class="filled-button interactive" type="button" data-start-session ${state.sessionStarting ? 'aria-disabled="true" aria-busy="true"' : ""}>${state.sessionStarting ? "Checking postings…" : "Start session"}</button>` : ""}</header>${jobs.length ? `<div class="queue-list" aria-label="Queued jobs">${jobs.map((job, index) => queueCard(job, index, jobs.length)).join("")}</div>` : `<div class="empty-state"><h2>Queue a role worth your time.</h2><p>Jobs you queue from Inbox will wait here in deadline order.</p><a class="tonal-button interactive" href="/inbox" data-route>Find roles</a></div>`}</section>`;
   }
   if (focus) document.querySelector("#queue-title, .empty-state h2")?.focus({ preventScroll: true });
+}
+
+function statusMarkup(status) {
+  const symbols = {
+    applying: "↗", applied: "✓", interviewing: "◉", offer: "★", rejected: "×",
+    queued: "→", saved: "+", archived: "—", new: "•",
+  };
+  return `<span class="status-word status-${escapeHtml(status)}"><span aria-hidden="true">${symbols[status] || "•"}</span>${escapeHtml(statusLabel(status))}</span>`;
+}
+
+function parseTrackerUrl() {
+  const params = new URLSearchParams(window.location.search);
+  state.trackerView = params.get("view") === "board" ? "board" : params.get("view") === "calibration" ? "calibration" : "table";
+  state.trackerStatus = allowedStatuses.has(params.get("status")) ? params.get("status") : "all";
+  state.trackerSort = ["company", "status", "applied", "last_activity"].includes(params.get("sort")) ? params.get("sort") : "last_activity";
+  state.trackerQuery = params.get("q") || "";
+}
+
+function syncTrackerUrl({ replace = false } = {}) {
+  const params = new URLSearchParams();
+  if (state.trackerView !== "table") params.set("view", state.trackerView);
+  if (state.trackerStatus !== "all") params.set("status", state.trackerStatus);
+  if (state.trackerSort !== "last_activity") params.set("sort", state.trackerSort);
+  if (state.trackerQuery) params.set("q", state.trackerQuery);
+  history[replace ? "replaceState" : "pushState"]({}, "", `/tracker${params.size ? `?${params}` : ""}`);
+}
+
+function trackerApplications() {
+  const query = state.trackerQuery.trim().toLowerCase();
+  const applications = [...(state.trackerData?.applications || [])].filter((job) =>
+    (state.trackerStatus === "all" || job.status === state.trackerStatus)
+    && (!query || `${job.company} ${job.title} ${job.next_step || ""}`.toLowerCase().includes(query))
+  );
+  applications.sort((left, right) => {
+    if (state.trackerSort === "company") return `${left.company} ${left.title}`.localeCompare(`${right.company} ${right.title}`);
+    if (state.trackerSort === "status") return `${left.status} ${left.company}`.localeCompare(`${right.status} ${right.company}`);
+    if (state.trackerSort === "applied") return new Date(right.applied_at || 0) - new Date(left.applied_at || 0);
+    return new Date(right.application_updated_at || 0) - new Date(left.application_updated_at || 0);
+  });
+  return applications;
+}
+
+function trackerInsights(applications) {
+  const now = Date.now();
+  const appliedWeek = applications.filter((job) => job.applied_at && now - new Date(job.applied_at) <= 7 * 86400000).length;
+  const withDate = applications.filter((job) => job.applied_at);
+  const responses = withDate.filter((job) => ["interviewing", "offer", "rejected"].includes(job.status)).length;
+  const responseRate = withDate.length ? `${Math.round((responses / withDate.length) * 100)}%` : "—";
+  const resumes = new Map();
+  for (const job of withDate) {
+    const name = job.resume_name || "Not recorded";
+    const value = resumes.get(name) || { total: 0, responses: 0 };
+    value.total += 1;
+    if (["interviewing", "offer", "rejected"].includes(job.status)) value.responses += 1;
+    resumes.set(name, value);
+  }
+  const bestResume = [...resumes].sort((a, b) => b[1].responses - a[1].responses || b[1].total - a[1].total)[0];
+  const sources = new Map();
+  for (const job of applications) for (const source of sourceList(job)) sources.set(source, (sources.get(source) || 0) + 1);
+  const topSource = [...sources].sort((a, b) => b[1] - a[1])[0];
+  return `<div class="tracker-insights" aria-label="Application insights">
+    <div><strong>${new Intl.NumberFormat().format(appliedWeek)}</strong><span>Applied this week</span></div>
+    <div><strong>${responseRate}</strong><span>Response rate</span></div>
+    <div><strong>${escapeHtml(bestResume?.[0] || "No resume data")}</strong><span>${bestResume ? `${bestResume[1].responses} of ${bestResume[1].total} responses` : "By resume version"}</span></div>
+    <div><strong>${escapeHtml(topSource?.[0] || "No source data")}</strong><span>${topSource ? `${topSource[1]} applications` : "Funnel by source"}</span></div>
+  </div>`;
+}
+
+function reminderMarkup() {
+  const now = new Date();
+  const due = (state.trackerData?.reminders || []).filter((reminder) => {
+    const effective = new Date(reminder.snoozed_until || reminder.due_at);
+    return !Number.isNaN(effective.valueOf()) && effective <= now;
+  });
+  if (!due.length) return "";
+  return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title">Follow-ups due</h2><p>${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.</p></div></div><div class="reminder-list">${due.map((reminder) => `<article class="reminder-row"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span></div><time datetime="${escapeHtml(reminder.snoozed_until || reminder.due_at)}">${escapeHtml(formatDate(reminder.snoozed_until || reminder.due_at))}</time><div><button class="text-button interactive" type="button" data-reminder-action="snooze" data-reminder-id="${reminder.id}">Snooze 3d</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button></div></article>`).join("")}</div></section>`;
+}
+
+function interviewsMarkup(applications) {
+  const upcoming = (state.trackerData?.interviews || []).filter((item) => new Date(item.starts_at) >= new Date());
+  const options = applications.map((job) => `<option value="${escapeHtml(job.dedupe_key)}">${escapeHtml(job.company)} — ${escapeHtml(job.title)}</option>`).join("");
+  return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title">Interviews</h2><p>${upcoming.length ? `${upcoming.length} upcoming.` : "Keep interview details with the application."}</p></div>${upcoming.length ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map((item) => `<article><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time><div><strong>${escapeHtml(item.company)}</strong><span>${escapeHtml(item.title)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</span></div><a class="text-button interactive" href="/api/v1/interviews.ics?id=${item.id}">.ics</a></article>`).join("")}</div>` : ""}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
+}
+
+function trackerTableMarkup(applications) {
+  if (!applications.length) return '<div class="empty-state"><h2>No applications match.</h2><p>Change the Tracker filters or apply to a role from Queue.</p><a class="tonal-button interactive" href="/queue" data-route>Open queue</a></div>';
+  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th></tr></thead><tbody>${applications.map((job) => `<tr><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "None")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "None")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "None")}</td><td>${escapeHtml(sourceList(job).join(", ") || "None")}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function trackerBoardMarkup(applications) {
+  const statuses = ["applying", "applied", "interviewing", "offer", "rejected"];
+  return `<div class="tracker-board" aria-label="Applications by status">${statuses.map((status) => {
+    const jobs = applications.filter((job) => job.status === status);
+    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}<label><span class="visually-hidden">Move ${escapeHtml(job.title)} to status</span><select data-board-status-select="${escapeHtml(job.dedupe_key)}">${statuses.map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${escapeHtml(statusLabel(option))}</option>`).join("")}</select></label></article>`).join("")}</div></section>`;
+  }).join("")}</div>`;
+}
+
+function calibrationMarkup(applications) {
+  const bands = [
+    { label: "150 and above", test: (score) => score >= 150 },
+    { label: "100–149", test: (score) => score >= 100 && score < 150 },
+    { label: "Below 100", test: (score) => score < 100 },
+  ];
+  return `<section class="calibration" aria-labelledby="calibration-title"><div class="calibration-intro"><h2 id="calibration-title">Score calibration</h2><p>Discovery scores beside actual outcomes. This view is read-only and never changes scout scoring.</p></div><div class="calibration-grid">${bands.map((band) => {
+    const rows = applications.filter((job) => job.score != null && band.test(Number(job.score)));
+    const responses = rows.filter((job) => ["interviewing", "offer"].includes(job.status)).length;
+    const offers = rows.filter((job) => job.status === "offer").length;
+    return `<article><h3>${band.label}</h3><dl>${factItem("Applications", String(rows.length))}${factItem("Interview or offer", String(responses))}${factItem("Offers", String(offers))}</dl></article>`;
+  }).join("")}</div><div class="calibration-table"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Outcome</th></tr></thead><tbody>${applications.filter((job) => job.score != null).sort((a, b) => b.score - a.score).map((job) => `<tr><td>${new Intl.NumberFormat().format(job.score)}</td><td>${escapeHtml(job.company)}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td></tr>`).join("")}</tbody></table></div></section>`;
+}
+
+function trackerMarkup() {
+  const all = state.trackerData?.applications || [];
+  const applications = trackerApplications();
+  const statuses = ["all", "applying", "applied", "interviewing", "offer", "rejected"];
+  return `<section class="tracker-page" aria-labelledby="tracker-title"><header class="tracker-heading"><div><h1 id="tracker-title" tabindex="-1">Application tracker</h1><p>Keep the next action visible, then learn from the outcome.</p></div><div class="view-switch" aria-label="Tracker view">${[["table", "Table"], ["board", "Board"], ["calibration", "Calibration"]].map(([value, label]) => `<button class="interactive" type="button" data-tracker-view="${value}" aria-pressed="${state.trackerView === value}">${label}</button>`).join("")}</div></header>${trackerInsights(all)}${reminderMarkup()}${interviewsMarkup(all)}<section class="tracker-section applications-section" aria-labelledby="applications-title"><div class="section-heading"><div><h2 id="applications-title">Applications</h2><p>${applications.length} ${applications.length === 1 ? "application" : "applications"} in this view.</p></div><button class="outlined-button interactive" type="button" data-export-tracker>Export CSV</button></div><div class="tracker-tools"><label>${icons.search}<input id="tracker-search" type="search" placeholder="Search applications" value="${escapeHtml(state.trackerQuery)}" aria-label="Search applications"></label><label><span class="visually-hidden">Filter by status</span><select id="tracker-status">${statuses.map((status) => `<option value="${status}" ${state.trackerStatus === status ? "selected" : ""}>${status === "all" ? "All statuses" : statusLabel(status)}</option>`).join("")}</select></label></div>${state.trackerView === "board" ? trackerBoardMarkup(applications) : state.trackerView === "calibration" ? calibrationMarkup(applications) : trackerTableMarkup(applications)}</section></section>`;
+}
+
+function renderTracker({ focus = false } = {}) {
+  document.title = "Tracker — JobSeer";
+  parseTrackerUrl();
+  if (state.trackerError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load the tracker.</h1><p>${escapeHtml(state.trackerError)}</p><button class="tonal-button interactive" type="button" data-retry-tracker>Retry</button></div></section>`;
+  else if (!state.trackerData) routeView.innerHTML = state.trackerShowLoader ? '<section class="page-shell"><div class="tracker-skeleton skeleton"></div></section>' : "";
+  else routeView.innerHTML = trackerMarkup();
+  if (focus) document.querySelector("#tracker-title, .error-state h1")?.focus({ preventScroll: true });
+}
+
+async function loadTrackerData({ background = false } = {}) {
+  if (state.trackerLoading) return;
+  state.trackerLoading = true; state.trackerError = "";
+  let timer;
+  if (!background) timer = setTimeout(() => { state.trackerShowLoader = true; if (routeRoot() === "tracker") renderTracker(); }, 300);
+  try {
+    const response = await fetch("/api/v1/tracker", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The tracker did not respond.");
+    state.trackerData = await response.json();
+  } catch (error) {
+    state.trackerError = error instanceof Error ? error.message : "The tracker did not respond.";
+  } finally {
+    clearTimeout(timer); state.trackerLoading = false; state.trackerShowLoader = false;
+    updateTodayStrip();
+    if (routeRoot() === "tracker") renderTracker();
+    else if (routeRoot() === "inbox" && state.loaded) renderInbox();
+  }
+}
+
+function updateTodayStrip() {
+  const today = document.querySelector("#today-strip");
+  const now = new Date();
+  const week = new Date(now.getTime() + 7 * 86400000);
+  const deadlines = state.jobs.filter((job) => {
+    const date = job.deadline ? new Date(`${job.deadline}T23:59:59`) : null;
+    return date && date >= now && date <= week;
+  }).length;
+  const followups = (state.trackerData?.reminders || []).filter((item) => new Date(item.snoozed_until || item.due_at) <= now).length;
+  const interviews = (state.trackerData?.interviews || []).filter((item) => {
+    const date = new Date(item.starts_at); return date >= now && date <= week;
+  }).length;
+  const items = [
+    deadlines ? `${deadlines} ${deadlines === 1 ? "deadline" : "deadlines"} this week` : "",
+    followups ? `${followups} ${followups === 1 ? "follow-up" : "follow-ups"} due` : "",
+    interviews ? `${interviews} upcoming ${interviews === 1 ? "interview" : "interviews"}` : "",
+  ].filter(Boolean);
+  today.hidden = !items.length;
+  today.innerHTML = items.length ? `<strong>Today</strong>${items.map((item) => `<a href="/tracker" data-route>${escapeHtml(item)}</a>`).join("")}` : "";
+}
+
+function companyNameFromRoute() {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "companies" && parts[1]) {
+    try { return decodeURIComponent(parts.slice(1).join("/")); } catch { return ""; }
+  }
+  return new URLSearchParams(window.location.search).get("company") || "";
+}
+
+function normalizeCompany(value) {
+  const suffixes = new Set(["co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"]);
+  const parts = String(value || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (parts[0] === "the") parts.shift();
+  while (parts.length > 1 && suffixes.has(parts.at(-1))) parts.pop();
+  return parts.join(" ");
+}
+
+function companyListMarkup(companies) {
+  if (!companies.length) return '<div class="empty-state"><h2>No companies yet.</h2><p>Companies appear after the scout finds a posting.</p><a class="tonal-button interactive" href="/inbox" data-route>Open inbox</a></div>';
+  return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route><span class="company-monogram" aria-hidden="true">${escapeHtml(initials(company.name))}</span><div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
+}
+
+function contactMarkup(contact) {
+  const detail = [contact.title, contact.source === "linkedin_csv" ? "LinkedIn connection" : "Manual contact"].filter(Boolean).join(" · ");
+  return `<article class="contact-row"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div>${contact.linkedin_url ? `<a class="text-button interactive" href="${escapeHtml(contact.linkedin_url)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}</article>`;
+}
+
+function companyDetailMarkup(company) {
+  const account = company.account;
+  const accountMarkup = company.account_protected
+    ? '<p class="protected-copy">ATS account details stay unavailable until protected profile access is enabled.</p>'
+    : account ? `<dl class="company-facts">${factItem("Account", account.account_exists === true ? "Exists" : account.account_exists === false ? "Does not exist" : "Unknown")}${factItem("Sign-in email", account.sign_in_email)}${account.password_manager_url ? `<div><dt>Password manager</dt><dd><a href="${escapeHtml(account.password_manager_url)}" target="_blank" rel="noopener noreferrer">Open entry ${icons.external}</a></dd></div>` : ""}</dl>` : '<p class="muted-copy">No ATS account status recorded.</p>';
+  return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
+    <section class="company-section" aria-labelledby="company-applications-title"><h2 id="company-applications-title">Applications</h2>${company.applications.length ? `<div class="company-application-list">${company.applications.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${job.applied_at ? `Applied ${escapeHtml(formatDate(job.applied_at))}` : escapeHtml(formatDate(job.application_updated_at))}</span></div>${statusMarkup(job.status)}</article>`).join("")}</div>` : '<p class="muted-copy">No applications at this company yet.</p>'}</section>
+    <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2><div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
+    <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map(contactMarkup).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
+  </main><aside>
+    <section class="company-section"><h2>Notes</h2><label class="company-notes"><span class="visually-hidden">Notes about ${escapeHtml(company.name)}</span><textarea id="company-note" rows="8" maxlength="20000" placeholder="Interview context, referrals, or follow-up notes">${escapeHtml(company.note?.body || "")}</textarea><small id="company-note-state">Saved automatically</small></label></section>
+    <section class="company-section"><h2>ATS account</h2>${accountMarkup}</section>
+    <section class="company-section"><h2>Links</h2><div class="company-links">${company.links.slice(0, 12).map((link) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(link.label)}</span>${icons.external}</a>`).join("")}</div></section>
+  </aside></div></article>`;
+}
+
+function renderCompanies({ focus = false } = {}) {
+  document.title = `${companyNameFromRoute() || "Companies"} — JobSeer`;
+  if (state.companiesError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load companies.</h1><p>${escapeHtml(state.companiesError)}</p><button class="tonal-button interactive" type="button" data-retry-companies>Retry</button></div></section>`;
+  else if (!state.companiesData) routeView.innerHTML = state.companiesShowLoader ? '<section class="page-shell"><div class="companies-skeleton skeleton"></div></section>' : "";
+  else if (state.companiesData.company === null) routeView.innerHTML = '<section class="page-shell"><div class="empty-state"><h1>Company not found.</h1><p>This company is not in the current posting history.</p><a class="tonal-button interactive" href="/companies" data-route>All companies</a></div></section>';
+  else if (state.companiesData.company) routeView.innerHTML = companyDetailMarkup(state.companiesData.company);
+  else routeView.innerHTML = companyListMarkup(state.companiesData.companies || []);
+  if (focus) document.querySelector("#companies-title, #company-title, .empty-state h1")?.focus({ preventScroll: true });
+}
+
+async function loadCompanies(name = companyNameFromRoute()) {
+  if (state.companiesLoading) return;
+  state.companiesLoading = true; state.companiesError = ""; state.companyLoadedName = name;
+  const timer = setTimeout(() => { state.companiesShowLoader = true; if (routeRoot() === "companies") renderCompanies(); }, 300);
+  try {
+    const params = name ? `?${new URLSearchParams({ name })}` : "";
+    const response = await fetch(`/api/v1/companies${params}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Companies did not respond.");
+    state.companiesData = await response.json();
+  } catch (error) {
+    state.companiesError = error instanceof Error ? error.message : "Companies did not respond.";
+  } finally {
+    clearTimeout(timer); state.companiesLoading = false; state.companiesShowLoader = false;
+    if (routeRoot() === "companies") renderCompanies();
+  }
+}
+
+function parseCsv(text) {
+  const rows = []; let row = []; let field = ""; let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted && character === '"' && text[index + 1] === '"') { field += '"'; index += 1; }
+    else if (character === '"') quoted = !quoted;
+    else if (character === "," && !quoted) { row.push(field); field = ""; }
+    else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+      row.push(field); if (row.some((value) => value.trim())) rows.push(row); row = []; field = "";
+    } else field += character;
+  }
+  row.push(field); if (row.some((value) => value.trim())) rows.push(row);
+  return rows;
+}
+
+async function importLinkedInCsv(file) {
+  if (!file || !state.companiesData?.companies) return;
+  try {
+    const rows = parseCsv(await file.text());
+    if (rows.length < 2) throw new Error("The CSV has no connection rows.");
+    const headerRow = rows.findIndex((values) => {
+      const headers = values.map((value) => value.trim().toLowerCase());
+      return (headers.includes("company") || headers.includes("company name"))
+        && (headers.includes("name") || headers.includes("first name"));
+    });
+    if (headerRow < 0) throw new Error("The CSV needs Company and Name columns.");
+    const headers = rows[headerRow].map((value) => value.trim().toLowerCase());
+    const indexOf = (...names) => names.map((name) => headers.indexOf(name)).find((index) => index >= 0) ?? -1;
+    const companyIndex = indexOf("company", "company name");
+    const firstIndex = indexOf("first name"); const lastIndex = indexOf("last name");
+    const nameIndex = indexOf("name"); const titleIndex = indexOf("position", "title");
+    const urlIndex = indexOf("url", "linkedin url"); const emailIndex = indexOf("email address", "email");
+    if (companyIndex < 0 || (nameIndex < 0 && firstIndex < 0)) throw new Error("The CSV needs Company and Name columns.");
+    const companies = new Map(state.companiesData.companies.map((company) => [company.key, company.name]));
+    const dataRows = rows.slice(headerRow + 1);
+    const contacts = dataRows.map((values) => {
+      const company = companies.get(normalizeCompany(values[companyIndex] || ""));
+      const name = nameIndex >= 0 ? values[nameIndex] : `${values[firstIndex] || ""} ${values[lastIndex] || ""}`.trim();
+      return company && name ? { company, name, title: values[titleIndex] || "", linkedin_url: values[urlIndex] || "", email: values[emailIndex] || "" } : null;
+    }).filter(Boolean);
+    let imported = 0;
+    for (let index = 0; index < contacts.length; index += 100) {
+      const response = await fetch("/api/v1/connections/import", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+        body: JSON.stringify({ contacts: contacts.slice(index, index + 100) }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Connections could not be imported.");
+      imported += (await response.json()).imported || 0;
+    }
+    const unmatched = dataRows.length - contacts.length;
+    state.companiesData = null; await loadCompanies("");
+    state.loaded = false; await loadInbox();
+    showSnackbar(`Imported ${imported} matched ${imported === 1 ? "connection" : "connections"}${unmatched ? `; ${unmatched} unmatched kept out` : ""}.`);
+  } catch (error) {
+    showSnackbar(error instanceof Error ? error.message : "Connections could not be imported.");
+  }
+}
+
+async function updateReminder(id, action) {
+  try {
+    const response = await fetch(`/api/v1/reminders/${id}`, {
+      method: "PUT", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The reminder could not be updated.");
+    await loadTrackerData({ background: true });
+    showSnackbar(action === "done" ? "Follow-up completed." : "Follow-up snoozed for 3 days.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The reminder could not be updated."); }
+}
+
+async function saveTrackerNextStep(key, value, input) {
+  const job = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
+  const previous = job?.next_step || "";
+  if (value === previous) return;
+  if (job) job.next_step = value;
+  input?.setAttribute("aria-busy", "true");
+  try {
+    const response = await fetch(`/api/v1/applications/${encodeURIComponent(key)}/next-step`, {
+      method: "PUT", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ next_step: value }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The next step could not be saved.");
+    showSnackbar("Next step saved.");
+    await loadTrackerData({ background: true });
+  } catch (error) {
+    if (job) job.next_step = previous;
+    if (input) input.value = previous;
+    showSnackbar(`${error.message} Previous value restored.`);
+  } finally { input?.removeAttribute("aria-busy"); }
+}
+
+async function setTrackerStatus(key, status) {
+  const tracked = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
+  const job = state.jobs.find((item) => item.dedupe_key === key) || tracked;
+  if (!job || job.status === status) return;
+  const previous = job.status;
+  job.status = status; if (tracked) tracked.status = status; renderTracker();
+  try {
+    if (status === "applied") {
+      const response = await fetch(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+        body: JSON.stringify({ document_id: null }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The status could not be saved.");
+    } else await patchJob(job, status);
+    await loadTrackerData({ background: true });
+    showSnackbar(`Moved to ${statusLabel(status)}.`);
+  } catch (error) {
+    job.status = previous; if (tracked) tracked.status = previous; renderTracker();
+    showSnackbar(`${error.message} Status restored.`);
+  }
+}
+
+async function submitInterview(form) {
+  const data = new FormData(form);
+  const start = new Date(String(data.get("starts_at") || ""));
+  const endValue = String(data.get("ends_at") || "");
+  const end = endValue ? new Date(endValue) : null;
+  if (Number.isNaN(start.valueOf()) || (end && Number.isNaN(end.valueOf()))) {
+    showSnackbar("Enter a valid interview date and time."); return;
+  }
+  try {
+    const response = await fetch("/api/v1/interviews", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({
+        dedupe_key: data.get("dedupe_key"), starts_at: start.toISOString(),
+        ends_at: end ? end.toISOString() : null,
+        location: data.get("location"), notes: data.get("notes"),
+      }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The interview could not be saved.");
+    await loadTrackerData({ background: true });
+    showSnackbar("Interview added.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The interview could not be saved."); }
+}
+
+function exportTrackerCsv() {
+  const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const header = ["Company", "Role", "Status", "Applied date", "Last activity", "Next step", "Resume version", "Source"];
+  const rows = trackerApplications().map((job) => [
+    job.company, job.title, statusLabel(job.status), job.applied_at || "",
+    job.application_updated_at || "", job.next_step || "", job.resume_name || "",
+    sourceList(job).join(", "),
+  ]);
+  const blob = new Blob([[header, ...rows].map((row) => row.map(quote).join(",")).join("\r\n") + "\r\n"], { type: "text/csv" });
+  const url = URL.createObjectURL(blob); const link = document.createElement("a");
+  link.href = url; link.download = "jobseer-applications.csv"; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0); showSnackbar("Tracker CSV exported.");
+}
+
+async function saveCompanyNote(company, body) {
+  const status = document.querySelector("#company-note-state");
+  if (status) status.textContent = "Saving…";
+  try {
+    const response = await fetch("/api/v1/companies/note", {
+      method: "PUT", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ company, body }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The company note could not be saved.");
+    if (state.companiesData?.company) state.companiesData.company.note = (await response.json()).note;
+    if (document.querySelector("#company-note-state")) document.querySelector("#company-note-state").textContent = "Saved automatically";
+  } catch (error) {
+    if (status) status.textContent = "Not saved";
+    showSnackbar(error instanceof Error ? error.message : "The company note could not be saved.");
+  }
+}
+
+async function submitContact(form) {
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    const response = await fetch("/api/v1/contacts", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The contact could not be saved.");
+    state.companiesData = null; await loadCompanies(payload.company);
+    showSnackbar("Contact added.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The contact could not be saved."); }
 }
 
 async function persistQueueOrder(keys, previous) {
@@ -762,6 +1194,16 @@ function renderRoute({ focus = false } = {}) {
     if (window.location.pathname.startsWith("/queue/session")) renderApplySession({ focus });
     else renderQueue({ focus });
     if (!state.loaded && !state.loading) loadInbox();
+  } else if (root === "tracker") {
+    renderTracker({ focus });
+    if (!state.loaded && !state.loading) loadInbox();
+    if (!state.trackerData && !state.trackerLoading) loadTrackerData();
+  } else if (root === "companies") {
+    const name = companyNameFromRoute();
+    if (name !== state.companyLoadedName) state.companiesData = null;
+    renderCompanies({ focus });
+    if (!state.loaded && !state.loading) loadInbox();
+    if (!state.companiesData && !state.companiesLoading) loadCompanies(name);
   } else renderPlaceholder(root, { focus });
 }
 
@@ -798,6 +1240,8 @@ async function loadInbox() {
     state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
+    updateTodayStrip();
+    if (!state.trackerData && !state.trackerLoading) loadTrackerData({ background: true });
     try { localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString()); } catch { /* Storage is optional. */ }
   } catch (error) {
     state.error = error instanceof Error ? error.message : "The job list did not respond.";
@@ -1609,6 +2053,15 @@ document.addEventListener("click", (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault(); navigate(route.href); return;
   }
+  const trackerView = event.target.closest("[data-tracker-view]");
+  if (trackerView) { state.trackerView = trackerView.dataset.trackerView; syncTrackerUrl(); renderTracker({ focus: true }); return; }
+  const trackerSort = event.target.closest("[data-tracker-sort]");
+  if (trackerSort) { state.trackerSort = trackerSort.dataset.trackerSort; syncTrackerUrl(); renderTracker(); return; }
+  if (event.target.closest("[data-export-tracker]")) { exportTrackerCsv(); return; }
+  const reminderAction = event.target.closest("[data-reminder-action]");
+  if (reminderAction) { updateReminder(Number(reminderAction.dataset.reminderId), reminderAction.dataset.reminderAction); return; }
+  if (event.target.closest("[data-retry-tracker]")) { state.trackerData = null; state.trackerError = ""; loadTrackerData(); return; }
+  if (event.target.closest("[data-retry-companies]")) { state.companiesData = null; state.companiesError = ""; loadCompanies(); return; }
   const startSession = event.target.closest("[data-start-session]");
   if (startSession && startSession.getAttribute("aria-disabled") !== "true") { startApplySession(); return; }
   const queueMove = event.target.closest("[data-queue-move]");
@@ -1674,6 +2127,14 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("dragstart", (event) => {
+  const trackerCard = event.target.closest(".board-card[data-tracker-key]");
+  if (trackerCard) {
+    state.trackerDraggedKey = trackerCard.dataset.trackerKey;
+    trackerCard.classList.add("is-dragged");
+    event.dataTransfer?.setData("text/plain", state.trackerDraggedKey);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    return;
+  }
   const card = event.target.closest(".queue-card[data-queue-key]");
   if (!card) return;
   state.queueDraggedKey = card.dataset.queueKey;
@@ -1683,10 +2144,16 @@ document.addEventListener("dragstart", (event) => {
 });
 
 document.addEventListener("dragover", (event) => {
+  if (state.trackerDraggedKey && event.target.closest("[data-board-status]")) { event.preventDefault(); return; }
   if (state.queueDraggedKey && event.target.closest(".queue-card[data-queue-key]")) event.preventDefault();
 });
 
 document.addEventListener("drop", (event) => {
+  const boardColumn = event.target.closest("[data-board-status]");
+  if (boardColumn && state.trackerDraggedKey) {
+    event.preventDefault(); const key = state.trackerDraggedKey; state.trackerDraggedKey = "";
+    setTrackerStatus(key, boardColumn.dataset.boardStatus); return;
+  }
   const target = event.target.closest(".queue-card[data-queue-key]");
   if (!target || !state.queueDraggedKey) return;
   event.preventDefault();
@@ -1697,7 +2164,9 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("dragend", (event) => {
   event.target.closest(".queue-card")?.classList.remove("is-dragged");
+  event.target.closest(".board-card")?.classList.remove("is-dragged");
   state.queueDraggedKey = "";
+  state.trackerDraggedKey = "";
 });
 
 document.addEventListener("input", (event) => {
@@ -1708,11 +2177,32 @@ document.addEventListener("input", (event) => {
     const key = state.selectedKey;
     const value = event.target.value;
     clearTimeout(state.notesTimer); document.querySelector("#notes-state").textContent = "Unsaved changes"; state.notesTimer = setTimeout(() => saveNotes(key, value), 600);
+  } else if (event.target.id === "tracker-search") {
+    state.trackerQuery = event.target.value; syncTrackerUrl({ replace: true }); renderTracker();
+    const search = document.querySelector("#tracker-search"); search?.focus(); search?.setSelectionRange(state.trackerQuery.length, state.trackerQuery.length);
+  } else if (event.target.id === "company-note") {
+    const company = state.companiesData?.company?.name;
+    const body = event.target.value;
+    if (document.querySelector("#company-note-state")) document.querySelector("#company-note-state").textContent = "Unsaved changes";
+    clearTimeout(state.companyNoteTimer);
+    state.companyNoteTimer = setTimeout(() => saveCompanyNote(company, body), 600);
   }
 });
 
 document.addEventListener("change", (event) => {
   if (event.target.id === "job-sort") { state.sort = event.target.value; state.scrollTop = 0; syncInboxUrl(); renderInbox(); }
+  else if (event.target.id === "tracker-status") { state.trackerStatus = event.target.value; syncTrackerUrl(); renderTracker(); }
+  else if (event.target.matches("[data-board-status-select]")) setTrackerStatus(event.target.dataset.boardStatusSelect, event.target.value);
+  else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
+});
+
+document.addEventListener("focusout", (event) => {
+  if (event.target.matches("[data-next-step]")) saveTrackerNextStep(event.target.dataset.nextStep, event.target.value, event.target);
+});
+
+document.addEventListener("submit", (event) => {
+  if (event.target.id === "interview-form") { event.preventDefault(); submitInterview(event.target); }
+  if (event.target.id === "contact-form") { event.preventDefault(); submitContact(event.target); }
 });
 
 filterForm.addEventListener("submit", (event) => {
