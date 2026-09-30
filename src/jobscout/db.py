@@ -167,6 +167,7 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
             """,
             list(companies.items()),
         )
+        _apply_rules_cursor(cur)
         cur.execute("select count(*) as n from postings")
         after = cur.fetchone()["n"]
     conn.commit()
@@ -420,6 +421,8 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                    s.updated_at as application_updated_at,
                    s.queue_position, s.applied_at, s.resume_document_id, s.resume_name,
                    coalesce(s.next_step, '') as next_step,
+                   rule_action.id as rule_action_id,
+                   rule_action.name as archived_by_rule,
                    (
                        select max(e.changed_at)
                          from application_events e
@@ -434,6 +437,15 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                      where btrim(part) <> '') as location
               from grouped g
               left join application_states s on s.dedupe_key = g.dedupe_key
+              left join lateral (
+                  select a.id, r.name
+                    from rule_actions a
+                    join rules r on r.id = a.rule_id
+                   where a.dedupe_key = g.dedupe_key
+                     and a.action = 'archive' and a.undone_at is null
+                   order by a.created_at desc, a.id desc
+                   limit 1
+              ) rule_action on true
              order by g.score desc nulls last, g.age_days asc nulls last,
                       lower(g.company), lower(g.title)
             """,
@@ -933,6 +945,14 @@ def save_application_state(
                 """,
                 (dedupe_key,),
             )
+        if status != "archived":
+            cur.execute(
+                """
+                update rule_actions set undone_at = now()
+                 where dedupe_key = %s and action = 'archive' and undone_at is null
+                """,
+                (dedupe_key,),
+            )
         if previous != status:
             cur.execute(
                 """
@@ -1396,3 +1416,219 @@ def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual"
         contact = cur.fetchone()
     conn.commit()
     return contact
+
+
+def eligibility_overrides(conn: psycopg.Connection, dedupe_key: str) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, blocker_key, evidence, comparison, note, created_at
+              from eligibility_overrides
+             where dedupe_key = %s
+             order by created_at, id
+            """,
+            (dedupe_key,),
+        )
+        return cur.fetchall()
+
+
+def record_eligibility_overrides(
+    conn: psycopg.Connection,
+    dedupe_key: str,
+    blockers: list[dict],
+    note: str = "",
+) -> list[dict]:
+    if len(note) > 1_000:
+        raise ValueError("override note is too long")
+    if not blockers or len(blockers) > 4:
+        raise ValueError("there are no active blockers to override")
+    allowed = {"sponsorship", "clearance", "degree", "graduation"}
+    rows = []
+    for blocker in blockers:
+        key = str(blocker.get("key") or "")
+        evidence = str(blocker.get("evidence") or "")
+        comparison = str(blocker.get("comparison") or "")
+        if key not in allowed or not evidence or len(evidence) > 5_000 or len(comparison) > 2_000:
+            raise ValueError("invalid eligibility blocker")
+        rows.append((dedupe_key, key, evidence, comparison, note.strip()))
+    with conn.cursor() as cur:
+        cur.execute("select 1 from postings where dedupe_key = %s limit 1", (dedupe_key,))
+        if cur.fetchone() is None:
+            raise ValueError("job not found")
+        cur.executemany(
+            """
+            insert into eligibility_overrides
+                (dedupe_key, blocker_key, evidence, comparison, note)
+            values (%s, %s, %s, %s, %s)
+            """,
+            rows,
+        )
+    conn.commit()
+    return eligibility_overrides(conn, dedupe_key)
+
+
+RULE_KINDS = frozenset({"archive_title", "tag_title", "boost_company"})
+
+
+def normalize_rule(payload: dict) -> dict:
+    kind = str(payload.get("kind") or "")
+    name = str(payload.get("name") or "").strip()
+    pattern = str(payload.get("pattern") or "").strip()
+    value = str(payload.get("value") or "").strip()
+    if kind not in RULE_KINDS:
+        raise ValueError("unknown rule kind")
+    if not name or len(name) > 120 or not pattern or len(pattern) > 120:
+        raise ValueError("rule name and pattern are required and must be at most 120 characters")
+    if kind == "tag_title" and (not value or len(value) > 40):
+        raise ValueError("tag rules need a tag of at most 40 characters")
+    if kind == "boost_company":
+        try:
+            amount = int(value)
+        except ValueError as error:
+            raise ValueError("company boost must be a whole number from 1 to 100") from error
+        if not 1 <= amount <= 100:
+            raise ValueError("company boost must be a whole number from 1 to 100")
+        value = str(amount)
+    if kind == "archive_title":
+        value = ""
+    return {"name": name, "kind": kind, "pattern": pattern, "value": value}
+
+
+def rules(conn: psycopg.Connection) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, name, kind, pattern, value, enabled, created_at, updated_at
+              from rules order by enabled desc, lower(name), id
+            """
+        )
+        return cur.fetchall()
+
+
+def _apply_rules_cursor(cur) -> None:
+    cur.execute("select id, name, kind, pattern, value from rules where enabled order by id")
+    active = cur.fetchall()
+    archive_rules = [rule for rule in active if rule["kind"] == "archive_title"]
+    if not archive_rules:
+        return
+    cur.execute("select dedupe_key, min(title) as title from postings group by dedupe_key")
+    for job in cur.fetchall():
+        title = normalise(job["title"])
+        for rule in archive_rules:
+            if normalise(rule["pattern"]) not in title:
+                continue
+            cur.execute(
+                "select status from application_states where dedupe_key = %s for update",
+                (job["dedupe_key"],),
+            )
+            state = cur.fetchone()
+            previous = state["status"] if state else "new"
+            if previous != "new":
+                continue
+            cur.execute(
+                """
+                select 1 from rule_actions
+                 where rule_id = %s and dedupe_key = %s and action = 'archive'
+                """,
+                (rule["id"], job["dedupe_key"]),
+            )
+            if cur.fetchone() is not None:
+                continue
+            if state is None:
+                cur.execute(
+                    "insert into application_states (dedupe_key, status) values (%s, 'archived')",
+                    (job["dedupe_key"],),
+                )
+            else:
+                cur.execute(
+                    "update application_states set status = 'archived', updated_at = now() where dedupe_key = %s",
+                    (job["dedupe_key"],),
+                )
+            cur.execute(
+                """
+                insert into application_status_history (dedupe_key, from_status, to_status)
+                values (%s, %s, 'archived')
+                """,
+                (job["dedupe_key"], previous),
+            )
+            cur.execute(
+                """
+                insert into rule_actions (rule_id, dedupe_key, action, previous_status)
+                values (%s, %s, 'archive', %s)
+                """,
+                (rule["id"], job["dedupe_key"], previous),
+            )
+            break
+
+
+def save_rule(conn: psycopg.Connection, payload: dict) -> dict:
+    clean = normalize_rule(payload)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into rules (name, kind, pattern, value)
+            values (%s, %s, %s, %s)
+            returning id, name, kind, pattern, value, enabled, created_at, updated_at
+            """,
+            (clean["name"], clean["kind"], clean["pattern"], clean["value"]),
+        )
+        saved = cur.fetchone()
+        _apply_rules_cursor(cur)
+    conn.commit()
+    return saved
+
+
+def set_rule_enabled(conn: psycopg.Connection, rule_id: int, enabled: bool) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update rules set enabled = %s, updated_at = now()
+             where id = %s
+             returning id, name, kind, pattern, value, enabled, created_at, updated_at
+            """,
+            (enabled, rule_id),
+        )
+        saved = cur.fetchone()
+        if saved and enabled:
+            _apply_rules_cursor(cur)
+    conn.commit()
+    return saved
+
+
+def undo_rule_action(conn: psycopg.Connection, action_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, dedupe_key, previous_status from rule_actions
+             where id = %s and undone_at is null for update
+            """,
+            (action_id,),
+        )
+        action = cur.fetchone()
+        if action is None:
+            return None
+        cur.execute(
+            "select status from application_states where dedupe_key = %s for update",
+            (action["dedupe_key"],),
+        )
+        state = cur.fetchone()
+        if state is None or state["status"] != "archived":
+            raise ValueError("the job is no longer archived by this rule")
+        cur.execute(
+            "update rule_actions set undone_at = now() where id = %s returning *",
+            (action_id,),
+        )
+        saved = cur.fetchone()
+        cur.execute(
+            "update application_states set status = %s, updated_at = now() where dedupe_key = %s",
+            (action["previous_status"], action["dedupe_key"]),
+        )
+        cur.execute(
+            """
+            insert into application_status_history (dedupe_key, from_status, to_status)
+            values (%s, 'archived', %s)
+            """,
+            (action["dedupe_key"], action["previous_status"]),
+        )
+    conn.commit()
+    return saved

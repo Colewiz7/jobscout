@@ -58,6 +58,7 @@ const state = {
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  eligibility: new Map(),
   quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
   quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
   copiedByJob: new Map(), copiedKey: "", quickFillPopout: null,
@@ -72,6 +73,7 @@ const state = {
   trackerQuery: "", trackerDraggedKey: "",
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
+  rules: null, rulesLoading: false, rulesError: "",
 };
 
 let commandSelection = 0;
@@ -210,12 +212,16 @@ function filteredJobs() {
     if (query && right.fuzzy !== left.fuzzy) return right.fuzzy - left.fuzzy;
     if (state.sort === "company") return `${left.job.company} ${left.job.title}`.localeCompare(`${right.job.company} ${right.job.title}`);
     if (state.sort === "newest") return new Date(right.job.first_seen || 0) - new Date(left.job.first_seen || 0);
-    return (Number(right.job.score) || 0) - (Number(left.job.score) || 0)
+    return rankingScore(right.job) - rankingScore(left.job)
       || (Number(left.job.age_days) || 0) - (Number(right.job.age_days) || 0);
   });
   const jobs = matches.map(({ job }) => job);
   const fresh = jobs.filter(isNewSinceVisit);
   return fresh.length ? [...fresh, ...jobs.filter((job) => !isNewSinceVisit(job))] : jobs;
+}
+
+function rankingScore(job) {
+  return (Number(job?.score) || 0) + (Number(job?.rule_boost) || 0);
 }
 
 function buildEntries(jobs) {
@@ -269,12 +275,15 @@ function jobRowMarkup(entry) {
   const fresh = isNewSinceVisit(job);
   const chips = [];
   if (isRemote(job)) chips.push("Remote");
+  if (job.archived_by_rule) chips.push("Archived by rule");
+  if (job.repost_count) chips.push("Reposted");
+  for (const tag of job.tags || []) chips.push(tag);
   if (job.connections_count) chips.push(`${new Intl.NumberFormat().format(job.connections_count)} connections`);
   if (sources.length > 1) chips.push(`${sources.length} sources`);
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
   return `<button class="job-row interactive" type="button" role="option" style="transform:translateY(${entry.offset}px)" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
     <span class="job-logo" aria-hidden="true">${escapeHtml(initials(job.company))}</span>
-    <span class="job-row-copy"><span class="job-row-title">${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
+    <span class="job-row-copy"><span class="job-row-title">${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
     ${bulkSelected ? '<span class="selection-check" aria-label="Selected">✓</span>' : ""}
   </button>`;
@@ -326,6 +335,56 @@ function descriptionMarkup(job) {
   return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${parsed}${original}</section>` : "";
 }
 
+function atGlanceMarkup(job) {
+  const value = state.descriptions.get(job.dedupe_key)?.value || {};
+  const sections = Array.isArray(value.sections) ? value.sections : [];
+  const bullets = [];
+  for (const key of ["about", "responsibilities", "requirements"]) {
+    const section = sections.find((item) => item?.key === key);
+    if (!section?.text) continue;
+    for (const line of String(section.text).split(/\n+|(?<=[.!?])\s+/)) {
+      const clean = line.trim().replace(/^[-*•]\s*/, "");
+      if (clean && !bullets.includes(clean)) bullets.push(clean);
+      if (bullets.length >= 5) break;
+    }
+    if (bullets.length >= 5) break;
+  }
+  if (bullets.length < 3) return "";
+  return `<section class="detail-section at-glance" aria-labelledby="at-glance-heading"><h2 id="at-glance-heading">At a glance</h2><ul>${bullets.slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+}
+
+function eligibilityMarkup(job) {
+  if (!state.quickFillEnabled) return "";
+  const entry = state.eligibility.get(job.dedupe_key);
+  if (!entry || entry.loading || entry.error) return "";
+  const result = entry.value;
+  if (!result) return "";
+  const active = (result.blockers || []).filter((item) => !item.overridden);
+  const findings = active.length ? active : result.warnings || [];
+  if (!findings.length && !result.overridden) return "";
+  const heading = active.length ? "Do not apply" : result.overridden ? "Override recorded" : "Check eligibility";
+  const intro = active.length
+    ? "Profile conflicts with an explicit requirement in this posting."
+    : result.overridden ? "The original blocker stays in the activity record." : "Confirm these details before applying.";
+  const evidence = (active.length ? active : result.overridden ? result.blockers : findings).map((item) => `
+    <li><span aria-hidden="true">${item.overridden ? "✓" : "!"}</span><div><strong>${escapeHtml(item.label)}</strong><p>${escapeHtml(item.evidence)}</p><small>${escapeHtml(item.comparison)} · ${escapeHtml(item.provenance)}</small></div></li>`).join("");
+  return `<section class="eligibility-banner${active.length ? " is-blocked" : ""}" aria-labelledby="eligibility-heading"><div><p class="eyebrow">Eligibility</p><h2 id="eligibility-heading"><span aria-hidden="true">${active.length ? "!" : "✓"}</span>${heading}</h2><p>${intro}</p></div><ul>${evidence}</ul>${active.length ? '<button class="outlined-button interactive" type="button" data-override-eligibility>Override verdict</button>' : ""}</section>`;
+}
+
+function jobHasActiveBlocker(job) {
+  return state.eligibility.get(job?.dedupe_key)?.value?.verdict === "do_not_apply";
+}
+
+function skillMatchMarkup(job) {
+  if (!state.quickFillEnabled) return "";
+  const result = state.eligibility.get(job.dedupe_key)?.value;
+  const requirements = result?.requirements || [];
+  if (!requirements.length) return "";
+  const matched = requirements.filter((item) => item.matched);
+  const missing = requirements.filter((item) => item.required && !item.matched);
+  return `<section class="detail-section skill-match" aria-labelledby="skill-match-heading"><div class="section-heading"><div><h2 id="skill-match-heading">Skill match</h2><p>${escapeHtml(result.match_band)}</p></div></div>${matched.length ? `<div class="skill-chips" aria-label="Skills found in Profile">${matched.map((item) => `<span><span aria-hidden="true">✓</span>${escapeHtml(item.skill)}</span>`).join("")}</div>` : ""}${missing.length ? `<div class="missing-skills"><h3>Missing required skills</h3><ul>${missing.map((item) => `<li><strong>${escapeHtml(item.skill)}</strong><span>${escapeHtml(item.evidence)}</span></li>`).join("")}</ul></div>` : ""}<details class="requirement-evidence"><summary>Requirement evidence</summary><ul>${requirements.map((item) => `<li><span>${escapeHtml(item.skill)}</span><small>${escapeHtml(item.provenance)}</small></li>`).join("")}</ul></details></section>`;
+}
+
 function detailMarkup(job) {
   if (!job) return '<div class="reading-empty"><h2>Choose a role to read.</h2><p>The list stays in place while you review each posting.</p></div>';
   const sources = sourceList(job);
@@ -336,19 +395,27 @@ function detailMarkup(job) {
   const recentCompanyWarning = recentWhen
     ? `<p class="company-warning"><span aria-hidden="true">!</span>You applied to another ${escapeHtml(job.company)} role ${escapeHtml(recentWhen)}.</p>` : "";
   const pending = state.pending.has(job.dedupe_key);
+  const eligibilityBlocked = jobHasActiveBlocker(job);
   const description = state.descriptions.get(job.dedupe_key)?.value;
   const visibleStatus = job.liveness_status === "closed" ? "Posting closed" : statusLabel(job.status || "new");
   const history = (state.trackerData?.history || []).filter((item) => item.dedupe_key === job.dedupe_key).slice(-6).reverse();
   const interviews = (state.trackerData?.interviews || []).filter((item) => item.dedupe_key === job.dedupe_key);
   const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div>${statusMarkup(item.to_status)}<time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time></div>`).join("")}</div>` : "";
   const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>Interview</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
+  const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
+  const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   return `<article class="job-detail" aria-labelledby="job-title">
     <header class="job-detail-header"><div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a></div>
       <dl class="fact-strip">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
-      <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!job.url || pending ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
+      <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!job.url || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
     <div class="job-detail-body">
-      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
+      ${eligibilityMarkup(job)}
+      ${ruleNotice}
+      ${repostWarning}
+      ${atGlanceMarkup(job)}
+      ${skillMatchMarkup(job)}
+      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
       ${descriptionMarkup(job)}
       <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
@@ -412,8 +479,42 @@ async function loadDescription(key) {
     state.descriptions.set(key, { loading: false, showLoader: false, value: null, error: error instanceof Error ? error.message : "The source did not return a description." });
   } finally {
     clearTimeout(indicator);
+    if (state.quickFillEnabled) loadEligibility(key);
     if (state.selectedKey === key && routeRoot() === "inbox") renderInbox();
     if (state.selectedKey === key && window.location.pathname.startsWith("/queue/session/")) renderApplySession();
+  }
+}
+
+async function loadEligibility(key, { force = false } = {}) {
+  if (!state.quickFillEnabled || !key || (!force && state.eligibility.has(key))) return;
+  state.eligibility.set(key, { loading: true, value: null, error: "" });
+  try {
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/eligibility`, {
+      credentials: "same-origin", headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Eligibility did not respond.");
+    state.eligibility.set(key, { loading: false, value: (await response.json()).eligibility, error: "" });
+  } catch (error) {
+    state.eligibility.set(key, { loading: false, value: null, error: error instanceof Error ? error.message : "Eligibility did not respond." });
+  }
+  if (routeRoot() === "inbox" && state.selectedKey === key) renderInbox();
+}
+
+async function overrideEligibility() {
+  const key = state.selectedKey;
+  if (!key) return;
+  try {
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/eligibility/override`, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ note: "Overridden from the reading pane" }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The override could not be recorded.");
+    state.eligibility.set(key, { loading: false, value: (await response.json()).eligibility, error: "" });
+    renderInbox({ focus: true });
+    showSnackbar("Eligibility override recorded.");
+  } catch (error) {
+    showSnackbar(error instanceof Error ? error.message : "The override could not be recorded.");
   }
 }
 
@@ -459,7 +560,7 @@ function queueJobs() {
     }
     const leftDeadline = left.deadline || "9999-12-31";
     const rightDeadline = right.deadline || "9999-12-31";
-    return leftDeadline.localeCompare(rightDeadline) || (right.score || 0) - (left.score || 0)
+    return leftDeadline.localeCompare(rightDeadline) || rankingScore(right) - rankingScore(left)
       || String(left.company).localeCompare(String(right.company));
   });
 }
@@ -706,6 +807,84 @@ function renderCompanies({ focus = false } = {}) {
   else if (state.companiesData.company) routeView.innerHTML = companyDetailMarkup(state.companiesData.company);
   else routeView.innerHTML = companyListMarkup(state.companiesData.companies || []);
   if (focus) document.querySelector("#companies-title, #company-title, .empty-state h1")?.focus({ preventScroll: true });
+}
+
+function ruleDescription(rule) {
+  if (rule.kind === "archive_title") return `Archive new titles containing “${rule.pattern}”`;
+  if (rule.kind === "tag_title") return `Tag titles containing “${rule.pattern}” as “${rule.value}”`;
+  return `Add ${rule.value} ranking points to companies containing “${rule.pattern}”`;
+}
+
+function profileMarkup() {
+  if (state.rulesError) return `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load rules.</h1><p>${escapeHtml(state.rulesError)}</p><button class="tonal-button interactive" type="button" data-retry-rules>Retry</button></div></section>`;
+  const rules = state.rules || [];
+  return `<section class="profile-page" aria-labelledby="profile-title"><header class="profile-heading"><div><h1 id="profile-title" tabindex="-1">Profile</h1><p>Keep reusable facts and quiet automation in one place.</p></div>${state.quickFillEnabled ? '<button class="tonal-button interactive" type="button" data-quick-fill-toggle>Open Quick-fill</button>' : ""}</header><section class="profile-section" aria-labelledby="rules-title"><div class="section-heading"><div><h2 id="rules-title">Inbox rules</h2><p>Rules use literal, case-insensitive matches. Disabling one does not rewrite past actions.</p></div></div><form class="rule-form" id="rule-form"><label><span>Name</span><input name="name" maxlength="120" required placeholder="Archive senior roles"></label><label><span>Action</span><select name="kind"><option value="archive_title">Archive title</option><option value="tag_title">Tag title</option><option value="boost_company">Boost company</option></select></label><label><span>Contains</span><input name="pattern" maxlength="120" required placeholder="Senior"></label><label><span>Tag or boost</span><input name="value" maxlength="40" placeholder="Systems or 25"><small>Leave empty for archive rules.</small></label><button class="filled-button interactive" type="submit">Add rule</button></form>${rules.length ? `<div class="rule-list">${rules.map((rule) => `<article class="rule-card"><div><h3>${escapeHtml(rule.name)}</h3><p>${escapeHtml(ruleDescription(rule))}</p></div><label class="rule-toggle"><input type="checkbox" data-rule-toggle="${rule.id}" ${rule.enabled ? "checked" : ""}><span><span aria-hidden="true">${rule.enabled ? "✓" : "—"}</span>${rule.enabled ? "Enabled" : "Paused"}</span></label></article>`).join("")}</div>` : '<div class="profile-empty"><h3>No rules yet.</h3><p>Add one only when it consistently removes work.</p></div>'}</section>${!state.quickFillEnabled ? '<section class="profile-section protected-profile"><h2>Personal profile is protected.</h2><p>Quick-fill fields remain unavailable until production Authentik verification passes and the feature flag is enabled.</p></section>' : ""}</section>`;
+}
+
+function renderProfile({ focus = false } = {}) {
+  document.title = "Profile — JobSeer";
+  routeView.innerHTML = profileMarkup();
+  if (focus) document.querySelector("#profile-title")?.focus({ preventScroll: true });
+}
+
+async function loadRules() {
+  if (state.rulesLoading) return;
+  state.rulesLoading = true; state.rulesError = "";
+  try {
+    const response = await fetch("/api/v1/rules", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Rules did not respond.");
+    state.rules = (await response.json()).rules || [];
+  } catch (error) {
+    state.rulesError = error instanceof Error ? error.message : "Rules did not respond.";
+  } finally {
+    state.rulesLoading = false;
+    if (routeRoot() === "profile") renderProfile();
+  }
+}
+
+async function submitRule(form) {
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    const response = await fetch("/api/v1/rules", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule could not be saved.");
+    state.rules = [...(state.rules || []), (await response.json()).rule];
+    form.reset(); renderProfile();
+    state.loaded = false; await loadInbox();
+    showSnackbar("Rule added.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The rule could not be saved."); }
+}
+
+async function toggleRule(id, enabled) {
+  try {
+    const response = await fetch(`/api/v1/rules/${id}`, {
+      method: "PUT", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule could not be updated.");
+    const saved = (await response.json()).rule;
+    state.rules = (state.rules || []).map((rule) => rule.id === saved.id ? saved : rule);
+    renderProfile(); state.loaded = false; await loadInbox();
+    showSnackbar(enabled ? "Rule enabled." : "Rule paused.");
+  } catch (error) { renderProfile(); showSnackbar(error instanceof Error ? error.message : "The rule could not be updated."); }
+}
+
+async function undoRuleAction(id) {
+  try {
+    const response = await fetch(`/api/v1/rule-actions/${id}/undo`, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule action could not be undone.");
+    const job = state.jobs.find((item) => item.rule_action_id === Number(id));
+    if (job) Object.assign(job, { status: "new", archived_by_rule: null, rule_action_id: null });
+    renderInbox({ focus: true }); showSnackbar("Rule archive undone.");
+  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The rule action could not be undone."); }
 }
 
 async function loadCompanies(name = companyNameFromRoute()) {
@@ -1204,6 +1383,10 @@ function renderRoute({ focus = false } = {}) {
     renderCompanies({ focus });
     if (!state.loaded && !state.loading) loadInbox();
     if (!state.companiesData && !state.companiesLoading) loadCompanies(name);
+  } else if (root === "profile") {
+    renderProfile({ focus });
+    if (!state.loaded && !state.loading) loadInbox();
+    if (!state.rules && !state.rulesLoading) loadRules();
   } else renderPlaceholder(root, { focus });
 }
 
@@ -1523,6 +1706,8 @@ function updateQuickFillProfile(control) {
       state.quickFillSavedProfile = cloneJson(saved);
       if (version === state.quickFillSaveVersion) {
         state.quickFillProfile = saved;
+        state.eligibility.clear();
+        if (state.selectedKey) loadEligibility(state.selectedKey);
         setQuickFillSaveState("Saved automatically");
       }
     } catch (error) {
@@ -1602,6 +1787,8 @@ async function importQuickFillProfile(file) {
     state.quickFillProfile = saved;
     state.quickFillSavedProfile = cloneJson(saved);
     state.quickFillSaveVersion += 1;
+    state.eligibility.clear();
+    if (state.selectedKey) loadEligibility(state.selectedKey);
     renderQuickFill();
     showSnackbar("Quick-fill JSON imported.", {
       action: "Undo",
@@ -2031,9 +2218,15 @@ function handleGlobalKeydown(event) {
     if (key === "f") { event.preventDefault(); state.focus = !state.focus; syncInboxUrl(); renderInbox({ focus: true }); return; }
     if (key === "s") { event.preventDefault(); performDecision("saved", "Saved"); return; }
     if (key === "x") { event.preventDefault(); performDecision("archived", "Dismissed"); return; }
-    if (key === "q") { event.preventDefault(); performDecision("queued", "Queued"); return; }
+    if (key === "q") {
+      event.preventDefault();
+      const job = state.jobs.find((candidate) => candidate.dedupe_key === state.selectedKey);
+      if (jobHasActiveBlocker(job)) { showSnackbar("Override the eligibility verdict before queueing."); return; }
+      performDecision("queued", "Queued"); return;
+    }
     if (key === "a") {
       const job = state.jobs.find((candidate) => candidate.dedupe_key === state.selectedKey);
+      if (jobHasActiveBlocker(job)) { event.preventDefault(); showSnackbar("Override the eligibility verdict before applying."); return; }
       if (job?.url) { event.preventDefault(); window.open(job.url, "_blank", "noopener"); performDecision("applying", "Opened"); }
       return;
     }
@@ -2062,6 +2255,9 @@ document.addEventListener("click", (event) => {
   if (reminderAction) { updateReminder(Number(reminderAction.dataset.reminderId), reminderAction.dataset.reminderAction); return; }
   if (event.target.closest("[data-retry-tracker]")) { state.trackerData = null; state.trackerError = ""; loadTrackerData(); return; }
   if (event.target.closest("[data-retry-companies]")) { state.companiesData = null; state.companiesError = ""; loadCompanies(); return; }
+  if (event.target.closest("[data-retry-rules]")) { state.rules = null; state.rulesError = ""; loadRules(); return; }
+  const undoRule = event.target.closest("[data-undo-rule-action]");
+  if (undoRule) { undoRuleAction(Number(undoRule.dataset.undoRuleAction)); return; }
   const startSession = event.target.closest("[data-start-session]");
   if (startSession && startSession.getAttribute("aria-disabled") !== "true") { startApplySession(); return; }
   const queueMove = event.target.closest("[data-queue-move]");
@@ -2082,6 +2278,7 @@ document.addEventListener("click", (event) => {
   if (row) { handleRowSelection(row, event); return; }
   const companyRole = event.target.closest(".company-role[data-job-key]");
   if (companyRole) { selectJob(companyRole.dataset.jobKey); return; }
+  if (event.target.closest("[data-override-eligibility]")) { overrideEligibility(); return; }
   const statusAction = event.target.closest("[data-status-action]");
   if (statusAction && statusAction.getAttribute("aria-disabled") !== "true") { performDecision(statusAction.dataset.statusAction, statusAction.dataset.statusAction === "saved" ? "Saved" : "Queued"); return; }
   const apply = event.target.closest("[data-apply-now]");
@@ -2194,6 +2391,7 @@ document.addEventListener("change", (event) => {
   else if (event.target.id === "tracker-status") { state.trackerStatus = event.target.value; syncTrackerUrl(); renderTracker(); }
   else if (event.target.matches("[data-board-status-select]")) setTrackerStatus(event.target.dataset.boardStatusSelect, event.target.value);
   else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
+  else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
 });
 
 document.addEventListener("focusout", (event) => {
@@ -2203,6 +2401,7 @@ document.addEventListener("focusout", (event) => {
 document.addEventListener("submit", (event) => {
   if (event.target.id === "interview-form") { event.preventDefault(); submitInterview(event.target); }
   if (event.target.id === "contact-form") { event.preventDefault(); submitContact(event.target); }
+  if (event.target.id === "rule-form") { event.preventDefault(); submitRule(event.target); }
 });
 
 filterForm.addEventListener("submit", (event) => {

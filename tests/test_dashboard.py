@@ -1,4 +1,5 @@
 """The dashboard is a small HTTP boundary, so exercise it as one."""
+import datetime as dt
 import json
 import pathlib
 import threading
@@ -6,7 +7,7 @@ import threading
 import httpx
 import pytest
 
-from jobscout.dashboard import DashboardServer, DemoStore, load_profile
+from jobscout.dashboard import DashboardServer, DemoStore, _annotate_reposts, load_profile
 
 AUTH = {
     "X-authentik-username": "cole",
@@ -68,6 +69,20 @@ def test_seeded_performance_fixture_has_2000_deterministic_jobs():
     assert [job["score"] for job in first] == [job["score"] for job in second]
 
 
+def test_reposts_are_observed_within_ninety_days_without_claiming_intent():
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    jobs = [{
+        "dedupe_key": f"job:{index}", "company": "Acme, Inc.",
+        "title": f"Platform Intern — Summer {2027 + index % 2}",
+        "first_seen": start + dt.timedelta(days=30 * index),
+    } for index in range(3)]
+    _annotate_reposts(jobs)
+    assert "repost_count" not in jobs[0]
+    assert jobs[1]["repost_count"] == 2
+    assert jobs[2]["repost_count"] == 3
+    assert jobs[2]["ghost_job"] is True
+
+
 def test_dashboard_serves_shell_and_history_routes(dashboard):
     base, _ = dashboard
     shell = httpx.get(f"{base}/inbox", timeout=2)
@@ -119,10 +134,73 @@ def test_profile_is_not_shipped_in_phase_one(dashboard):
     write = httpx.put(f"{base}/api/v1/profile", headers=AUTH, json={}, timeout=2)
     context = httpx.put(f"{base}/api/v1/profile/context", headers=AUTH, json={}, timeout=2)
     copied = httpx.post(f"{base}/api/v1/profile/copy", headers=AUTH, json={}, timeout=2)
+    eligibility = httpx.get(f"{base}/api/v1/jobs/demo%3A1/eligibility", headers=AUTH, timeout=2)
+    override = httpx.post(
+        f"{base}/api/v1/jobs/demo%3A1/eligibility/override", headers=AUTH, json={}, timeout=2,
+    )
     assert response.status_code == 404
     assert write.status_code == 404
     assert context.status_code == 404
     assert copied.status_code == 404
+    assert eligibility.status_code == 404
+    assert override.status_code == 404
+
+
+def test_eligibility_verdict_and_override_are_feature_gated_and_logged():
+    store = DemoStore()
+    store._profile["fields"] = [
+        {"key": "work_authorization", "value": "Requires employment sponsorship"},
+        {"key": "skills", "value": "Python, Linux"},
+    ]
+    store.description = lambda key: None if key != "demo:1" else {
+        "description_text": "Python is required. We will not provide visa sponsorship.",
+        "sections": [{"key": "requirements", "text": "Python is required"}],
+    }
+    try:
+        server = DashboardServer(
+            ("127.0.0.1", 0), store, require_auth=True,
+            authentik_user="cole", quick_fill_enabled=True,
+        )
+    except PermissionError:
+        pytest.skip("the test sandbox does not permit a loopback listener")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        client, csrf = authenticated_client(base)
+        try:
+            before = client.get("/api/v1/jobs/demo%3A1/eligibility")
+            blocked_queue = client.patch(
+                "/api/v1/jobs/demo%3A1",
+                headers={"X-CSRF-Token": csrf},
+                json={"status": "queued", "notes": ""},
+            )
+            rejected = client.post(
+                "/api/v1/jobs/demo%3A1/eligibility/override", json={"note": "Reviewed"},
+            )
+            overridden = client.post(
+                "/api/v1/jobs/demo%3A1/eligibility/override",
+                headers={"X-CSRF-Token": csrf}, json={"note": "Reviewed manually"},
+            )
+            allowed_queue = client.patch(
+                "/api/v1/jobs/demo%3A1",
+                headers={"X-CSRF-Token": csrf},
+                json={"status": "queued", "notes": ""},
+            )
+        finally:
+            client.close()
+        assert before.json()["eligibility"]["verdict"] == "do_not_apply"
+        assert before.json()["eligibility"]["requirements"][0]["matched"] is True
+        assert blocked_queue.status_code == 409
+        assert rejected.status_code == 403
+        assert overridden.status_code == 201
+        assert overridden.json()["eligibility"]["overridden"] is True
+        assert allowed_queue.status_code == 200
+        assert store._eligibility_overrides["demo:1"][0]["note"] == "Reviewed manually"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_quick_fill_profile_requires_explicit_feature_flag():
@@ -473,6 +551,62 @@ def test_company_writes_reject_unknown_companies(dashboard):
     assert note.json()["error"] == "company not found"
 
 
+def test_inbox_rules_archive_tag_boost_and_undo(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        archived_rule = client.post(
+            "/api/v1/rules", headers={"X-CSRF-Token": csrf},
+            json={"name": "Hide platform roles", "kind": "archive_title", "pattern": "Cloud Platform"},
+        )
+        tag_rule = client.post(
+            "/api/v1/rules", headers={"X-CSRF-Token": csrf},
+            json={"name": "Systems roles", "kind": "tag_title", "pattern": "Platform", "value": "Systems"},
+        )
+        boost_rule = client.post(
+            "/api/v1/rules", headers={"X-CSRF-Token": csrf},
+            json={"name": "Prefer Datadog", "kind": "boost_company", "pattern": "Datadog", "value": "25"},
+        )
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+        datadog = next(job for job in jobs if job["company"] == "Datadog")
+        rules = client.get("/api/v1/rules")
+        undone = client.post(
+            f"/api/v1/rule-actions/{datadog['rule_action_id']}/undo",
+            headers={"X-CSRF-Token": csrf}, json={},
+        )
+        restored = next(
+            job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog"
+        )
+        paused = client.put(
+            f"/api/v1/rules/{tag_rule.json()['rule']['id']}",
+            headers={"X-CSRF-Token": csrf}, json={"enabled": False},
+        )
+        archive_id = archived_rule.json()["rule"]["id"]
+        client.put(
+            f"/api/v1/rules/{archive_id}", headers={"X-CSRF-Token": csrf}, json={"enabled": False},
+        )
+        client.put(
+            f"/api/v1/rules/{archive_id}", headers={"X-CSRF-Token": csrf}, json={"enabled": True},
+        )
+        after_reenable = next(
+            job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog"
+        )
+    finally:
+        client.close()
+
+    assert archived_rule.status_code == 201
+    assert boost_rule.status_code == 201
+    assert datadog["status"] == "archived"
+    assert datadog["archived_by_rule"] == "Hide platform roles"
+    assert datadog["tags"] == ["Systems"]
+    assert datadog["rule_boost"] == 25
+    assert len(rules.json()["rules"]) == 3
+    assert undone.status_code == 200
+    assert restored["status"] == "new"
+    assert paused.json()["rule"]["enabled"] is False
+    assert after_reenable["status"] == "new"
+
+
 def test_tracker_and_company_writes_require_csrf(dashboard):
     base, _ = dashboard
     interview = httpx.post(
@@ -494,8 +628,12 @@ def test_tracker_and_company_writes_require_csrf(dashboard):
         f"{base}/api/v1/applications/demo%3A1/next-step", headers=AUTH,
         json={"next_step": "test"}, timeout=2,
     )
+    rule = httpx.post(
+        f"{base}/api/v1/rules", headers=AUTH,
+        json={"name": "Nope", "kind": "archive_title", "pattern": "Senior"}, timeout=2,
+    )
     assert {interview.status_code, contact.status_code, connections.status_code,
-            note.status_code, next_step.status_code} == {403}
+            note.status_code, next_step.status_code, rule.status_code} == {403}
 
 
 def test_saved_views_round_trip_on_server_with_csrf(dashboard):

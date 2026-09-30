@@ -14,6 +14,7 @@ const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
 const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
 const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
 const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
+const auditEligibility = process.env.JOBSCOUT_AUDIT_ELIGIBILITY === "true";
 
 async function freePort() {
   const server = createServer();
@@ -87,7 +88,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
-      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditApplySession ? "true" : "false",
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditApplySession || auditEligibility ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
   },
@@ -394,6 +395,53 @@ try {
     })()`);
     tracker = { table, board, calibration, trackerOverflow, companyCount, company };
   }
+  let phase6 = null;
+  if (auditEligibility) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    await cdp.call("Page.navigate", { url: `${base}/inbox?status=all` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('.skill-match'))")) break;
+      if (attempt === 99) throw new Error("Eligibility evidence did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const reading = await cdp.evaluate(`(() => ({
+      atGlance: document.querySelectorAll('.at-glance li').length,
+      matched: document.querySelectorAll('.skill-chips > span').length,
+      provenance: [...document.querySelectorAll('.requirement-evidence small')].map((item) => item.textContent.trim()),
+      band: document.querySelector('.skill-match .section-heading p')?.textContent.trim() || '',
+    }))()`);
+    await cdp.call("Page.navigate", { url: `${base}/profile` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('#rule-form'))")) break;
+      if (attempt === 99) throw new Error("Profile rules did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const rules = await cdp.evaluate(`(async () => {
+      const form = document.querySelector('#rule-form');
+      form.elements.name.value = 'Systems titles';
+      form.elements.kind.value = 'tag_title';
+      form.elements.pattern.value = 'Engineer';
+      form.elements.value.value = 'Systems';
+      form.requestSubmit();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+      const jobs = await fetch('/api/v1/jobs').then((response) => response.json()).then((data) => data.jobs);
+      const controls = [...document.querySelectorAll('.profile-page button, .profile-page input, .profile-page select')]
+        .filter((element) => element.getClientRects().length > 0);
+      return {
+        count: document.querySelectorAll('.rule-card').length,
+        tagged: jobs.filter((job) => job.tags?.includes('Systems')).length,
+        unnamedControls: controls.filter((element) => !(element.getAttribute('aria-label') || element.textContent.trim() || element.closest('label'))).length,
+      };
+    })()`);
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 320, height: 800, deviceScaleFactor: 1, mobile: true,
+    });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const overflow = await cdp.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth");
+    phase6 = { reading, rules, overflow };
+  }
   const report = {
     fixture,
     metrics: {
@@ -413,6 +461,7 @@ try {
     ...(quickFill ? { quickFill } : {}),
     ...(applySession ? { applySession } : {}),
     ...(tracker ? { tracker } : {}),
+    ...(phase6 ? { phase6 } : {}),
   };
   console.log(JSON.stringify(report, null, 2));
 
@@ -454,6 +503,13 @@ try {
   if (auditTracker && tracker?.company.contacts < 1) failures.push("company contact did not save");
   if (auditTracker && tracker?.company.noteState !== "Saved automatically") failures.push("company note did not autosave");
   if (auditTracker && tracker?.company.unnamedControls) failures.push("unnamed company controls found");
+  if (auditEligibility && phase6?.reading.atGlance < 3) failures.push("at-a-glance extraction is incomplete");
+  if (auditEligibility && phase6?.reading.matched < 1) failures.push("skill evidence is missing");
+  if (auditEligibility && !phase6?.reading.provenance.includes("posting structure")) failures.push("requirement provenance is missing");
+  if (auditEligibility && phase6?.rules.count !== 1) failures.push("rule did not save");
+  if (auditEligibility && phase6?.rules.tagged < 1) failures.push("tag rule did not apply");
+  if (auditEligibility && phase6?.rules.unnamedControls) failures.push("unnamed Profile controls found");
+  if (auditEligibility && phase6?.overflow) failures.push("compact Profile overflowed horizontally");
   if (failures.length) throw new Error(failures.join("; "));
 } finally {
   cdp?.close();

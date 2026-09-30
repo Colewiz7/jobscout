@@ -24,8 +24,11 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists rule_actions")
+        cur.execute("drop table if exists rules")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
+        cur.execute("drop table if exists eligibility_overrides")
         cur.execute("drop table if exists contacts")
         cur.execute("drop table if exists company_notes")
         cur.execute("drop table if exists companies")
@@ -73,6 +76,8 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 6, "name": "quick_fill_job_context"},
             {"version": 7, "name": "apply_queue_and_snapshots"},
             {"version": 8, "name": "tracker_companies_and_followups"},
+            {"version": 9, "name": "eligibility_overrides"},
+            {"version": 10, "name": "inbox_rules"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -452,3 +457,39 @@ def test_tracker_followups_interviews_and_company_records(conn):
         database.save_contact(conn, {"company": "Unknown", "name": "No One"})
     with pytest.raises(ValueError, match="company not found"):
         database.save_company_note(conn, "Unknown", "Not persisted")
+
+
+def test_eligibility_overrides_are_append_only_evidence_records(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    saved = database.record_eligibility_overrides(conn, posting.dedupe_key, [{
+        "key": "sponsorship",
+        "evidence": "We will not provide visa sponsorship.",
+        "comparison": "Profile says sponsorship is required.",
+    }], "Reviewed manually")
+    assert len(saved) == 1
+    assert saved[0]["blocker_key"] == "sponsorship"
+    assert saved[0]["note"] == "Reviewed manually"
+
+
+def test_archive_rule_is_logged_and_reversibly_applied(conn):
+    posting = _p(title="Senior Cloud Intern")
+    database.upsert_open(conn, [posting])
+    rule = database.save_rule(conn, {
+        "name": "Skip senior roles", "kind": "archive_title", "pattern": "Senior",
+    })
+    archived = database.dashboard_postings(conn)[0]
+    assert archived["status"] == "archived"
+    assert archived["archived_by_rule"] == "Skip senior roles"
+    assert archived["rule_action_id"] is not None
+
+    action = database.undo_rule_action(conn, archived["rule_action_id"])
+    assert action["undone_at"] is not None
+    restored = database.dashboard_postings(conn)[0]
+    assert restored["status"] == "new"
+    assert restored["archived_by_rule"] is None
+
+    paused = database.set_rule_enabled(conn, rule["id"], False)
+    assert paused["enabled"] is False
+    database.set_rule_enabled(conn, rule["id"], True)
+    assert database.dashboard_postings(conn)[0]["status"] == "new"

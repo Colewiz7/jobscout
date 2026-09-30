@@ -222,6 +222,17 @@ browser and compact-layout audit with:
 make audit-phase5
 ```
 
+Eligibility and requirement matching are deterministic and available only
+when protected Profile access is enabled. Hard conflicts show source evidence,
+must be explicitly overridden before queue/apply, and keep an append-only
+override record. Profile also manages literal archive, tag, and company-boost
+rules. Repeated company/title postings are observed over a 90-day window. Run
+the Phase 6 reading-pane, rules, compact-layout, and 2,000-job audit with:
+
+```bash
+make audit-phase6
+```
+
 Run the full test suite, including PostgreSQL integration tests, in a disposable
 Postgres 16 container with either Podman or Docker:
 
