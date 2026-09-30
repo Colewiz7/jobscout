@@ -290,6 +290,85 @@ def test_application_state_rejects_cross_origin_write(dashboard):
     assert response.status_code == 403
 
 
+def test_queue_session_rechecks_liveness_reorders_and_snapshots(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        queued = client.patch(
+            "/api/v1/jobs/demo%3A2",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "queued", "notes": "Apply after Cloudflare"},
+        )
+        reordered = client.put(
+            "/api/v1/queue/order",
+            headers={"X-CSRF-Token": csrf},
+            json={"dedupe_keys": ["demo:2", "demo:1"]},
+        )
+        session = client.post(
+            "/api/v1/queue/session",
+            headers={"X-CSRF-Token": csrf},
+        )
+        applied = client.post(
+            "/api/v1/applications/demo%3A2/applied",
+            headers={"X-CSRF-Token": csrf},
+            json={"document_id": None},
+        )
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+    finally:
+        client.close()
+
+    assert queued.status_code == 200
+    assert queued.json()["liveness"]["status"] == "live"
+    assert reordered.status_code == 200
+    assert [job["dedupe_key"] for job in session.json()["jobs"]] == ["demo:2", "demo:1"]
+    assert session.json()["documents"] == []
+    assert applied.status_code == 200
+    assert applied.json()["snapshot"]["title"] == "Cloud Platform Engineering Intern"
+    changed = next(job for job in jobs if job["dedupe_key"] == "demo:2")
+    assert changed["status"] == "applied"
+    assert changed["applied_at"] is not None
+
+
+def test_queue_writes_require_csrf(dashboard):
+    base, _ = dashboard
+    reorder = httpx.put(
+        f"{base}/api/v1/queue/order",
+        headers=AUTH,
+        json={"dedupe_keys": ["demo:1"]},
+        timeout=2,
+    )
+    session = httpx.post(f"{base}/api/v1/queue/session", headers=AUTH, timeout=2)
+    applied = httpx.post(
+        f"{base}/api/v1/applications/demo%3A1/applied",
+        headers=AUTH,
+        json={"document_id": None},
+        timeout=2,
+    )
+    assert reorder.status_code == 403
+    assert session.status_code == 403
+    assert applied.status_code == 403
+
+
+def test_closed_posting_is_archived_instead_of_entering_queue(dashboard):
+    base, store = dashboard
+    closed = next(job for job in store.rows if job["dedupe_key"] == "demo:2")
+    closed["url"] = ""
+    client, csrf = authenticated_client(base)
+    try:
+        response = client.patch(
+            "/api/v1/jobs/demo%3A2",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "queued", "notes": ""},
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "archived"
+    assert response.json()["liveness"]["status"] == "closed"
+    assert closed["status"] == "archived"
+
+
 def test_saved_views_round_trip_on_server_with_csrf(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

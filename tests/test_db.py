@@ -23,16 +23,17 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists application_snapshots")
         cur.execute("drop table if exists company_accounts")
         cur.execute("drop table if exists answer_template_overrides")
         cur.execute("drop table if exists quick_fill_copy_state")
         cur.execute("drop table if exists story_bank")
+        cur.execute("drop table if exists application_status_history")
+        cur.execute("drop table if exists application_states")
         cur.execute("drop table if exists documents")
         cur.execute("drop table if exists answer_templates")
         cur.execute("drop table if exists profile_fields")
         cur.execute("drop table if exists saved_views")
-        cur.execute("drop table if exists application_status_history")
-        cur.execute("drop table if exists application_states")
         cur.execute("drop table if exists board_notices")
         cur.execute("drop table if exists postings")
         cur.execute("drop table if exists schema_migrations")
@@ -64,6 +65,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 4, "name": "quick_fill"},
             {"version": 5, "name": "quick_fill_story_bank"},
             {"version": 6, "name": "quick_fill_job_context"},
+            {"version": 7, "name": "apply_queue_and_snapshots"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -338,3 +340,64 @@ def test_quick_fill_job_context_is_server_backed(conn):
     assert profile["copied_fields"] == ["field:email"]
     assert profile["answer_overrides"] == {"Why this role": "Because the work is concrete."}
     assert profile["company_account"]["account_exists"] is True
+
+
+def test_queue_order_liveness_and_application_snapshot(conn):
+    first = _p(url="https://acme.example/one")
+    second = _p(title="Systems Intern", url="https://acme.example/two")
+    database.upsert_open(conn, [first, second])
+    database.save_application_state(conn, first.dedupe_key, "queued", "")
+    database.save_application_state(conn, second.dedupe_key, "queued", "")
+
+    database.save_liveness(conn, first.dedupe_key, "live", "Provider returned the posting")
+    target = database.liveness_target(conn, first.dedupe_key)
+    assert target["liveness_status"] == "live"
+    assert target["liveness_evidence"] == "Provider returned the posting"
+
+    assert database.save_queue_order(conn, [second.dedupe_key, first.dedupe_key]) == [
+        second.dedupe_key, first.dedupe_key,
+    ]
+    rows = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}
+    assert rows[second.dedupe_key]["queue_position"] == 0
+    assert rows[first.dedupe_key]["queue_position"] == 1
+
+    target = database.description_target(conn, first.dedupe_key)
+    database.save_description(
+        conn,
+        target["id"],
+        html="<h2>Requirements</h2><p>Linux</p>",
+        text="Requirements\nLinux",
+        sections=({"key": "requirements", "text": "Linux"},),
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "insert into documents (name, document_date, url) values ('Platform resume', '2026-09-01', '') returning id"
+        )
+        document_id = cur.fetchone()["id"]
+    conn.commit()
+    snapshot = database.mark_application_applied(conn, first.dedupe_key, document_id)
+    assert snapshot["description_text"] == "Requirements\nLinux"
+    assert snapshot["description_sections"] == [{"key": "requirements", "text": "Linux"}]
+    assert snapshot["resume_name"] == "Platform resume"
+    applied = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}[first.dedupe_key]
+    assert applied["status"] == "applied"
+    assert applied["applied_at"] is not None
+    assert applied["queue_position"] is None
+
+    first_capture = snapshot["captured_at"]
+    repeated = database.mark_application_applied(conn, first.dedupe_key, None)
+    assert repeated["captured_at"] == first_capture
+    assert repeated["resume_name"] == "Platform resume"
+    reapplied = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}[first.dedupe_key]
+    assert reapplied["resume_document_id"] == document_id
+    assert reapplied["resume_name"] == "Platform resume"
+
+
+def test_queue_order_rejects_missing_or_duplicate_jobs(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    database.save_application_state(conn, posting.dedupe_key, "queued", "")
+    with pytest.raises(ValueError, match="exactly once"):
+        database.save_queue_order(conn, [])
+    with pytest.raises(ValueError, match="duplicates"):
+        database.save_queue_order(conn, [posting.dedupe_key, posting.dedupe_key])

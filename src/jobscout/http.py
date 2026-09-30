@@ -44,7 +44,13 @@ class Fetcher:
         """Fetch a URL. Returns None for a definitive 4xx that is not worth retrying."""
         return self._request("GET", url)
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response | None:
+    def probe(self, url: str) -> httpx.Response:
+        """Fetch while preserving a definitive HTTP error for liveness checks."""
+        return self._request("GET", url, return_errors=True)
+
+    def _request(
+        self, method: str, url: str, *, return_errors: bool = False, **kwargs
+    ) -> httpx.Response | None:
         deadline = time.monotonic() + self._retry_seconds
         attempt = 0
         last: Exception | None = None
@@ -61,7 +67,7 @@ class Fetcher:
                     # 404 on a board slug is normal: the slug is wrong or the
                     # board is gone. Callers log and move on.
                     log.debug("%s -> %s", url, response.status_code)
-                    return None
+                    return response if return_errors else None
             except httpx.HTTPError as exc:
                 last = exc
 
