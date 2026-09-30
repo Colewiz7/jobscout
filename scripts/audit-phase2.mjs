@@ -308,8 +308,17 @@ try {
     });
     quickFill = await cdp.evaluate(`(async () => {
       const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      const trigger = document.querySelector('#quick-fill-trigger');
+      const modified = (modifier) => {
+        const event = new KeyboardEvent('keydown', { key: 'c', [modifier]: true, bubbles: true, cancelable: true });
+        document.dispatchEvent(event);
+        return !event.defaultPrevented;
+      };
+      const copyWhileClosed = modified('ctrlKey') && trigger?.getAttribute('aria-expanded') === 'false';
       document.querySelector('#quick-fill-trigger')?.click();
       for (let attempt = 0; attempt < 40 && !document.querySelector('.copy-row'); attempt += 1) await wait(50);
+      const copyWhileOpen = modified('ctrlKey') && trigger?.getAttribute('aria-expanded') === 'true';
+      const metaCopyWhileOpen = modified('metaKey') && trigger?.getAttribute('aria-expanded') === 'true';
       document.querySelector('[data-quick-fill-edit]')?.click();
       await wait(50);
       const set = (control, value, eventName = 'input') => {
@@ -357,6 +366,7 @@ try {
         passwordManagerLink,
         copiedEmail: copied.includes('field:email'),
         contextIsolated: Object.keys(isolated.answer_overrides).length === 0 && isolated.company_account === null,
+        copyShortcutsSafe: copyWhileClosed && copyWhileOpen && metaCopyWhileOpen,
         firstContext: firstJob ? firstJob.dedupe_key + ' / ' + firstJob.company : '',
         secondContext: secondJob ? secondJob.dedupe_key + ' / ' + secondJob.company : '',
         unnamedControls: unnamed.length,
@@ -653,6 +663,7 @@ try {
   if (auditQuickFill && quickFill?.passwordManagerLink !== "https://vault.example.invalid/jobseer") failures.push("password-manager link missing");
   if (auditQuickFill && !quickFill?.copiedEmail) failures.push("per-job copy marker did not persist");
   if (auditQuickFill && !quickFill?.contextIsolated) failures.push("Quick-fill context leaked between jobs");
+  if (auditQuickFill && !quickFill?.copyShortcutsSafe) failures.push("Ctrl+C or Command+C toggled Quick-fill");
   if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
   if (auditApplySession && applySession?.queue.before[0] === applySession?.queue.after[0]) failures.push("queue reorder did not persist in the UI");
   if (auditApplySession && !applySession?.session.navHidden) failures.push("application session did not hide app chrome");
