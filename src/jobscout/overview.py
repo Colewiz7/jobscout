@@ -47,13 +47,34 @@ def candidates(sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
             for piece in pieces:
                 piece = piece.strip()
                 normalized = re.sub(r"\s+", " ", piece).casefold()
-                if not (24 <= len(piece) <= 320) or normalized in seen:
+                if (not 24 <= len(piece) <= 320 or piece.endswith(":")
+                        or normalized in seen
+                        or normalized.startswith((
+                            "we are an equal opportunity", "for more information",
+                            "click here", "your responsibilities may include",
+                        ))):
                     continue
                 seen.add(normalized)
                 result.append({"section": key, "text": piece})
                 if len(result) >= 80:
                     return result
     return result
+
+
+def _excerpt_kind(section: str, text: str) -> str:
+    """Correct broad/missing provider headings without inventing a fact."""
+    lower = text.casefold()
+    if re.search(r"\b(?:onsite|on-site|hybrid|relocation|work location|10-week|12-week|travel)\b", lower):
+        return "logistics"
+    if re.search(r"\b(?:must|required|pursuing|enrolled|degree|experience|ability to|eligible)\b", lower):
+        return "requirements"
+    if lower.startswith(("as a ", "as an ", "this role", "this position")):
+        return "role"
+    if re.search(r"\b(?:build|develop|design|write|test|support|collaborate|automate|ship|integrate)\b", lower):
+        return "responsibilities"
+    if section in {"role", "responsibilities", "requirements", "logistics"}:
+        return section
+    return section
 
 
 class OverviewService:
@@ -105,7 +126,8 @@ class OverviewService:
                     continue
                 used.add(index)
                 # Only source excerpts enter the response; generated text is discarded.
-                items.append({"kind": excerpts[index]["section"], "text": excerpts[index]["text"]})
+                source = excerpts[index]
+                items.append({"kind": _excerpt_kind(source["section"], source["text"]), "text": source["text"]})
                 if len(items) == 5:
                     break
             if len(items) < 3:

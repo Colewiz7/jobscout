@@ -1039,7 +1039,6 @@ dialog[open]::backdrop {
 
 .job-row-title {
   position: relative;
-  padding-inline-start: var(--s-3);
   font-size: 14px;
   font-weight: 500;
   line-height: 1.45;
@@ -1048,7 +1047,7 @@ dialog[open]::backdrop {
 .unread-dot {
   position: absolute;
   top: 50%;
-  left: 0;
+  left: calc(var(--s-4) + 34px);
   width: 7px;
   height: 7px;
   border-radius: var(--r-full);
