@@ -23,7 +23,9 @@ from typing import Any
 import yaml
 
 from . import db as database
-from .descriptions import ProviderDescriptionFetcher
+from .capture import PostingCapture, manual_capture
+from .descriptions import ProviderDescriptionFetcher, parse_sections
+from .overview import OverviewService
 from .eligibility import analyze as analyze_eligibility
 from .http import Fetcher
 from .liveness import LivenessResult, PostingLivenessChecker
@@ -221,6 +223,7 @@ class PostgresStore:
     def __init__(self, dsn: str):
         self.dsn = dsn
         self._fetcher = Fetcher(timeout=15, retry_seconds=20)
+        self._capture = PostingCapture(self._fetcher)
         self._descriptions = ProviderDescriptionFetcher(self._fetcher)
         self._liveness = PostingLivenessChecker(self._fetcher)
         self._prefetch_lock = threading.Lock()
@@ -235,6 +238,30 @@ class PostgresStore:
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
+
+    def capture(self, payload: dict) -> dict:
+        captured = self._capture.capture(payload)
+        posting = captured.posting
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            database.upsert_open(conn, [posting])
+            target = database.description_target(conn, posting.dedupe_key)
+            if captured.description is not None and target is not None:
+                detail = captured.description
+                database.save_description(
+                    conn,
+                    target["id"],
+                    html=detail.html,
+                    text=detail.text,
+                    sections=detail.sections,
+                    deadline=detail.deadline,
+                    deadline_source=detail.deadline_source,
+                    error=None,
+                )
+        return next(
+            job for job in self.jobs(include_closed=True)
+            if job["dedupe_key"] == posting.dedupe_key
+        )
 
     def rules(self) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -482,6 +509,10 @@ class PostgresStore:
             database.require_schema(conn)
             cached = database.cached_description(conn, key)
             if cached and cached.get("description_text"):
+                # Improve older cached postings without refetching or a schema change.
+                cached["sections"] = parse_sections(
+                    cached.get("description_html") or cached["description_text"]
+                )
                 return cached
             if cached and cached.get("description_error"):
                 fetched_at = cached.get("description_fetched_at")
@@ -686,6 +717,33 @@ class DemoStore:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
             job.setdefault("next_step", "")
         return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    def capture(self, payload: dict) -> dict:
+        from .capture import clean_url
+
+        url, _ = clean_url(payload.get("url"))
+        posting = manual_capture(payload, url).posting
+        existing = next(
+            (row for row in self.rows if row["dedupe_key"] == posting.dedupe_key), None
+        )
+        if existing is not None:
+            return copy.deepcopy(existing)
+        now = dt.datetime.now(dt.timezone.utc)
+        row = {
+            "dedupe_key": posting.dedupe_key, "company": posting.company,
+            "title": posting.title, "location": posting.location,
+            "terms": posting.terms, "age_days": 0, "first_seen": now,
+            "last_seen": now, "url": posting.url, "sources": posting.source,
+            "closed": False, "notified": False, "score": None,
+            "score_detail": {}, "status": "new", "notes": "",
+            "application_updated_at": None, "recent_company_application_at": None,
+            "deadline": None, "queue_position": None,
+            "liveness_status": None, "liveness_checked_at": None,
+            "liveness_evidence": None, "applied_at": None,
+            "resume_document_id": None, "resume_name": None,
+        }
+        self.rows.append(row)
+        return copy.deepcopy(row)
 
     def rules(self) -> list[dict]:
         return copy.deepcopy(self._rules)
@@ -1245,11 +1303,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
         body = path.read_bytes()
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        content_type = (
+            "application/manifest+json" if path.suffix == ".webmanifest"
+            else mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        )
         self.send_response(HTTPStatus.OK)
         self._security_headers()
         self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("Cache-Control", "no-cache" if path.name == "service-worker.js" else "public, max-age=300")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1274,7 +1335,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     {
                         "user": user,
                         "csrf_token": self.app.csrf_token,
-                        "features": {"quick_fill": self.app.quick_fill_enabled},
+                        "features": {
+                            "quick_fill": self.app.quick_fill_enabled,
+                            "ai_overview": self.app.overviews is not None,
+                        },
                     },
                     headers={"Set-Cookie": cookie},
                 )
@@ -1348,6 +1412,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
                 return
             detail_prefix = "/api/v1/jobs/"
+            overview_suffix = "/overview"
+            if parsed.path.startswith(detail_prefix) and parsed.path.endswith(overview_suffix):
+                if self.app.overviews is None:
+                    self._error(HTTPStatus.NOT_FOUND, "not found")
+                    return
+                key = urllib.parse.unquote(
+                    parsed.path[len(detail_prefix):-len(overview_suffix)].rstrip("/")
+                )
+                try:
+                    detail = self.app.store.description(key)
+                    if detail is None:
+                        self._error(HTTPStatus.NOT_FOUND, "job not found")
+                        return
+                    if not detail.get("description_text"):
+                        self._json({"items": [], "reason": "description unavailable"})
+                        return
+                    self._json({"items": self.app.overviews.overview(detail.get("sections") or [])})
+                except Exception:
+                    log.exception("could not generate posting overview")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "AI overview is unavailable. Retry shortly.")
+                return
             eligibility_suffix = "/eligibility"
             if parsed.path.startswith(detail_prefix) and parsed.path.endswith(eligibility_suffix):
                 if not self.app.quick_fill_enabled:
@@ -1385,6 +1470,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"description": detail})
                 return
             self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if parsed.path in {"/manifest.webmanifest", "/service-worker.js"}:
+            self._static(parsed.path.removeprefix("/"))
             return
         if parsed.path.startswith("/static/"):
             self._static(parsed.path.removeprefix("/static/"))
@@ -1453,6 +1541,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/capture":
+            if not self._require_write_security():
+                return
+            try:
+                job = self.app.store.capture(self._read_json())
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not capture posting")
+                self._error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Couldn't fetch that posting. Add its details manually or retry shortly.",
+                )
+                return
+            self._json({"job": job}, HTTPStatus.CREATED)
+            return
         rule_action_prefix = "/api/v1/rule-actions/"
         rule_action_suffix = "/undo"
         if parsed.path.startswith(rule_action_prefix) and parsed.path.endswith(rule_action_suffix):
@@ -1784,6 +1889,7 @@ class DashboardServer(ThreadingHTTPServer):
         authentik_app: str = "jobseer",
         authentik_user: str | None = None,
         quick_fill_enabled: bool = False,
+        overviews: OverviewService | None = None,
     ):
         super().__init__(address, DashboardHandler)
         self.store = store
@@ -1791,6 +1897,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.authentik_app = authentik_app
         self.authentik_user = authentik_user
         self.quick_fill_enabled = quick_fill_enabled
+        self.overviews = overviews
         self.csrf_token = secrets.token_urlsafe(32)
 
 
@@ -1811,6 +1918,12 @@ def serve(
         authentik_app=os.environ.get("JOBSCOUT_AUTHENTIK_APP", "jobseer"),
         authentik_user=os.environ.get("JOBSCOUT_AUTHENTIK_USER"),
         quick_fill_enabled=_env_enabled("JOBSCOUT_QUICK_FILL_ENABLED"),
+        overviews=(
+            OverviewService(
+                os.environ.get("JOBSCOUT_LLM_URL", "http://ollama.ai.svc.cluster.local:11434"),
+                os.environ.get("JOBSCOUT_LLM_MODEL", "qwen3.5:9b"),
+            ) if _env_enabled("JOBSCOUT_AI_OVERVIEW_ENABLED") else None
+        ),
     )
     log.info("application workspace listening on http://%s:%d", host, port)
     try:

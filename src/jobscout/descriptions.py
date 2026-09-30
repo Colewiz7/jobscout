@@ -27,15 +27,15 @@ class ParsedDescription:
 
 
 _HEADINGS = {
-    "about": ("about", "overview", "the role", "the opportunity", "who we are"),
-    "responsibilities": ("responsibilities", "what you'll do", "what you will do", "your impact"),
-    "requirements": ("requirements", "qualifications", "what you bring", "what we're looking for"),
-    "nice_to_have": ("nice to have", "preferred qualifications", "bonus", "preferred"),
-    "benefits": ("benefits", "perks", "what we offer", "compensation and benefits"),
+    "about": ("about", "about us", "about the company", "about our company", "about the team", "who we are", "our company"),
+    "role": ("the role", "about the role", "the opportunity", "job description", "position overview", "role overview", "your team, your impact", "overview of department", "what you can expect"),
+    "responsibilities": ("responsibilities", "what you'll do", "what you will do", "your impact", "what you will be doing", "what you'll be doing", "duties", "in this role", "your responsibilities"),
+    "requirements": ("requirements", "qualifications", "minimum qualifications", "required qualifications", "what you bring", "what we're looking for", "what we are looking for", "what you'll need", "what you will need", "who you are", "required skills"),
+    "nice_to_have": ("nice to have", "preferred qualifications", "bonus", "preferred", "desired qualifications", "nice-to-have"),
+    "benefits": ("benefits", "perks", "what we offer", "compensation and benefits", "what's in it for you", "what is in it for you", "pay and benefits"),
+    "logistics": ("please note", "work authorization", "employment eligibility", "location", "work location", "salary", "compensation", "pay range", "application process"),
 }
-_HEADING_LOOKUP = {
-    label.strip(" :").casefold(): key for key, labels in _HEADINGS.items() for label in labels
-}
+_HEADING_LOOKUP = {label: key for key, labels in _HEADINGS.items() for label in labels}
 _DEADLINE_LABEL = re.compile(
     r"(?:application(?:s)?\s+(?:deadline|close(?:s|d)?)|deadline|apply\s+by|"
     r"applications?\s+(?:will\s+)?be\s+accepted\s+(?:through|until))"
@@ -55,47 +55,60 @@ def _plain_text(raw_html: str) -> str:
     soup = BeautifulSoup(html.unescape(raw_html or ""), "html.parser")
     for node in soup(["script", "style", "noscript"]):
         node.decompose()
-    return "\n".join(line.strip() for line in soup.get_text("\n").splitlines() if line.strip())
+    block_names = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "div", "section"}
+    lines = []
+    for node in soup.find_all(block_names):
+        if node.find(block_names):
+            continue
+        value = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+        if value and (not lines or lines[-1] != value):
+            lines.append(value)
+    if not lines:
+        lines = [line.strip() for line in soup.get_text("\n").splitlines() if line.strip()]
+    return "\n".join(lines)
 
 
 def _section_key(value: str) -> str | None:
-    normalized = re.sub(r"\s+", " ", value).strip(" :").casefold()
+    normalized = re.sub(r"\s+", " ", value).strip(" :\u2013\u2014?").casefold().replace("\u2019", "'")
     if normalized in _HEADING_LOOKUP:
         return _HEADING_LOOKUP[normalized]
-    for label, key in _HEADING_LOOKUP.items():
-        if normalized.startswith(label) and len(normalized) <= len(label) + 2:
+    if len(normalized) > 85 or normalized.endswith((".", "!", "?")):
+        return None
+    for label, key in sorted(_HEADING_LOOKUP.items(), key=lambda item: -len(item[0])):
+        if key == "logistics":
+            continue
+        if normalized.startswith(label + " ") and len(normalized) <= len(label) + 32:
             return key
     return None
 
 
 def parse_sections(raw_html: str) -> tuple[dict[str, str], ...]:
-    """Split familiar posting sections without inventing content."""
-    soup = BeautifulSoup(html.unescape(raw_html or ""), "html.parser")
-    blocks: list[tuple[str | None, str]] = []
-    current: str | None = "about"
-    for node in soup.find_all(["h1", "h2", "h3", "h4", "strong", "p", "li"]):
-        value = node.get_text(" ", strip=True)
+    """Keep provider section order and wording; classify headings conservatively."""
+    lines = _plain_text(raw_html).splitlines()
+    sections: list[dict[str, str]] = []
+    current_key = "about"
+    current_title = "Overview"
+    body: list[str] = []
+
+    def flush() -> None:
+        if body:
+            sections.append({"key": current_key, "title": current_title, "text": "\n".join(body)})
+            body.clear()
+
+    for line in lines:
+        value = line.strip()
         if not value:
             continue
         heading = _section_key(value)
-        if heading and (node.name.startswith("h") or len(value) <= 48):
-            current = heading
+        if heading:
+            flush()
+            current_key = heading
+            current_title = value.rstrip(" :\u2013\u2014")
             continue
-        # Avoid duplicating text nested inside a paragraph or list item.
-        if node.name == "strong" and node.parent and node.parent.name in {"p", "li"}:
-            continue
-        blocks.append((current, value))
-
-    grouped: dict[str, list[str]] = {}
-    order: list[str] = []
-    for key, value in blocks:
-        key = key or "about"
-        if key not in grouped:
-            grouped[key] = []
-            order.append(key)
-        if not grouped[key] or grouped[key][-1] != value:
-            grouped[key].append(value)
-    return tuple({"key": key, "text": "\n".join(grouped[key])} for key in order if grouped[key])
+        if not body or body[-1] != value:
+            body.append(value)
+    flush()
+    return tuple(sections)
 
 
 def parse_deadline(text: str) -> dt.date | None:
