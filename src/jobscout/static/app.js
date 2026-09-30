@@ -22,6 +22,7 @@ const offlineState = document.querySelector("#offline-state");
 const ROW_HEIGHT = 72;
 const DIVIDER_HEIGHT = 32;
 const LAST_VISIT_KEY = "jobseer.inboxLastVisit";
+const HIGHLIGHT_TERMS_KEY = "jobseer.highlightTerms";
 const allowedStatuses = new Set(["all", "new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"]);
 const allowedSorts = new Set(["score", "newest", "company"]);
 
@@ -62,6 +63,7 @@ const state = {
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
   aiOverviewEnabled: false, overviews: new Map(),
   eligibility: new Map(),
   quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
@@ -80,7 +82,9 @@ const state = {
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
   companyLogos: {},
+  highlightTerms: readStoredHighlightTerms(), highlightInput: "", highlightTimer: null,
 };
+state.highlightInput = state.highlightTerms.join(", ");
 
 let commandSelection = 0;
 let commandMatches = commands;
@@ -104,6 +108,13 @@ function readStoredDate(key) {
     const value = raw ? new Date(raw) : null;
     return value && !Number.isNaN(value.valueOf()) ? value : null;
   } catch { return null; }
+}
+
+function readStoredHighlightTerms() {
+  try {
+    const terms = JSON.parse(localStorage.getItem(HIGHLIGHT_TERMS_KEY) || "[]");
+    return Array.isArray(terms) ? terms.filter((term) => typeof term === "string" && term.trim()).slice(0, 20).map((term) => term.slice(0, 40)) : [];
+  } catch { return []; }
 }
 
 function routeRoot(pathname = window.location.pathname) {
@@ -283,7 +294,8 @@ function companyLogoMarkup(company, className = "job-logo") {
   const key = normalizeCompany(company);
   const filename = state.companyLogos[key];
   const tile = lightLogoTiles.has(key) ? " logo-needs-light" : "";
-  return `<span class="${className}${filename ? ` has-logo${tile}` : ""}" aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="lazy" decoding="async" alt="">` : ""}</span>`;
+  const loading = className === "company-monogram" ? "lazy" : "eager";
+  return `<span class="${className}${filename ? ` has-logo${tile}` : ""}" aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
 }
 
 function jobRowMarkup(entry) {
@@ -317,13 +329,26 @@ function renderVirtualRows() {
   const bottom = top + viewport.clientHeight;
   const visible = state.entries.filter((entry) => entry.offset + entry.height >= top - ROW_HEIGHT * 4 && entry.offset <= bottom + ROW_HEIGHT * 4);
   layer.style.height = `${state.totalHeight}px`;
-  layer.innerHTML = visible.map((entry) => {
-    if (entry.type === "divider") return `<div class="new-divider" data-offset="${entry.offset}"><span>New since last visit</span><span>${entry.count}</span></div>`;
-    if (entry.type === "seen-divider") return `<div class="new-divider seen" data-offset="${entry.offset}"><span>Seen earlier</span></div>`;
-    return jobRowMarkup(entry);
-  }).join("");
-  for (const item of layer.querySelectorAll("[data-offset]")) {
-    item.style.transform = `translateY(${Number(item.dataset.offset) || 0}px)`;
+  const offsets = new Set(visible.map((entry) => String(entry.offset)));
+  for (const item of [...layer.children]) {
+    if (!offsets.has(item.dataset.offset)) item.remove();
+  }
+  const mounted = new Map([...layer.children].map((item) => [item.dataset.offset, item]));
+  let next = layer.firstElementChild;
+  for (const entry of visible) {
+    let item = mounted.get(String(entry.offset));
+    if (!item) {
+      const template = document.createElement("template");
+      template.innerHTML = entry.type === "divider"
+        ? `<div class="new-divider" data-offset="${entry.offset}"><span>New since last visit</span><span>${entry.count}</span></div>`
+        : entry.type === "seen-divider"
+          ? `<div class="new-divider seen" data-offset="${entry.offset}"><span>Seen earlier</span></div>`
+          : jobRowMarkup(entry);
+      item = template.content.firstElementChild;
+      item.style.transform = `translateY(${entry.offset}px)`;
+    }
+    if (item !== next) layer.insertBefore(item, next);
+    next = item.nextElementSibling;
   }
 }
 
@@ -358,11 +383,43 @@ function deadlineLabel(value) {
   return days >= 0 && days < 7 ? `${formatted} (${days === 0 ? "today" : `${days}d left`})` : formatted;
 }
 
+function highlightPostingText(value) {
+  const text = String(value || "");
+  const custom = state.highlightTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const skills = ["C++", "C#", "Python", "JavaScript", "TypeScript", "SQL", "AWS", "Azure", "GCP", "Kubernetes", "Docker", "Terraform", "Crossplane", "React", "Java", "Rust", "MATLAB", "CAD", "Linux", "GitOps", "ArgoCD"];
+  const keywords = [...custom, ...skills.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "remote", "hybrid", "on-site", "onsite", "in-person", "must", "required", "preferred", "nice to have"];
+  const pattern = new RegExp([
+    String.raw`\$\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*[-–]\s*\$?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:/hr|per hour|hourly|per year|annually))?`,
+    String.raw`\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(?:\d{1,2}(?:,?\s+\d{4})?|20\d{2})\b`,
+    String.raw`\b(?:Spring|Summer|Fall|Autumn|Winter)\s+20\d{2}\b`,
+    String.raw`\b\d{1,2}/\d{1,2}/20\d{2}\b`,
+    `(?<![A-Za-z0-9])(?:${keywords.join("|")})(?![A-Za-z0-9])`,
+  ].join("|"), "gi");
+  let html = "";
+  let previous = 0;
+  let count = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (count >= 60) break;
+    html += escapeHtml(text.slice(previous, match.index));
+    html += `<mark class="posting-highlight">${escapeHtml(match[0])}</mark>`;
+    previous = match.index + match[0].length;
+    count += 1;
+  }
+  return html + escapeHtml(text.slice(previous));
+}
+
+function setHighlightTerms(value) {
+  state.highlightInput = value;
+  state.highlightTerms = [...new Set(value.split(",").map((term) => term.trim()).filter(Boolean))]
+    .slice(0, 20).map((term) => term.slice(0, 40));
+  try { localStorage.setItem(HIGHLIGHT_TERMS_KEY, JSON.stringify(state.highlightTerms)); } catch { /* Optional local preference. */ }
+}
+
 function descriptionMarkup(job) {
   const detail = state.descriptions.get(job.dedupe_key);
   if (!detail) return "";
   if (detail.loading && detail.showLoader) return '<section class="detail-section description-skeleton skeleton" aria-label="Loading posting description"></section>';
-  if (detail.error) return `<section class="detail-section inline-error" role="alert"><div><h2>Description unavailable</h2><p>${escapeHtml(detail.error)}</p></div><button class="text-button interactive" type="button" data-retry-description>Retry</button></section>`;
+  if (detail.error) return `<section class="detail-section inline-error" role="alert"><div><h2>Description unavailable</h2><p>${escapeHtml(detail.error)}</p><details class="manual-description" ${state.manualDescriptionDrafts.has(job.dedupe_key) ? "open" : ""}><summary>Paste the description from the original posting</summary><label for="manual-description-text">Posting text</label><textarea id="manual-description-text" rows="8" placeholder="Paste the job description here">${escapeHtml(state.manualDescriptionDrafts.get(job.dedupe_key) || "")}</textarea><button class="tonal-button interactive" type="button" data-save-manual-description ${state.manualDescriptionSaving.has(job.dedupe_key) ? "disabled" : ""}>Save description</button></details></div><button class="text-button interactive" type="button" data-retry-description>Retry</button></section>`;
   const value = detail.value || {};
   const sections = Array.isArray(value.sections) ? value.sections.filter((section) => section?.text) : [];
   const labels = { about: "About the company", role: "The role", responsibilities: "What you'll do", requirements: "What you'll need", nice_to_have: "Nice to have", benefits: "Benefits", logistics: "Practical details" };
@@ -370,12 +427,12 @@ function descriptionMarkup(job) {
   const sorted = [...sections].sort((left, right) => (order[left.key] ?? 7) - (order[right.key] ?? 7));
   const parsed = sorted.map((section) => {
     const lines = String(section.text).split(/\n+/).map((line) => line.trim()).filter(Boolean);
-    const content = lines.map((line) => `<p>${escapeHtml(line.replace(/^[-*•]\s*/, ""))}</p>`).join("");
+    const content = lines.map((line) => `<p>${highlightPostingText(line.replace(/^[-*•]\s*/, ""))}</p>`).join("");
     const title = section.title && section.title !== "Overview" ? section.title : labels[section.key] || "Details";
     return `<details class="parsed-section" ${["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
   }).join("");
-  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${escapeHtml(value.description_text)}</div></details>` : "";
-  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${parsed}${original}</section>` : "";
+  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${highlightPostingText(value.description_text)}</div></details>` : "";
+  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2><label class="highlight-field" for="highlight-terms"><span>Highlight your terms</span><input id="highlight-terms" type="text" maxlength="320" autocomplete="off" value="${escapeHtml(state.highlightInput)}" placeholder="e.g. MATLAB, clearance"></label>${parsed}${original}</section>` : "";
 }
 
 function overviewMarkup(job) {
@@ -385,8 +442,12 @@ function overviewMarkup(job) {
   if (entry.loading) return `<section class="detail-section ai-overview" aria-live="polite"><h2>AI overview</h2><p class="overview-pending">Generating from the posting…</p></section>`;
   if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   if (!entry.items?.length) return "";
-  const labels = { role: "Role", responsibilities: "Work", requirements: "Requirements", logistics: "Practical", about: "Context", nice_to_have: "Preferred" };
-  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Selected from the posting</span></div><ul>${entry.items.map((item) => `<li><span>${escapeHtml(labels[item.kind] || "Detail")}</span><p>${escapeHtml(item.text)}</p></li>`).join("")}</ul></section>`;
+  const labels = { work: "What you'll do", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
+  const groups = Object.entries(labels).map(([kind, label]) => {
+    const items = entry.items.filter((item) => item.kind === kind);
+    return items.length ? `<div class="overview-group"><h3>${label}</h3><ul>${items.map((item) => `<li>${escapeHtml(item.text)}</li>`).join("")}</ul></div>` : "";
+  }).join("");
+  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Only facts stated in the posting</span></div>${groups}</section>`;
 }
 
 function atGlanceMarkup(job) {
@@ -462,8 +523,8 @@ function detailMarkup(job) {
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   return `<article class="job-detail" aria-labelledby="job-title">
-    <header class="job-detail-header"><div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a></div>
-      <dl class="fact-strip">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
+    <header class="job-detail-header"><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
+      <dl class="fact-strip">${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
       <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!job.url || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
     <div class="job-detail-body">
@@ -508,7 +569,7 @@ function errorMarkup(message) {
   return `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load the inbox.</h1><p>${escapeHtml(message)} Open JobSeer through Authentik, then retry.</p><button class="tonal-button interactive" type="button" data-retry-jobs>Retry</button></div></section>`;
 }
 
-async function loadDescription(key) {
+async function loadDescription(key, { force = false } = {}) {
   if (!key || state.descriptions.has(key)) return;
   const loading = { loading: true, showLoader: false, value: null, error: "" };
   state.descriptions.set(key, loading);
@@ -519,7 +580,7 @@ async function loadDescription(key) {
     if (state.selectedKey === key && window.location.pathname.startsWith("/queue/session/")) renderApplySession();
   }, 300);
   try {
-    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/description`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/description${force ? "?retry=1" : ""}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The source did not return a description.");
     const payload = await response.json();
     const value = payload.description || {};
@@ -531,6 +592,7 @@ async function loadDescription(key) {
       value,
       error: value.description_error || "",
     });
+    if (value.description_text) showCachedOverview(key);
   } catch (error) {
     const hold = loading.shownAt ? Math.max(0, 500 - (performance.now() - loading.shownAt)) : 0;
     if (hold) await new Promise((resolve) => setTimeout(resolve, hold));
@@ -556,6 +618,49 @@ async function loadOverview(key, { force = false } = {}) {
     state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be generated." });
   }
   if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+}
+
+async function showCachedOverview(key) {
+  if (!state.aiOverviewEnabled || state.overviews.has(key)) return;
+  try {
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview?cached=1`, {
+      credentials: "same-origin", headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return;
+    const items = (await response.json()).items || [];
+    if (!items.length || state.overviews.has(key)) return;
+    state.overviews.set(key, { loading: false, items, error: "" });
+    if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+  } catch { /* Cached overview is optional; manual Generate remains available. */ }
+}
+
+async function saveManualDescription() {
+  const key = state.selectedKey;
+  const text = document.querySelector("#manual-description-text")?.value || "";
+  if (!key || state.manualDescriptionSaving.has(key)) return;
+  state.manualDescriptionDrafts.set(key, text);
+  state.manualDescriptionSaving.add(key);
+  const button = document.querySelector("[data-save-manual-description]");
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/description`, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't save that description.");
+    const value = (await response.json()).description || {};
+    state.descriptions.set(key, { loading: false, showLoader: false, value, error: "" });
+    state.manualDescriptionDrafts.delete(key);
+    showCachedOverview(key);
+    if (state.selectedKey === key && routeRoot() === "inbox") renderSelectedJob();
+    showSnackbar("Description saved from the original posting.");
+  } catch (error) {
+    showSnackbar(error instanceof Error ? error.message : "Couldn't save that description.");
+  } finally {
+    state.manualDescriptionSaving.delete(key);
+    if (button?.isConnected) button.disabled = false;
+  }
 }
 
 async function loadEligibility(key, { force = false } = {}) {
@@ -2499,7 +2604,8 @@ document.addEventListener("click", (event) => {
   if (deleteView) { deleteSavedView(Number(deleteView.dataset.deleteSavedView)); return; }
   if (event.target.closest("[data-exit-focus]")) { state.focus = false; syncInboxUrl(); renderInbox({ focus: true }); return; }
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
-  if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey); renderInbox(); return; }
+  if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey, { force: true }); renderSelectedJob(); return; }
+  if (event.target.closest("[data-save-manual-description]")) { saveManualDescription(); return; }
   if (event.target.closest("[data-retry-overview]")) { loadOverview(state.selectedKey, { force: true }); return; }
   if (event.target.closest("[data-generate-overview]")) { loadOverview(state.selectedKey); renderSelectedJob(); return; }
   if (event.target.closest("[data-open-command]")) { openCommand(event.target.closest("[data-open-command]")); return; }
@@ -2562,6 +2668,24 @@ document.addEventListener("input", (event) => {
     const key = state.selectedKey;
     const value = event.target.value;
     clearTimeout(state.notesTimer); document.querySelector("#notes-state").textContent = "Unsaved changes"; state.notesTimer = setTimeout(() => saveNotes(key, value), 600);
+  } else if (event.target.id === "manual-description-text") {
+    state.manualDescriptionDrafts.set(state.selectedKey, event.target.value);
+  } else if (event.target.id === "highlight-terms") {
+    state.highlightInput = event.target.value;
+    clearTimeout(state.highlightTimer);
+    state.highlightTimer = setTimeout(() => {
+      const current = document.querySelector("#highlight-terms");
+      const focused = current === document.activeElement;
+      const cursor = focused ? current.selectionStart : null;
+      setHighlightTerms(state.highlightInput);
+      if (routeRoot() !== "inbox") return;
+      renderSelectedJob();
+      if (focused) {
+        const replacement = document.querySelector("#highlight-terms");
+        replacement?.focus({ preventScroll: true });
+        replacement?.setSelectionRange(cursor, cursor);
+      }
+    }, 250);
   } else if (event.target.id === "tracker-search") {
     state.trackerQuery = event.target.value; syncTrackerUrl({ replace: true }); renderTracker();
     const search = document.querySelector("#tracker-search"); search?.focus(); search?.setSelectionRange(state.trackerQuery.length, state.trackerQuery.length);
@@ -2583,7 +2707,7 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("error", (event) => {
-  if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .company-monogram")) {
+  if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .detail-company-logo, .company-monogram")) {
     event.target.hidden = true;
   }
 }, true);

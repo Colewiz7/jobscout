@@ -24,7 +24,7 @@ import yaml
 
 from . import db as database
 from .capture import PostingCapture, manual_capture
-from .descriptions import ProviderDescriptionFetcher, parse_sections
+from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, parse_description, parse_sections
 from .overview import OverviewService
 from .eligibility import analyze as analyze_eligibility
 from .http import Fetcher
@@ -504,17 +504,17 @@ class PostgresStore:
             log.exception("database health check failed")
             return False
 
-    def description(self, key: str) -> dict | None:
+    def description(self, key: str, *, force: bool = False) -> dict | None:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             cached = database.cached_description(conn, key)
-            if cached and cached.get("description_text"):
+            if cached and cached.get("description_text") and not force:
                 # Improve older cached postings without refetching or a schema change.
                 cached["sections"] = parse_sections(
                     cached.get("description_html") or cached["description_text"]
                 )
                 return cached
-            if cached and cached.get("description_error"):
+            if cached and cached.get("description_error") and not force:
                 fetched_at = cached.get("description_fetched_at")
                 now = dt.datetime.now(dt.timezone.utc)
                 if fetched_at and now - fetched_at < dt.timedelta(minutes=15):
@@ -540,6 +540,8 @@ class PostgresStore:
                     deadline_source=detail.deadline_source,
                     error=None,
                 )
+        except DescriptionAccessBlocked as exc:
+            values = dict(html=None, text=None, error=str(exc))
         except Exception:
             log.exception("description fetch failed for %s", key)
             values = dict(
@@ -566,6 +568,23 @@ class PostgresStore:
                     self._prefetching.discard(key)
 
         threading.Thread(target=load, name="jobseer-description", daemon=True).start()
+
+    def save_manual_description(self, key: str, text: str) -> dict | None:
+        clean = text.strip()
+        if not 40 <= len(clean) <= 100_000:
+            raise ValueError("Paste at least 40 and no more than 100,000 characters from the posting")
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            target = database.description_target(conn, key)
+            if target is None:
+                return None
+            detail = parse_description(clean)
+            database.save_description(
+                conn, target["id"], html=None, text=detail.text,
+                sections=detail.sections, deadline=detail.deadline,
+                deadline_source=detail.deadline_source, error=None,
+            )
+            return database.cached_description(conn, key)
 
     def close(self) -> None:
         self._fetcher.__exit__()
@@ -1146,7 +1165,7 @@ class DemoStore:
     def healthy(self) -> bool:
         return True
 
-    def description(self, key: str) -> dict | None:
+    def description(self, key: str, *, force: bool = False) -> dict | None:
         if not any(row["dedupe_key"] == key for row in self.rows):
             return None
         return {
@@ -1163,6 +1182,17 @@ class DemoStore:
 
     def prefetch_description(self, key: str) -> None:
         del key
+
+    def save_manual_description(self, key: str, text: str) -> dict | None:
+        if not any(row["dedupe_key"] == key for row in self.rows):
+            return None
+        detail = parse_description(text)
+        return {
+            "description_text": detail.text, "sections": detail.sections,
+            "description_fetched_at": dt.datetime.now(dt.timezone.utc),
+            "description_error": None, "deadline": detail.deadline,
+            "deadline_source": detail.deadline_source,
+        }
 
     def close(self) -> None:
         pass
@@ -1428,7 +1458,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if not detail.get("description_text"):
                         self._json({"items": [], "reason": "description unavailable"})
                         return
-                    self._json({"items": self.app.overviews.overview(detail.get("sections") or [])})
+                    sections = detail.get("sections") or []
+                    cached_only = urllib.parse.parse_qs(parsed.query).get("cached") == ["1"]
+                    items = self.app.overviews.cached_overview(sections) if cached_only else self.app.overviews.overview(sections)
+                    self._json({"items": items or []})
                 except Exception:
                     log.exception("could not generate posting overview")
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "AI overview is unavailable. Retry shortly.")
@@ -1460,7 +1493,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not key:
                     self._error(HTTPStatus.NOT_FOUND, "job not found")
                     return
-                detail = self.app.store.description(key)
+                force = urllib.parse.parse_qs(parsed.query).get("retry") == ["1"]
+                detail = self.app.store.description(key, force=force)
                 if detail is None:
                     self._error(HTTPStatus.NOT_FOUND, "job not found")
                     return
@@ -1541,6 +1575,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        description_prefix = "/api/v1/jobs/"
+        description_suffix = "/description"
+        if parsed.path.startswith(description_prefix) and parsed.path.endswith(description_suffix):
+            if not self._require_write_security():
+                return
+            key = urllib.parse.unquote(parsed.path[len(description_prefix):-len(description_suffix)].rstrip("/"))
+            try:
+                detail = self.app.store.save_manual_description(
+                    key, str(self._read_json().get("text") or "")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save manually pasted description")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save that description. Retry shortly.")
+                return
+            if detail is None:
+                self._error(HTTPStatus.NOT_FOUND, "job not found")
+                return
+            detail.pop("description_html", None)
+            self._json({"description": detail})
+            return
         if parsed.path == "/api/v1/capture":
             if not self._require_write_security():
                 return

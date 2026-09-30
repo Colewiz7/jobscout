@@ -22,6 +22,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOMAINS = ROOT / "config/company-domains.json"
 OUTPUT = ROOT / "src/jobscout/static/company-logos"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+DIRECT_ICONS = {
+    "devonenergy.com": "https://www.devonenergy.com/favicons/favicon-96x96.png",
+    "tel.com": "https://www.tel.com/irta3a00000001ah-img/irta3a00000001at.png",
+    "mwam.com": "https://www.mwam.com/favicon.ico",
+}
 
 
 def slug(company: str) -> str:
@@ -29,34 +34,50 @@ def slug(company: str) -> str:
 
 
 def fetch_icon(domain: str) -> tuple[bytes, str]:
-    url = "https://www.google.com/s2/favicons?" + urllib.parse.urlencode(
-        {"domain": domain, "sz": "64"}
-    )
-    request = urllib.request.Request(url, headers={"User-Agent": "JobSeer logo refresh"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        data = response.read(65_537)
-        if len(data) > 65_536:
-            raise ValueError("logo service returned an oversized image")
-        if data.startswith(PNG_SIGNATURE):
-            width, height = struct.unpack(">II", data[16:24])
-            if not 16 <= width <= 256 or not 16 <= height <= 256:
-                raise ValueError("unexpected logo dimensions")
-            return data, "png"
-        if data.startswith(b"\xff\xd8\xff") and response.headers.get_content_type() == "image/jpeg":
-            return data, "jpg"
-        raise ValueError("logo service did not return a PNG or JPEG")
+    urls = [
+        "https://www.google.com/s2/favicons?" + urllib.parse.urlencode({"domain": domain, "sz": "64"}),
+        f"https://icons.duckduckgo.com/ip3/{domain}.ico",
+    ]
+    if domain in DIRECT_ICONS:
+        urls.insert(0, DIRECT_ICONS[domain])
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "JobSeer logo refresh"})
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = response.read(65_537)
+                if len(data) > 65_536:
+                    raise ValueError("logo service returned an oversized image")
+                if data.startswith(PNG_SIGNATURE):
+                    width, height = struct.unpack(">II", data[16:24])
+                    if not 16 <= width <= 512 or not 16 <= height <= 512:
+                        raise ValueError("unexpected logo dimensions")
+                    return data, "png"
+                if data.startswith(b"\xff\xd8\xff") and response.headers.get_content_type() == "image/jpeg":
+                    return data, "jpg"
+                if data.startswith(b"\x00\x00\x01\x00") and len(data) >= 22:
+                    return data, "ico"
+                raise ValueError("logo service did not return a supported image")
+        except (OSError, ValueError) as error:
+            last_error = error
+    raise ValueError(str(last_error or "no usable icon"))
 
 
 def main() -> None:
     companies = json.loads(DOMAINS.read_text())
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    manifest_path = OUTPUT / "manifest.json"
+    existing = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     try:
         placeholder = hashlib.sha256(fetch_icon("jobseer-no-such-company.invalid")[0]).digest()
-    except OSError:
+    except (OSError, ValueError):
         placeholder = None
 
     def one(item: tuple[str, str]) -> tuple[str, str | None, str | None]:
         company, domain = item
+        filename = existing.get(company)
+        if filename and (OUTPUT / filename).is_file():
+            return company, filename, None
         try:
             data, extension = fetch_icon(domain)
             if placeholder and hashlib.sha256(data).digest() == placeholder:
@@ -70,7 +91,7 @@ def main() -> None:
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(one, companies.items()))
     manifest = {company: filename for company, filename, error in results if filename}
-    (OUTPUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     for company, _, error in results:
         if error:
             print(f"No icon for {company}: {error}")

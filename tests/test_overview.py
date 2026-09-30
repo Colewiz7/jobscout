@@ -1,6 +1,7 @@
 import io
 import json
 
+from jobscout.descriptions import parse_sections
 from jobscout.overview import OverviewService, candidates
 
 
@@ -38,8 +39,9 @@ def test_overview_only_returns_source_exact_excerpts_and_caches():
         "Build reliable tooling for the platform team.",
         "Collaborate with engineers on service reliability.",
     ]
-    assert all(item["kind"] == "responsibilities" for item in first)
+    assert all(item["kind"] == "work" for item in first)
     assert service.overview(sections) == first
+    assert service.cached_overview(sections) == first
     assert len(calls) == 1
     assert calls[0][0]["stream"] is False
     assert calls[0][1] == 30
@@ -48,3 +50,28 @@ def test_overview_only_returns_source_exact_excerpts_and_caches():
 def test_candidates_skip_short_or_repeated_lines():
     result = candidates([{"key": "role", "text": "Short\nBuild useful software with our team.\nBuild useful software with our team."}])
     assert result == [{"section": "role", "text": "Build useful software with our team."}]
+
+
+def test_overview_keeps_real_work_ahead_of_logistics_and_never_invents_python():
+    sections = parse_sections(
+        "Job Description\n"
+        "Cross functional collaboration with other teams to account for testing needs.\n"
+        "Understanding of the traceability of requirements at the system and subsystem level.\n"
+        "Provide more efficient solutions on our documentation organization.\n"
+        "Qualifications/Requirements\n"
+        "Pursuing a degree in System Engineering or Biomedical Engineering.\n"
+        "Willingness to work in Salt Lake City\n"
+        "Ability to work a 10-to-12-week full internship\n"
+        "Relocation Assistance Provided: Yes"
+    )
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": json.dumps({"items": [
+            {"id": 4}, {"id": 5}, {"id": 6},
+        ]})}).encode())
+
+    items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(sections)
+    assert [item["kind"] for item in items[:3]] == ["work", "work", "work"]
+    assert any(item["kind"] == "required" and "degree" in item["text"] for item in items)
+    assert any(item["kind"] == "dates" and "10-to-12-week" in item["text"] for item in items)
+    assert all("Python" not in item["text"] for item in items)
