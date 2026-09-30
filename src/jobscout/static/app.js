@@ -450,7 +450,8 @@ function overviewMarkup(job) {
       : terms.map(escapeHtml).join(", ");
     return terms.length ? `<div class="overview-cell" data-overview-kind="${kind}"><dt>${label}</dt><dd>${value}</dd></div>` : "";
   }).join("");
-  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Only facts stated in the posting</span></div><dl class="overview-grid">${groups}</dl></section>`;
+  const fallback = entry.source === "posting";
+  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">${fallback ? "Posting overview" : "AI overview"}</h2><span>${fallback ? "Model response incomplete; showing source-checked facts" : "Only facts stated in the posting"}</span></div><dl class="overview-grid">${groups}</dl></section>`;
 }
 
 function atGlanceMarkup(job) {
@@ -618,7 +619,8 @@ async function loadOverview(key, { force = false } = {}) {
       credentials: "same-origin", headers: { Accept: "application/json" },
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The overview could not be generated.");
-    state.overviews.set(key, { loading: false, items: (await response.json()).items || [], error: "" });
+    const payload = await response.json();
+    state.overviews.set(key, { loading: false, items: payload.items || [], source: payload.source || "ai", error: "" });
   } catch (error) {
     state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be generated." });
   }
@@ -634,9 +636,10 @@ async function showCachedOverview(key) {
       credentials: "same-origin", headers: { Accept: "application/json" },
     });
     if (!response.ok) return;
-    const items = (await response.json()).items || [];
+    const payload = await response.json();
+    const items = payload.items || [];
     if (!items.length || state.overviews.has(key)) return;
-    state.overviews.set(key, { loading: false, items, error: "" });
+    state.overviews.set(key, { loading: false, items, source: payload.source || "ai", error: "" });
     if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
     if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
   } catch { /* Cached overview is optional; manual Generate remains available. */ }

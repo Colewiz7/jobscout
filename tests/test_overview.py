@@ -47,6 +47,40 @@ def test_overview_only_returns_source_exact_excerpts_and_caches():
     assert calls[0][1] == 30
 
 
+def test_partial_model_json_keeps_valid_ranked_ids_and_returns_an_overview():
+    sections = [{"key": "responsibilities", "text": (
+        "Build reliable tooling for the platform team.\n"
+        "Collaborate with engineers on service reliability.\n"
+        "Write tests for infrastructure automation."
+    )}]
+
+    def opener(request, timeout):
+        assert json.loads(request.data)["options"]["num_predict"] == 512
+        assert timeout == 30
+        return Response(json.dumps({"response": '{"items":[{"id":2,"terms":["Write tests"],' }).encode())
+
+    service = OverviewService("http://ollama.test", "test-model", opener=opener)
+    items = service.overview(sections)
+    assert items[0]["text"] == "Write tests for infrastructure automation."
+    assert len(items) == 3
+    assert all(item["kind"] == "work" for item in items)
+    assert service.is_fallback(sections) is False
+
+
+def test_non_json_model_text_uses_source_exact_excerpts():
+    sections = [{"key": "requirements", "text": "Python and Linux skills are required."}]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": "not valid JSON"}).encode())
+
+    service = OverviewService("http://ollama.test", "test-model", opener=opener)
+    items = service.overview(sections)
+    assert any(item["kind"] == "skills" and "Python" in item["terms"] for item in items)
+    assert any(item["kind"] == "required" for item in items)
+    assert service.is_fallback(sections) is True
+
+
 def test_candidates_skip_short_or_repeated_lines():
     result = candidates([{"key": "role", "text": "Short\nBuild useful software with our team.\nBuild useful software with our team."}])
     assert result == [{"section": "role", "text": "Build useful software with our team."}]
