@@ -12,6 +12,7 @@ const fixture = JSON.parse(await readFile(join(root, "tests/fixtures/dashboard_2
 const profile = join(root, "config/profile.seed.json");
 const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
 const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
+const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
 
 async function freePort() {
   const server = createServer();
@@ -85,7 +86,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
-      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill ? "true" : "false",
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditApplySession ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
   },
@@ -249,6 +250,71 @@ try {
       };
     })()`);
   }
+  let applySession = null;
+  if (auditApplySession) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    await cdp.call("Page.navigate", { url: `${base}/queue` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('[data-start-session]') && document.querySelectorAll('.queue-card').length > 1)")) break;
+      if (attempt === 99) throw new Error("Queue did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const queue = await cdp.evaluate(`(() => {
+      const cards = [...document.querySelectorAll('.queue-card')];
+      const before = cards.slice(0, 3).map((card) => card.dataset.queueKey);
+      cards[0].querySelector('[data-queue-move="down"]')?.click();
+      return { count: cards.length, before };
+    })()`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+    queue.after = await cdp.evaluate("[...document.querySelectorAll('.queue-card')].slice(0, 3).map((card) => card.dataset.queueKey)");
+    await cdp.evaluate("document.querySelector('[data-start-session]').click()");
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("location.pathname.startsWith('/queue/session/') && Boolean(document.querySelector('[data-session-apply]'))")) break;
+      if (attempt === 99) throw new Error("Apply session did not start");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const session = await cdp.evaluate(`(() => ({
+      navHidden: getComputedStyle(document.querySelector('.nav-rail')).display === 'none',
+      quickFillEmbedded: Boolean(document.querySelector('#session-quick-fill .copy-row')),
+      filledActions: document.querySelectorAll('.apply-session .filled-button').length,
+    }))()`);
+    await cdp.evaluate(`(() => {
+      window.open = () => ({});
+      document.querySelector('[data-session-apply]').click();
+    })()`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
+    await cdp.evaluate("window.dispatchEvent(new Event('focus'))");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const prompt = await cdp.evaluate(`(() => ({
+      visible: Boolean(document.querySelector('[data-session-applied]')),
+      resumeOptions: document.querySelectorAll('#session-resume option').length,
+      filledActions: document.querySelectorAll('.apply-session .filled-button').length,
+    }))()`);
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 320, height: 800, deviceScaleFactor: 1, mobile: true,
+    });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const compactSessionOverflow = await cdp.evaluate(
+      "document.documentElement.scrollWidth > document.documentElement.clientWidth",
+    );
+    const appliedPath = await cdp.evaluate(`(() => {
+      const select = document.querySelector('#session-resume');
+      if (select && select.options.length > 1) select.selectedIndex = 1;
+      document.querySelector('[data-session-applied]')?.click();
+      return location.pathname;
+    })()`);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate(`location.pathname !== ${JSON.stringify(appliedPath)} && Boolean(document.querySelector('[data-session-end]'))`)) break;
+      if (attempt === 99) throw new Error("Session did not advance after marking applied");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    await cdp.evaluate("document.querySelector('[data-session-end]').click()");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const summary = await cdp.evaluate("document.querySelector('.session-summary')?.textContent || ''");
+    applySession = { queue, session, prompt, compactSessionOverflow, summary };
+  }
   const report = {
     fixture,
     metrics: {
@@ -266,6 +332,7 @@ try {
       horizontalOverflowAt320: compact.hasHorizontalOverflow,
     },
     ...(quickFill ? { quickFill } : {}),
+    ...(applySession ? { applySession } : {}),
   };
   console.log(JSON.stringify(report, null, 2));
 
@@ -287,6 +354,14 @@ try {
   if (auditQuickFill && !quickFill?.copiedEmail) failures.push("per-job copy marker did not persist");
   if (auditQuickFill && !quickFill?.contextIsolated) failures.push("Quick-fill context leaked between jobs");
   if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
+  if (auditApplySession && applySession?.queue.before[0] === applySession?.queue.after[0]) failures.push("queue reorder did not persist in the UI");
+  if (auditApplySession && !applySession?.session.navHidden) failures.push("application session did not hide app chrome");
+  if (auditApplySession && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
+  if (auditApplySession && applySession?.session.filledActions !== 1) failures.push("application session has more than one filled action");
+  if (auditApplySession && (!applySession?.prompt.visible || applySession?.prompt.resumeOptions < 2)) failures.push("submission prompt or resume selector missing");
+  if (auditApplySession && applySession?.prompt.filledActions !== 1) failures.push("submission prompt has more than one filled action");
+  if (auditApplySession && applySession?.compactSessionOverflow) failures.push("compact application session overflowed horizontally");
+  if (auditApplySession && !applySession?.summary.includes("applied to 1 role")) failures.push("session summary did not record the application");
   if (failures.length) throw new Error(failures.join("; "));
 } finally {
   cdp?.close();

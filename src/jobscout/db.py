@@ -362,6 +362,12 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                        bool_and(p.closed) as closed,
                        bool_or(p.notified_at is not null) as notified,
                        max(p.score) as score,
+                       min(p.deadline) filter (where p.deadline is not null) as deadline,
+                       max(p.liveness_checked_at) as liveness_checked_at,
+                       (array_agg(p.liveness_status order by p.liveness_checked_at desc nulls last)
+                           filter (where p.liveness_status is not null))[1] as liveness_status,
+                       (array_agg(p.liveness_evidence order by p.liveness_checked_at desc nulls last)
+                           filter (where p.liveness_evidence is not null))[1] as liveness_evidence,
                        (array_agg(p.score_detail order by p.score desc nulls last)
                            filter (where p.score_detail is not null))[1] as score_detail
                   from postings p
@@ -383,11 +389,13 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
             )
             select g.dedupe_key, g.company, g.title, g.terms, g.age_days,
                    g.first_seen, g.last_seen, coalesce(g.url, '') as url,
-                   g.sources, g.closed, g.notified, g.score,
+                   g.sources, g.closed, g.notified, g.score, g.deadline,
+                   g.liveness_status, g.liveness_checked_at, g.liveness_evidence,
                    coalesce(g.score_detail, '{}'::jsonb) as score_detail,
                    coalesce(s.status, 'new') as status,
                    coalesce(s.notes, '') as notes,
                    s.updated_at as application_updated_at,
+                   s.queue_position, s.applied_at, s.resume_document_id, s.resume_name,
                    (
                        select max(e.changed_at)
                          from application_events e
@@ -875,6 +883,10 @@ def save_application_state(
             on conflict (dedupe_key) do update set
                 status = excluded.status,
                 notes = excluded.notes,
+                queue_position = case
+                    when excluded.status = 'queued' then application_states.queue_position
+                    else null
+                end,
                 updated_at = now()
             """,
             (dedupe_key, status, notes),
@@ -890,3 +902,159 @@ def save_application_state(
             )
     conn.commit()
     return True
+
+
+def liveness_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None:
+    """Return the preferred source plus the latest cached liveness result."""
+    target = description_target(conn, dedupe_key)
+    if target is None:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select liveness_status, liveness_checked_at, liveness_evidence
+              from postings
+             where dedupe_key = %s and liveness_checked_at is not null
+             order by liveness_checked_at desc
+             limit 1
+            """,
+            (dedupe_key,),
+        )
+        cached = cur.fetchone()
+    return {**target, **(cached or {})}
+
+
+def save_liveness(
+    conn: psycopg.Connection, dedupe_key: str, status: str, evidence: str
+) -> None:
+    if status not in {"live", "closed", "unknown"}:
+        raise ValueError("unknown liveness status")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update postings
+               set liveness_status = %s,
+                   liveness_checked_at = now(),
+                   liveness_evidence = %s
+             where dedupe_key = %s
+            """,
+            (status, evidence[:500], dedupe_key),
+        )
+    conn.commit()
+
+
+def save_queue_order(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[str]:
+    if len(dedupe_keys) != len(set(dedupe_keys)) or len(dedupe_keys) > 2_000:
+        raise ValueError("queue order contains duplicates or too many jobs")
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from application_states where status = 'queued'")
+        queued = {row["dedupe_key"] for row in cur.fetchall()}
+        if queued != set(dedupe_keys):
+            raise ValueError("queue order must contain every queued job exactly once")
+        cur.executemany(
+            "update application_states set queue_position = %s, updated_at = now() where dedupe_key = %s",
+            [(position, key) for position, key in enumerate(dedupe_keys)],
+        )
+    conn.commit()
+    return dedupe_keys
+
+
+def mark_application_applied(
+    conn: psycopg.Connection, dedupe_key: str, document_id: int | None = None
+) -> dict | None:
+    """Atomically mark applied and snapshot the posting and chosen resume."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select min(company) as company, min(title) as title,
+                   min(terms) as terms, min(url) filter (where url <> '') as url,
+                   string_agg(location, ';') as locations_raw,
+                   string_agg(distinct source, ', ' order by source) as sources,
+                   min(deadline) filter (where deadline is not null) as deadline,
+                   (array_agg(description_text order by description_fetched_at desc nulls last)
+                       filter (where description_text is not null))[1] as description_text,
+                   (array_agg(description_sections order by description_fetched_at desc nulls last)
+                       filter (where description_sections is not null))[1] as description_sections
+              from postings
+             where dedupe_key = %s
+             group by dedupe_key
+            """,
+            (dedupe_key,),
+        )
+        posting = cur.fetchone()
+        if posting is None:
+            return None
+        document = None
+        if document_id is not None:
+            cur.execute(
+                "select id, name, document_date from documents where id = %s",
+                (document_id,),
+            )
+            document = cur.fetchone()
+            if document is None:
+                raise ValueError("resume version not found")
+        cur.execute(
+            "select status from application_states where dedupe_key = %s for update",
+            (dedupe_key,),
+        )
+        existing = cur.fetchone()
+        previous = existing["status"] if existing else "new"
+        if previous == "applied":
+            cur.execute(
+                "select * from application_snapshots where dedupe_key = %s",
+                (dedupe_key,),
+            )
+            existing_snapshot = cur.fetchone()
+            if existing_snapshot is not None:
+                return existing_snapshot
+        resume_name = document["name"] if document else None
+        cur.execute(
+            """
+            insert into application_states
+                (dedupe_key, status, applied_at, resume_document_id, resume_name)
+            values (%s, 'applied', now(), %s, %s)
+            on conflict (dedupe_key) do update set
+                status = 'applied',
+                applied_at = coalesce(application_states.applied_at, now()),
+                queue_position = null,
+                resume_document_id = excluded.resume_document_id,
+                resume_name = excluded.resume_name, updated_at = now()
+            """,
+            (dedupe_key, document_id, resume_name),
+        )
+        if previous != "applied":
+            cur.execute(
+                """
+                insert into application_status_history (dedupe_key, from_status, to_status)
+                values (%s, %s, 'applied')
+                """,
+                (dedupe_key, previous),
+            )
+        locations = merge_locations(posting["locations_raw"] or "")
+        sections = posting["description_sections"] or []
+        cur.execute(
+            """
+            insert into application_snapshots
+                (dedupe_key, company, title, location, terms, url, sources,
+                 deadline, description_text, description_sections,
+                 resume_document_id, resume_name)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict (dedupe_key) do nothing
+            returning *
+            """,
+            (
+                dedupe_key, posting["company"], posting["title"], locations,
+                posting["terms"] or "", posting["url"] or "", posting["sources"] or "",
+                posting["deadline"], posting["description_text"], Json(sections),
+                document_id, resume_name,
+            ),
+        )
+        snapshot = cur.fetchone()
+        if snapshot is None:
+            cur.execute(
+                "select * from application_snapshots where dedupe_key = %s",
+                (dedupe_key,),
+            )
+            snapshot = cur.fetchone()
+    conn.commit()
+    return snapshot

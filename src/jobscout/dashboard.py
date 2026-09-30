@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
 import hmac
 import json
@@ -23,6 +24,7 @@ import yaml
 from . import db as database
 from .descriptions import ProviderDescriptionFetcher
 from .http import Fetcher
+from .liveness import LivenessResult, PostingLivenessChecker
 
 log = logging.getLogger("jobscout.dashboard")
 STATIC_ROOT = pathlib.Path(__file__).with_name("static")
@@ -30,6 +32,24 @@ DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "prof
 MAX_BODY = 64 * 1024
 CSRF_COOKIE = "jobseer_csrf"
 APP_ROUTE_ROOTS = frozenset({"inbox", "queue", "tracker", "companies", "profile"})
+
+
+def _queue_sort_key(job: dict) -> tuple:
+    position = job.get("queue_position")
+    deadline = job.get("deadline")
+    if isinstance(deadline, str):
+        try:
+            deadline = dt.date.fromisoformat(deadline)
+        except ValueError:
+            deadline = None
+    return (
+        position is None,
+        position if position is not None else 0,
+        deadline is None,
+        deadline or dt.date.max,
+        -(job.get("score") or 0),
+        str(job.get("company") or "").casefold(),
+    )
 
 
 def _json_value(value: Any) -> Any:
@@ -64,6 +84,7 @@ class PostgresStore:
         self.dsn = dsn
         self._fetcher = Fetcher(timeout=15, retry_seconds=20)
         self._descriptions = ProviderDescriptionFetcher(self._fetcher)
+        self._liveness = PostingLivenessChecker(self._fetcher)
         self._prefetch_lock = threading.Lock()
         self._prefetching: set[str] = set()
 
@@ -72,10 +93,72 @@ class PostgresStore:
             database.require_schema(conn)
             return database.dashboard_postings(conn, include_closed=include_closed)
 
-    def save(self, key: str, status: str, notes: str) -> bool:
+    def check_liveness(self, key: str, *, force: bool = False) -> LivenessResult:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_application_state(conn, key, status, notes)
+            target = database.liveness_target(conn, key)
+        if target is None:
+            return LivenessResult("closed", "Posting no longer exists")
+        checked_at = target.get("liveness_checked_at")
+        if (
+            not force and checked_at and target.get("liveness_status")
+            and dt.datetime.now(dt.timezone.utc) - checked_at < dt.timedelta(minutes=15)
+        ):
+            return LivenessResult(target["liveness_status"], target.get("liveness_evidence") or "Cached check")
+        result = self._liveness.check(target)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            database.save_liveness(conn, key, result.status, result.evidence)
+        return result
+
+    def save(self, key: str, status: str, notes: str) -> dict:
+        liveness = None
+        effective_status = status
+        if status == "queued":
+            liveness = self.check_liveness(key)
+            if liveness.status == "closed":
+                effective_status = "archived"
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            saved = database.save_application_state(conn, key, effective_status, notes)
+        return {
+            "saved": saved,
+            "status": effective_status,
+            "liveness": dataclasses.asdict(liveness) if liveness else None,
+        }
+
+    def reorder_queue(self, dedupe_keys: list[str]) -> list[str]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_queue_order(conn, dedupe_keys)
+
+    def start_session(self) -> dict:
+        queued = [job for job in self.jobs() if job["status"] == "queued"]
+        skipped = []
+        for job in queued:
+            result = self.check_liveness(job["dedupe_key"], force=True)
+            if result.status == "closed":
+                with database.connect(self.dsn) as conn:
+                    database.require_schema(conn)
+                    database.save_application_state(
+                        conn, job["dedupe_key"], "archived", job.get("notes") or ""
+                    )
+                skipped.append({"dedupe_key": job["dedupe_key"], "reason": "Posting closed"})
+        jobs = [job for job in self.jobs() if job["status"] == "queued"]
+        jobs.sort(key=_queue_sort_key)
+        return {"jobs": jobs, "skipped": skipped}
+
+    def mark_applied(self, key: str, document_id) -> dict | None:
+        self.description(key)
+        parsed_document_id = int(document_id) if document_id not in {None, ""} else None
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.mark_application_applied(conn, key, parsed_document_id)
+
+    def documents(self) -> list[dict]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.profile_data(conn)["documents"]
 
     def saved_views(self) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -230,6 +313,10 @@ def _demo_rows(count: int, seed: int, now: dt.datetime) -> list[dict]:
             "notes": "",
             "application_updated_at": applied_at if status != "new" else None,
             "recent_company_application_at": applied_at if index >= len(companies) else None,
+            "deadline": None, "queue_position": None,
+            "liveness_status": None, "liveness_checked_at": None,
+            "liveness_evidence": None, "applied_at": applied_at if status == "applied" else None,
+            "resume_document_id": None, "resume_name": None,
         })
     return rows
 
@@ -251,6 +338,10 @@ class DemoStore:
                 "status": "queued", "notes": "Mention the homelab incident response story.",
                 "application_updated_at": now,
                 "recent_company_application_at": None,
+                "deadline": None, "queue_position": 0,
+                "liveness_status": "live", "liveness_checked_at": now,
+                "liveness_evidence": "Demo posting is available",
+                "applied_at": None, "resume_document_id": None, "resume_name": None,
             },
             {
                 "dedupe_key": "demo:2", "company": "Datadog",
@@ -262,6 +353,10 @@ class DemoStore:
                 "score_detail": {"role_named": 100, "internship": 20, "fresh": 10},
                 "status": "new", "notes": "", "application_updated_at": None,
                 "recent_company_application_at": None,
+                "deadline": None, "queue_position": None,
+                "liveness_status": None, "liveness_checked_at": None,
+                "liveness_evidence": None,
+                "applied_at": None, "resume_document_id": None, "resume_name": None,
             },
         ]
         self.rows = _demo_rows(count, seed, now) if count > 2 else base_rows[:count]
@@ -276,18 +371,97 @@ class DemoStore:
     def jobs(self, include_closed: bool = False) -> list[dict]:
         return [dict(row) for row in self.rows if include_closed or not row["closed"]]
 
-    def save(self, key: str, status: str, notes: str) -> bool:
+    def save(self, key: str, status: str, notes: str) -> dict:
         if status not in database.APPLICATION_STATUSES:
             raise ValueError(f"unknown application status: {status}")
         for row in self.rows:
             if row["dedupe_key"] == key:
+                effective_status = status
+                if status == "queued":
+                    row.update(
+                        liveness_status="closed" if row.get("closed") or not row.get("url") else "live",
+                        liveness_checked_at=dt.datetime.now(dt.timezone.utc),
+                        liveness_evidence="Posting is unavailable" if row.get("closed") or not row.get("url") else "Demo posting is available",
+                    )
+                    if row["liveness_status"] == "closed":
+                        effective_status = "archived"
                 row.update(
-                    status=status,
+                    status=effective_status,
                     notes=notes,
                     application_updated_at=dt.datetime.now(dt.timezone.utc),
                 )
-                return True
-        return False
+                if effective_status != "queued":
+                    row["queue_position"] = None
+                return {
+                    "saved": True, "status": effective_status,
+                    "liveness": {
+                        "status": row.get("liveness_status"),
+                        "evidence": row.get("liveness_evidence"),
+                    } if status == "queued" else None,
+                }
+        return {"saved": False, "status": status, "liveness": None}
+
+    def reorder_queue(self, dedupe_keys: list[str]) -> list[str]:
+        queued = {row["dedupe_key"] for row in self.rows if row["status"] == "queued"}
+        if queued != set(dedupe_keys) or len(dedupe_keys) != len(set(dedupe_keys)):
+            raise ValueError("queue order must contain every queued job exactly once")
+        positions = {key: index for index, key in enumerate(dedupe_keys)}
+        for row in self.rows:
+            if row["dedupe_key"] in positions:
+                row["queue_position"] = positions[row["dedupe_key"]]
+        return dedupe_keys
+
+    def start_session(self) -> dict:
+        skipped = []
+        now = dt.datetime.now(dt.timezone.utc)
+        for row in self.rows:
+            if row["status"] != "queued":
+                continue
+            row.update(
+                liveness_status="closed" if row.get("closed") or not row.get("url") else "live",
+                liveness_checked_at=now,
+                liveness_evidence="Posting is unavailable" if row.get("closed") or not row.get("url") else "Demo posting is available",
+            )
+            if row["liveness_status"] == "closed":
+                row["status"] = "archived"
+                skipped.append({"dedupe_key": row["dedupe_key"], "reason": "Posting closed"})
+        queued = [dict(row) for row in self.rows if row["status"] == "queued"]
+        queued.sort(key=_queue_sort_key)
+        return {
+            "jobs": queued,
+            "skipped": skipped,
+        }
+
+    def mark_applied(self, key: str, document_id) -> dict | None:
+        document = next(
+            (item for item in self._profile.get("documents", []) if str(item.get("id")) == str(document_id)),
+            None,
+        ) if document_id not in {None, ""} else None
+        if document_id not in {None, ""} and document is None:
+            raise ValueError("resume version not found")
+        for row in self.rows:
+            if row["dedupe_key"] != key:
+                continue
+            now = dt.datetime.now(dt.timezone.utc)
+            row.update(
+                status="applied", application_updated_at=now, applied_at=now,
+                queue_position=None, resume_document_id=document_id,
+                resume_name=document.get("name") if document else None,
+            )
+            return {
+                "dedupe_key": key, "captured_at": now, "company": row["company"],
+                "title": row["title"], "location": row.get("location", ""),
+                "terms": row.get("terms", ""), "url": row.get("url", ""),
+                "sources": row.get("sources", ""), "deadline": row.get("deadline"),
+                "description_text": self.description(key)["description_text"],
+                "description_sections": self.description(key)["sections"],
+                "resume_document_id": document_id,
+                "resume_name": document.get("name") if document else None,
+            }
+        return None
+
+    def documents(self) -> list[dict]:
+        return copy.deepcopy(self._profile.get("documents", []))
 
     def saved_views(self) -> list[dict]:
         return [dict(view) for view in self._saved_views]
@@ -611,7 +785,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             notes = str(payload.get("notes", ""))
             if len(notes) > 20_000:
                 raise ValueError("notes are too long")
-            saved = self.app.store.save(key, status, notes)
+            result = self.app.store.save(key, status, notes)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -619,15 +793,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
             log.exception("could not save application state")
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
             return
-        if not saved:
+        if not result["saved"]:
             self._error(HTTPStatus.NOT_FOUND, "job not found")
             return
-        if status in {"saved", "queued"}:
+        effective_status = result["status"]
+        if effective_status in {"saved", "queued"}:
             self.app.store.prefetch_description(key)
-        self._json({"ok": True, "status": status, "notes": notes})
+        self._json({
+            "ok": True, "status": effective_status, "notes": notes,
+            "liveness": result.get("liveness"),
+        })
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/queue/session":
+            if not self._require_write_security():
+                return
+            try:
+                session = self.app.store.start_session()
+                session["documents"] = self.app.store.documents() if self.app.quick_fill_enabled else []
+            except Exception:
+                log.exception("could not start apply session")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't check the queue. Retry shortly.")
+                return
+            self._json(session, HTTPStatus.CREATED)
+            return
+        applied_prefix = "/api/v1/applications/"
+        applied_suffix = "/applied"
+        if parsed.path.startswith(applied_prefix) and parsed.path.endswith(applied_suffix):
+            if not self._require_write_security():
+                return
+            key = urllib.parse.unquote(
+                parsed.path[len(applied_prefix):-len(applied_suffix)].rstrip("/")
+            )
+            try:
+                payload = self._read_json()
+                snapshot = self.app.store.mark_applied(key, payload.get("document_id"))
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not mark application applied")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the application. Retry shortly.")
+                return
+            if snapshot is None:
+                self._error(HTTPStatus.NOT_FOUND, "job not found")
+                return
+            self._json({"snapshot": snapshot})
+            return
         if parsed.path == "/api/v1/profile/copy":
             if not self._require_quick_fill_write():
                 return
@@ -663,6 +876,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/queue/order":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                dedupe_keys = payload.get("dedupe_keys")
+                if not isinstance(dedupe_keys, list) or not all(isinstance(key, str) for key in dedupe_keys):
+                    raise ValueError("dedupe_keys must be a list of job keys")
+                order = self.app.store.reorder_queue(dedupe_keys)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not reorder apply queue")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't reorder the queue. Retry shortly.")
+                return
+            self._json({"dedupe_keys": order})
+            return
         if parsed.path not in {"/api/v1/profile", "/api/v1/profile/context"}:
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return

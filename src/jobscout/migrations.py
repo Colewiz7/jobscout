@@ -158,6 +158,42 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        7,
+        "apply_queue_and_snapshots",
+        """
+        alter table postings add column if not exists liveness_status text
+            check (liveness_status in ('live', 'closed', 'unknown'));
+        alter table postings add column if not exists liveness_checked_at timestamptz;
+        alter table postings add column if not exists liveness_evidence text;
+
+        alter table application_states add column if not exists queue_position integer;
+        alter table application_states add column if not exists applied_at timestamptz;
+        alter table application_states add column if not exists resume_document_id bigint
+            references documents(id) on delete set null;
+        alter table application_states add column if not exists resume_name text;
+
+        create table if not exists application_snapshots (
+            id                   bigserial primary key,
+            dedupe_key           text not null unique,
+            captured_at          timestamptz not null default now(),
+            company              text not null,
+            title                text not null,
+            location             text not null default '',
+            terms                text not null default '',
+            url                  text not null default '',
+            sources              text not null default '',
+            deadline             date,
+            description_text     text,
+            description_sections jsonb not null default '[]'::jsonb,
+            resume_document_id   bigint references documents(id) on delete set null,
+            resume_name          text
+        );
+        create index if not exists application_states_queue_idx
+            on application_states (queue_position, updated_at)
+            where status = 'queued';
+        """,
+    ),
 )
 
 

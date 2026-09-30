@@ -200,6 +200,16 @@ persistence, safe password-manager linking, and job/company isolation:
 make audit-phase3
 ```
 
+Queue supports persistent drag or keyboard-button reordering and focused
+application sessions. Posting liveness is checked before queue entry and again
+when a session starts; only confirmed closures are automatically archived.
+Marking a submission applied records its timestamp and resume version and
+captures a plain-text snapshot of the posting. Exercise the complete flow with:
+
+```bash
+make audit-phase4
+```
+
 Run the full test suite, including PostgreSQL integration tests, in a disposable
 Postgres 16 container with either Podman or Docker:
 

@@ -22,13 +22,19 @@ tables early: each migration lands only with the first UI that uses it.
 
 ## Phase 4 — Queue and apply sessions
 
-- Check posting liveness before a job enters Queue and again when an apply
-  session starts.
-- Prefer the provider detail API, then a conservative application-URL request.
-  Treat an inconclusive request as unknown, not closed.
-- A confirmed dead posting receives the visible status “Posting closed” and is
-  automatically skipped. Record the check time and evidence so the decision is
-  explainable.
+- Implemented: persistent Queue order with drag, move-earlier, and move-later
+  controls; initial order is deadline then scout score until manually changed.
+- Implemented: focused, full-screen apply sessions with progress, elapsed time,
+  embedded Quick-fill, tab-return submission prompt, automatic advance, and an
+  applied/skipped/time summary.
+- Implemented: posting liveness checks before Queue entry and again when a
+  session starts. Provider detail APIs are preferred, followed by a conservative
+  application-URL check. Inconclusive results remain unknown and do not block.
+- Implemented: a confirmed dead posting receives the visible status “Posting
+  closed,” is archived and skipped automatically, and retains check time and
+  plain-language evidence.
+- Implemented: marking applied stores the application timestamp and selected
+  resume version and snapshots the posting’s structured, plain-text state.
 
 ## Phase 5 — Tracker and companies
 
