@@ -1,9 +1,9 @@
 {
-  "default": ["Pinned", "Identity", "Contact", "Links", "Education", "Work authorization", "Availability", "Documents", "ATS account", "Short answers", "Story bank"],
-  "greenhouse": ["Pinned", "Identity", "Contact", "Links", "Documents", "ATS account", "Education", "Work authorization", "Availability", "Short answers", "Story bank"],
-  "lever": ["Pinned", "Identity", "Contact", "Links", "Documents", "ATS account", "Work authorization", "Education", "Availability", "Short answers", "Story bank"],
-  "ashby": ["Pinned", "Identity", "Contact", "Links", "Education", "Documents", "ATS account", "Work authorization", "Availability", "Short answers", "Story bank"],
-  "workday": ["Pinned", "Identity", "Contact", "Education", "Work authorization", "Availability", "Documents", "ATS account", "Links", "Short answers", "Story bank"],
+  "default": ["Pinned", "Identity", "Contact", "Links", "Education", "Work authorization", "Availability", "Experience", "Skills", "Compensation", "Documents", "ATS account", "Short answers", "Optional disclosures", "Story bank"],
+  "greenhouse": ["Pinned", "Identity", "Contact", "Links", "Documents", "ATS account", "Education", "Work authorization", "Availability", "Experience", "Skills", "Compensation", "Short answers", "Optional disclosures", "Story bank"],
+  "lever": ["Pinned", "Identity", "Contact", "Links", "Documents", "ATS account", "Work authorization", "Education", "Availability", "Experience", "Skills", "Compensation", "Short answers", "Optional disclosures", "Story bank"],
+  "ashby": ["Pinned", "Identity", "Contact", "Links", "Education", "Documents", "ATS account", "Work authorization", "Availability", "Experience", "Skills", "Compensation", "Short answers", "Optional disclosures", "Story bank"],
+  "workday": ["Pinned", "Identity", "Contact", "Education", "Work authorization", "Availability", "Experience", "Skills", "Compensation", "Documents", "ATS account", "Links", "Short answers", "Optional disclosures", "Story bank"],
   "_guidance": {
     "default": "Review every value in the form; Quick-fill never submits.",
     "greenhouse": "Recheck searchable dropdowns after pasting; they can replace their own field controls.",
