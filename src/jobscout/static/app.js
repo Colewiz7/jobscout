@@ -153,6 +153,7 @@ function navigate(url, { replace = false } = {}) {
   if (routeRoot() === "inbox") history.replaceState({ ...(history.state || {}), inboxScroll: state.scrollTop }, "", window.location.href);
   history[replace ? "replaceState" : "pushState"]({}, "", `${destination.pathname}${destination.search}${destination.hash}`);
   renderRoute({ focus: true });
+  if (routeRoot() !== "inbox") routeView.scrollTop = 0;
 }
 
 function fuzzyScore(candidate, query) {
@@ -176,6 +177,10 @@ function statusLabel(status) {
 
 function sourceList(job) {
   return String(job.sources || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function applicationUrl(job) {
+  return job.public_apply_url || (job.nonpublic_site ? "" : job.url || "");
 }
 
 function isRemote(job) { return /\bremote\b/i.test(job.location || ""); }
@@ -303,6 +308,7 @@ function jobRowMarkup(entry) {
   for (const tag of job.tags || []) chips.push(tag);
   if (job.connections_count) chips.push(`${new Intl.NumberFormat().format(job.connections_count)} connections`);
   if (sources.length > 1) chips.push(`${sources.length} sources`);
+  if (job.nonpublic_site) chips.unshift("Check apply site");
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
   return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
     ${companyLogoMarkup(job.company)}
@@ -499,14 +505,16 @@ function detailMarkup(job) {
   const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>Interview</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
+  const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>This link came from a non-public Workday site. ${job.public_apply_url ? "Apply opens the verified public RTX posting." : "No exact public posting was verified. Find it on the employer’s public careers site before applying."}</p>` : "";
   return `<article class="job-detail" aria-labelledby="job-title">
     <header class="job-detail-header"><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
       <dl class="fact-strip">${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
-      <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!job.url || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
+      <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
     <div class="job-detail-body">
       ${eligibilityMarkup(job)}
       ${ruleNotice}
+      ${siteWarning}
       ${repostWarning}
       ${overviewMarkup(job)}
       ${atGlanceMarkup(job)}
@@ -595,6 +603,7 @@ async function loadOverview(key, { force = false } = {}) {
     state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be generated." });
   }
   if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+  if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
 }
 
 async function showCachedOverview(key) {
@@ -608,6 +617,7 @@ async function showCachedOverview(key) {
     if (!items.length || state.overviews.has(key)) return;
     state.overviews.set(key, { loading: false, items, error: "" });
     if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+    if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
   } catch { /* Cached overview is optional; manual Generate remains available. */ }
 }
 
@@ -761,6 +771,8 @@ function queueCard(job, index, count) {
     ? '<span class="queue-liveness is-live"><span aria-hidden="true">✓</span>Posting live</span>'
     : job.liveness_status === "closed"
       ? '<span class="queue-liveness is-closed"><span aria-hidden="true">!</span>Posting closed</span>'
+      : job.liveness_status === "unknown"
+        ? '<span class="queue-liveness"><span aria-hidden="true">?</span>Couldn’t verify</span>'
       : '<span class="queue-liveness"><span aria-hidden="true">?</span>Not checked</span>';
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
     <button class="queue-drag-handle interactive" type="button" draggable="true" aria-label="Reorder ${escapeHtml(job.title)}" title="Drag to reorder">${icons.queue}</button>
@@ -1391,10 +1403,15 @@ async function startApplySession() {
       keys: (payload.jobs || []).map((job) => job.dedupe_key),
       documents: payload.documents || [], applied: [], skipped: payload.skipped || [],
       index: 0, startedAt: Date.now(), endedAt: null, awaitingReturn: "",
+      checkedKeys: new Set(), checkingKey: "", checkError: "",
     };
-    startSessionClock();
-    if (!state.applySession.keys.length) endApplySession();
+    if (!state.applySession.keys.length) {
+      state.applySession = null;
+      renderQueue();
+      showSnackbar("No queued jobs are ready. Add a role from Inbox first.");
+    }
     else {
+      startSessionClock();
       state.selectedKey = state.applySession.keys[0];
       navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`);
     }
@@ -1415,7 +1432,12 @@ function sessionRequirements(job) {
 
 function sessionPromptMarkup(job) {
   const session = state.applySession;
-  if (session.awaitingReturn !== "prompt") return `<button class="filled-button interactive" type="button" data-session-apply ${!job.url ? "disabled" : ""}>${job.status === "applying" ? "Reopen application" : "Apply"}</button>`;
+  if (!session.checkedKeys.has(job.dedupe_key)) {
+    return session.checkError
+      ? `<div class="session-check-state" role="alert"><p>${escapeHtml(session.checkError)}</p><button class="tonal-button interactive" type="button" data-session-retry-check>Retry check</button></div>`
+      : '<p class="session-check-state" role="status">Checking that this posting is still open…</p>';
+  }
+  if (session.awaitingReturn !== "prompt") return `<button class="filled-button interactive" type="button" data-session-apply ${!applicationUrl(job) ? "disabled" : ""}>${job.status === "applying" ? "Reopen application" : "Apply"}</button>`;
   const options = (session.documents || []).map((document) => {
     const date = document.date ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(`${document.date}T00:00:00`)) : "";
     return `<option value="${escapeHtml(document.id)}">${escapeHtml(document.name)}${date ? ` — ${escapeHtml(date)}` : ""}</option>`;
@@ -1428,24 +1450,40 @@ function applySessionMarkup(job) {
   const progress = `${session.index + 1} of ${session.keys.length}`;
   const quickFill = state.quickFillEnabled
     ? `<aside class="session-quick-fill" id="session-quick-fill" aria-label="Quick-fill">${state.quickFillProfile ? quickFillInnerMarkup({ embedded: true }) : '<p class="session-muted">Loading Quick-fill…</p>'}</aside>`
-    : '<aside class="session-quick-fill is-disabled"><h2>Quick-fill</h2><p>Profile data stays unavailable until protected access is verified.</p></aside>';
-  return `<section class="apply-session" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-skip>Skip</button><button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1><dl class="session-facts">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}</dl><section><h2>Requirements</h2>${sessionRequirements(job)}</section>${sessionPromptMarkup(job)}</main>${quickFill}</div></section>`;
+    : `<aside class="session-review" aria-label="Posting review"><h2>Posting review</h2>${overviewMarkup(job)}${atGlanceMarkup(job)}${descriptionMarkup(job)}<p class="session-muted">Quick-fill stays disabled until protected Profile access is verified.</p></aside>`;
+  const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>${job.public_apply_url ? "Apply opens the verified public posting." : "No public apply link verified. Find this role on the employer’s public careers site."}</p>` : "";
+  const uncertain = job.liveness_status === "unknown" ? `<p class="company-warning"><span aria-hidden="true">?</span>Couldn’t confirm this posting is open: ${escapeHtml(job.liveness_evidence || "the provider did not respond")}. Check before submitting.</p>` : "";
+  return `<section class="apply-session" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-skip>Skip</button><button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job) : ""}</main>${quickFill}</div></section>`;
 }
 
 function sessionSummaryMarkup() {
   const session = state.applySession;
   const elapsed = elapsedLabel(sessionElapsed());
-  return `<section class="page-shell"><div class="session-summary"><h1 id="session-summary-title" tabindex="-1">Session complete.</h1><p>You applied to ${new Intl.NumberFormat().format(session.applied.length)} ${session.applied.length === 1 ? "role" : "roles"}, skipped ${new Intl.NumberFormat().format(session.skipped.length)}, and spent ${escapeHtml(elapsed)}.</p><div><a class="tonal-button interactive" href="/queue" data-route>Return to queue</a><a class="text-button interactive" href="/tracker" data-route>Open tracker</a></div></div></section>`;
+  const empty = !session.applied.length && !session.skipped.length;
+  const applied = session.applied.map((key) => state.jobs.find((job) => job.dedupe_key === key)).filter(Boolean);
+  const skipped = session.skipped.map((item) => state.jobs.find((job) => job.dedupe_key === item.dedupe_key)).filter(Boolean);
+  return `<section class="page-shell session-summary-page"><div class="session-summary"><h1 id="session-summary-title" tabindex="-1">${empty ? "No applications recorded." : "Session complete."}</h1><p>${empty ? "Your queue is unchanged. Return when you’re ready to apply." : `You applied to ${session.applied.length} ${session.applied.length === 1 ? "role" : "roles"}, skipped ${session.skipped.length}, and spent ${escapeHtml(elapsed)}.`}</p>${applied.length ? `<h2>Applied</h2><ul>${applied.map((job) => `<li>${escapeHtml(job.company)} · ${escapeHtml(job.title)}</li>`).join("")}</ul>` : ""}${skipped.length ? `<h2>Skipped</h2><ul>${skipped.map((job) => `<li>${escapeHtml(job.company)} · ${escapeHtml(job.title)}</li>`).join("")}</ul>` : ""}<div><a class="tonal-button interactive" href="/queue" data-route>Return to queue</a>${applied.length ? '<a class="text-button interactive" href="/tracker" data-route>Open tracker</a>' : ""}</div></div></section>`;
 }
 
 function renderApplySession({ focus = false } = {}) {
   document.title = "Apply session — JobSeer";
   if (!state.loaded) {
-    routeView.innerHTML = "";
+    routeView.innerHTML = '<section class="page-shell"><div class="queue-skeleton skeleton" aria-label="Loading application session"></div></section>';
     return;
   }
   const session = state.applySession;
   if (!session) {
+    const key = sessionPathKey();
+    const queued = queueJobs();
+    if (key && queued.some((job) => job.dedupe_key === key)) {
+      state.applySession = { keys: queued.map((job) => job.dedupe_key), documents: [],
+        applied: [], skipped: [], index: queued.findIndex((job) => job.dedupe_key === key),
+        startedAt: Date.now(), endedAt: null, awaitingReturn: "",
+        checkedKeys: new Set(), checkingKey: "", checkError: "" };
+      startSessionClock();
+      renderApplySession({ focus });
+      return;
+    }
     routeView.innerHTML = '<section class="page-shell"><div class="empty-state"><h1 id="page-title" tabindex="-1">That session has ended.</h1><p>Start a new focused pass from your current queue.</p><a class="tonal-button interactive" href="/queue" data-route>Return to queue</a></div></section>';
     return;
   }
@@ -1469,14 +1507,51 @@ function renderApplySession({ focus = false } = {}) {
     const contextKey = `${job.dedupe_key}\u0000${job.company}`;
     if (contextKey !== state.quickFillContextKey) loadQuickFillContext();
   }
+  if (!session.checkedKeys.has(key) && !session.checkingKey && !session.checkError) verifySessionJob(key);
   if (focus) document.querySelector("#session-job-title")?.focus({ preventScroll: true });
+}
+
+async function verifySessionJob(key) {
+  const session = state.applySession;
+  if (!session || session.checkingKey || session.checkedKeys.has(key)) return;
+  session.checkingKey = key;
+  session.checkError = "";
+  try {
+    const response = await fetch("/api/v1/queue/check", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ dedupe_key: key }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't check this posting.");
+    const result = await response.json();
+    if (state.applySession !== session || session.keys[session.index] !== key) return;
+    const job = state.jobs.find((item) => item.dedupe_key === key);
+    if (job) Object.assign(job, { liveness_status: result.status, liveness_evidence: result.evidence });
+    if (result.status === "closed") {
+      if (job) job.status = "archived";
+      session.skipped.push({ dedupe_key: key, reason: "Posting closed" });
+      showSnackbar("Posting closed; moved to the next role.");
+      session.checkingKey = "";
+      advanceApplySession("closed");
+      return;
+    }
+    session.checkedKeys.add(key);
+    renderApplySession();
+  } catch (error) {
+    if (state.applySession === session && session.keys[session.index] === key) {
+      session.checkError = error instanceof Error ? error.message : "Couldn't check this posting.";
+      renderApplySession();
+    }
+  } finally {
+    if (session.checkingKey === key) session.checkingKey = "";
+  }
 }
 
 async function openSessionApplication() {
   const session = state.applySession;
   const job = session && state.jobs.find((candidate) => candidate.dedupe_key === session.keys[session.index]);
-  if (!job?.url || session.awaitingReturn) return;
-  window.open(job.url, "_blank", "noopener");
+  if (!job || !session.checkedKeys.has(job.dedupe_key) || !applicationUrl(job) || session.awaitingReturn) return;
+  window.open(applicationUrl(job), "_blank", "noopener");
   const previous = job.status;
   job.status = "applying";
   session.awaitingReturn = "waiting";
@@ -1506,6 +1581,8 @@ function advanceApplySession(kind) {
   const key = session.keys[session.index];
   if (kind === "skipped") session.skipped.push({ dedupe_key: key, reason: "Skipped in session" });
   session.awaitingReturn = "";
+  session.checkingKey = "";
+  session.checkError = "";
   session.index += 1;
   if (session.index >= session.keys.length) endApplySession();
   else {
@@ -2492,7 +2569,7 @@ function handleGlobalKeydown(event) {
     if (key === "a") {
       const job = state.jobs.find((candidate) => candidate.dedupe_key === state.selectedKey);
       if (jobHasActiveBlocker(job)) { event.preventDefault(); showSnackbar("Override the eligibility verdict before applying."); return; }
-      if (job?.url) { event.preventDefault(); window.open(job.url, "_blank", "noopener"); performDecision("applying", "Opened"); }
+      if (job && applicationUrl(job)) { event.preventDefault(); window.open(applicationUrl(job), "_blank", "noopener"); performDecision("applying", "Opened"); }
       return;
     }
     if (key === "u") { event.preventDefault(); undoLastDecision(); return; }
@@ -2537,6 +2614,14 @@ document.addEventListener("click", (event) => {
   }
   const queueRemove = event.target.closest("[data-queue-remove]");
   if (queueRemove) { removeFromQueue(queueRemove.dataset.queueRemove); return; }
+  if (event.target.closest("[data-session-retry-check]")) {
+    if (state.applySession) {
+      state.applySession.checkError = "";
+      verifySessionJob(state.applySession.keys[state.applySession.index]);
+      renderApplySession();
+    }
+    return;
+  }
   if (event.target.closest("[data-session-apply]")) { openSessionApplication(); return; }
   if (event.target.closest("[data-session-applied]")) { markSessionApplied(); return; }
   if (event.target.closest("[data-session-not-yet]")) { if (state.applySession) state.applySession.awaitingReturn = ""; renderApplySession({ focus: true }); return; }
@@ -2552,7 +2637,7 @@ document.addEventListener("click", (event) => {
   const apply = event.target.closest("[data-apply-now]");
   if (apply && apply.getAttribute("aria-disabled") !== "true") {
     const job = state.jobs.find((candidate) => candidate.dedupe_key === state.selectedKey);
-    if (job?.url) { window.open(job.url, "_blank", "noopener"); performDecision("applying", "Opened"); }
+    if (job && applicationUrl(job)) { window.open(applicationUrl(job), "_blank", "noopener"); performDecision("applying", "Opened"); }
     return;
   }
   const bulk = event.target.closest("[data-bulk-action]");
@@ -2584,7 +2669,7 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey, { force: true }); renderSelectedJob(); return; }
   if (event.target.closest("[data-save-manual-description]")) { saveManualDescription(); return; }
   if (event.target.closest("[data-retry-overview]")) { loadOverview(state.selectedKey, { force: true }); return; }
-  if (event.target.closest("[data-generate-overview]")) { loadOverview(state.selectedKey); renderSelectedJob(); return; }
+  if (event.target.closest("[data-generate-overview]")) { loadOverview(state.selectedKey); if (routeRoot() === "inbox") renderSelectedJob(); else if (window.location.pathname.startsWith("/queue/session/")) renderApplySession(); return; }
   if (event.target.closest("[data-open-command]")) { openCommand(event.target.closest("[data-open-command]")); return; }
   if (event.target.closest("[data-open-shortcuts]")) { openShortcuts(event.target.closest("[data-open-shortcuts]")); return; }
   if (event.target.closest("[data-quick-fill-toggle]")) { state.quickFillOpen ? closeQuickFill() : openQuickFill(); return; }

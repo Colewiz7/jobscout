@@ -23,6 +23,9 @@ from typing import Any
 import yaml
 
 from . import db as database
+from .config import Config
+from .filters import keep as keep_posting
+from .models import Posting
 from .capture import PostingCapture, manual_capture
 from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, parse_description, parse_sections
 from .overview import OverviewService
@@ -54,6 +57,21 @@ def _queue_sort_key(job: dict) -> tuple:
         -(job.get("score") or 0),
         str(job.get("company") or "").casefold(),
     )
+
+
+def _visible_scoped_job(job: dict, config: Config) -> bool:
+    """Retain tracked history, but hide old out-of-scope rows from Inbox."""
+    sources = [part.strip() for part in str(job.get("sources") or "").split(",") if part.strip()]
+    if job.get("status") != "new" or "manual" in sources:
+        return True
+    source = next((item for item in sources if item != "simplify-s27"), "simplify-s27")
+    location = str(job.get("location") or "")
+    return keep_posting(Posting(
+        source=source, company=str(job.get("company") or ""),
+        title=str(job.get("title") or ""), location=location,
+        url=str(job.get("url") or ""), terms=str(job.get("terms") or ""),
+        remote="remote" in location.lower(),
+    ), config)
 
 
 def _parse_client_datetime(value, label: str, *, optional: bool = False) -> dt.datetime | None:
@@ -222,6 +240,7 @@ def _env_enabled(name: str) -> bool:
 class PostgresStore:
     def __init__(self, dsn: str):
         self.dsn = dsn
+        self._filter_config = Config.load()
         self._fetcher = Fetcher(timeout=15, retry_seconds=20)
         self._capture = PostingCapture(self._fetcher)
         self._descriptions = ProviderDescriptionFetcher(self._fetcher)
@@ -235,6 +254,9 @@ class PostgresStore:
             jobs = database.dashboard_postings(conn, include_closed=include_closed)
             counts = database.contact_counts(conn)
             active_rules = database.rules(conn)
+        # Old rows are retained for audit/history, but a changed scout filter
+        # must remove newly discovered out-of-scope rows from today's Inbox.
+        jobs = [job for job in jobs if _visible_scoped_job(job, self._filter_config)]
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
@@ -323,20 +345,22 @@ class PostgresStore:
             return database.save_queue_order(conn, dedupe_keys)
 
     def start_session(self) -> dict:
-        queued = [job for job in self.jobs() if job["status"] == "queued"]
-        skipped = []
-        for job in queued:
-            result = self.check_liveness(job["dedupe_key"], force=True)
-            if result.status == "closed":
-                with database.connect(self.dsn) as conn:
-                    database.require_schema(conn)
-                    database.save_application_state(
-                        conn, job["dedupe_key"], "archived", job.get("notes") or ""
-                    )
-                skipped.append({"dedupe_key": job["dedupe_key"], "reason": "Posting closed"})
+        # Do not probe the whole queue before showing the first job. A large
+        # queue would make this request take minutes and appear blank to users.
         jobs = [job for job in self.jobs() if job["status"] == "queued"]
         jobs.sort(key=_queue_sort_key)
-        return {"jobs": jobs, "skipped": skipped}
+        return {"jobs": jobs, "skipped": []}
+
+    def check_session_job(self, key: str) -> dict:
+        job = next((item for item in self.jobs() if item["dedupe_key"] == key), None)
+        if job is None or job["status"] != "queued":
+            raise ValueError("job is no longer queued")
+        result = self.check_liveness(key, force=True)
+        if result.status == "closed":
+            with database.connect(self.dsn) as conn:
+                database.require_schema(conn)
+                database.save_application_state(conn, key, "archived", job.get("notes") or "")
+        return dataclasses.asdict(result)
 
     def mark_applied(self, key: str, document_id) -> dict | None:
         self.description(key)
@@ -873,25 +897,21 @@ class DemoStore:
         return dedupe_keys
 
     def start_session(self) -> dict:
-        skipped = []
-        now = dt.datetime.now(dt.timezone.utc)
-        for row in self.rows:
-            if row["status"] != "queued":
-                continue
-            row.update(
-                liveness_status="closed" if row.get("closed") or not row.get("url") else "live",
-                liveness_checked_at=now,
-                liveness_evidence="Posting is unavailable" if row.get("closed") or not row.get("url") else "Demo posting is available",
-            )
-            if row["liveness_status"] == "closed":
-                row["status"] = "archived"
-                skipped.append({"dedupe_key": row["dedupe_key"], "reason": "Posting closed"})
         queued = [dict(row) for row in self.rows if row["status"] == "queued"]
         queued.sort(key=_queue_sort_key)
-        return {
-            "jobs": queued,
-            "skipped": skipped,
-        }
+        return {"jobs": queued, "skipped": []}
+
+    def check_session_job(self, key: str) -> dict:
+        row = next((item for item in self.rows if item["dedupe_key"] == key and item["status"] == "queued"), None)
+        if row is None:
+            raise ValueError("job is no longer queued")
+        closed = bool(row.get("closed") or not row.get("url"))
+        row.update(liveness_status="closed" if closed else "live",
+                   liveness_checked_at=dt.datetime.now(dt.timezone.utc),
+                   liveness_evidence="Posting is unavailable" if closed else "Demo posting is available")
+        if closed:
+            row["status"] = "archived"
+        return {"status": row["liveness_status"], "evidence": row["liveness_evidence"]}
 
     def mark_applied(self, key: str, document_id) -> dict | None:
         document = next(
@@ -1732,6 +1752,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't check the queue. Retry shortly.")
                 return
             self._json(session, HTTPStatus.CREATED)
+            return
+        if parsed.path == "/api/v1/queue/check":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                result = self.app.store.check_session_job(str(payload.get("dedupe_key") or ""))
+            except (ValueError, TypeError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not check session job")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't check this posting. Retry shortly.")
+                return
+            self._json(result)
             return
         applied_prefix = "/api/v1/applications/"
         applied_suffix = "/applied"

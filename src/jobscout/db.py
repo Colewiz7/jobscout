@@ -15,7 +15,7 @@ import psycopg
 from psycopg.types.json import Json
 from psycopg.rows import dict_row
 
-from .models import Posting, merge_locations, normalise
+from .models import Posting, merge_locations, normalise, workday_req_from_url
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +233,7 @@ _OPEN_SQL = """
 with candidates as (
     select * from postings p
      where not p.closed
+       and p.board is distinct from 'testnisc'
        {unnotified}
 ),
 grouped as (
@@ -362,6 +363,70 @@ def company_key(value: str) -> str:
     return " ".join(parts)
 
 
+def collapse_dashboard_duplicates(rows: list[dict]) -> list[dict]:
+    """Unify legacy cross-source copies without changing stored application keys.
+
+    A Workday req is stronger than a feed's rewritten title/company. Otherwise
+    equal normalized company/title is the fallback. Two independently tracked
+    applications are kept apart rather than silently hiding either history.
+    """
+    groups: list[dict] = []
+    req_index: dict[str, int] = {}
+    title_index: dict[tuple[str, str], int] = {}
+    for original in rows:
+        row = dict(original)
+        req = workday_req_from_url(str(row.get("url") or ""))
+        title = (company_key(str(row.get("company") or "")), normalise(str(row.get("title") or "")))
+        index = req_index.get(req) if req else None
+        if index is None:
+            index = title_index.get(title)
+        if index is None:
+            index = len(groups)
+            groups.append(row)
+        else:
+            old = groups[index]
+            if old.get("status", "new") != "new" and row.get("status", "new") != "new":
+                groups.append(row)
+                continue
+            # Keep the key with application history, otherwise prefer the
+            # first-party board URL over Simplify's rewritten title.
+            incoming_primary = (row.get("status", "new") != "new" and old.get("status", "new") == "new") or (
+                row.get("status", "new") == old.get("status", "new")
+                and "simplify" in str(old.get("sources") or "")
+                and "simplify" not in str(row.get("sources") or "")
+            )
+            primary, secondary = (row, old) if incoming_primary else (old, row)
+            combined = dict(primary)
+            combined["sources"] = ", ".join(sorted(set(
+                str(old.get("sources") or "").split(", ") +
+                str(row.get("sources") or "").split(", ")
+            ) - {""}))
+            combined["location"] = merge_locations(str(old.get("location") or ""), str(row.get("location") or ""))
+            combined["first_seen"] = min(filter(None, (old.get("first_seen"), row.get("first_seen"))), default=None)
+            combined["last_seen"] = max(filter(None, (old.get("last_seen"), row.get("last_seen"))), default=None)
+            combined["score"] = max(filter(lambda value: value is not None, (old.get("score"), row.get("score"))), default=None)
+            combined["notified"] = bool(old.get("notified") or row.get("notified"))
+            combined["closed"] = bool(old.get("closed") and row.get("closed"))
+            direct = next((item for item in (old, row)
+                           if item.get("url") and "simplify" not in str(item.get("sources") or "")), None)
+            combined["url"] = (direct or primary).get("url") or secondary.get("url") or ""
+            groups[index] = combined
+        if req:
+            req_index[req] = index
+        title_index[title] = index
+    for row in groups:
+        url = str(row.get("url") or "")
+        lowered = url.lower()
+        row["nonpublic_site"] = (
+            "only_confidential_executive_recruiting" in lowered
+            or "private_posting_no_tmp" in lowered
+        )
+        row["public_apply_url"] = ""
+        if "private_posting_no_tmp" in lowered and "_01866497" in lowered:
+            row["public_apply_url"] = url.replace("/fr-CA/Private_Posting_No_TMP/", "/en-US/REC_RTX_Ext_Gateway/")
+    return groups
+
+
 def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -> list[dict]:
     """Every posting needed by the application desk, collapsed to one job.
 
@@ -396,6 +461,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                            filter (where p.score_detail is not null))[1] as score_detail
                   from postings p
                  where (%s or not p.closed)
+                   and p.board is distinct from 'testnisc'
                  group by p.dedupe_key
             ), application_events as (
                 select h.dedupe_key, h.changed_at
@@ -451,7 +517,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
             """,
             (include_closed,),
         )
-        return cur.fetchall()
+        return collapse_dashboard_duplicates(cur.fetchall())
 
 
 def saved_views(conn: psycopg.Connection) -> list[dict]:

@@ -1373,6 +1373,15 @@ dialog[open]::backdrop {
 .job-detail-body {
   max-width: var(--measure);
   padding: var(--s-2) var(--s-8) var(--s-16);
+  border-top: 1px solid var(--outline-variant);
+}
+
+.job-detail-body > .posting-sections,
+.job-detail-body > .inline-error,
+.job-detail-body > [aria-labelledby="posting-details-heading"],
+.job-detail-body > [aria-labelledby="activity-heading"] {
+  padding-top: var(--s-8);
+  border-top: 1px solid var(--outline-variant);
 }
 
 .detail-section {
@@ -2299,6 +2308,35 @@ dialog[open]::backdrop {
   padding: var(--s-12) var(--s-8) var(--s-16);
 }
 
+.session-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+}
+
+.session-primary-action {
+  margin-top: var(--s-8);
+}
+
+.session-check-state {
+  color: var(--on-surface-variant);
+}
+
+.session-review {
+  min-width: 0;
+  padding: var(--s-8);
+  background: var(--surface-container-low);
+}
+
+.session-review > h2 {
+  margin: 0 0 var(--s-6);
+  font: 500 18px/1.35 var(--font-sans);
+}
+
+.session-review .detail-section {
+  max-width: var(--measure);
+}
+
 .session-company {
   margin: 0 0 var(--s-1);
   color: var(--on-surface-variant);
@@ -2396,6 +2434,24 @@ dialog[open]::backdrop {
   max-width: var(--measure);
   padding: var(--s-12) var(--s-6);
   text-align: center;
+}
+
+.session-summary h2 {
+  margin: var(--s-8) 0 var(--s-2);
+  font: 500 18px/1.35 var(--font-sans);
+}
+
+.session-summary ul {
+  max-height: 35dvh;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--on-surface-variant);
+}
+
+.session-summary li + li {
+  margin-top: var(--s-2);
 }
 
 .session-summary p {

@@ -34,3 +34,17 @@ def test_level_contract(title, employment, expected, config):
     posting = Posting(source="contract", company="", title=title, location="",
                       url="", employment_type=employment)
     assert posting_level_matches(posting, config) is expected
+
+
+@pytest.mark.parametrize("case", CASES["postings"])
+def test_posting_contract(case, config):
+    from jobscout.filters import keep, score_breakdown
+    from jobscout.models import Posting
+
+    posting = Posting(source=case["source"], company=case["company"],
+                      title=case["title"], location=case["location"],
+                      url="https://example.invalid/posting", remote=case.get("remote", False))
+    assert keep(posting, config) is case["expected"]
+    if "stale_term" in case:
+        _, detail = score_breakdown({"title": posting.title, "terms": posting.terms}, config)
+        assert ("stale_term" in detail) is case["stale_term"]

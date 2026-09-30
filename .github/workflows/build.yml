@@ -33,6 +33,7 @@ jobs:
       - env:
           JOBSCOUT_TEST_DSN: postgresql://postgres:test@localhost:5432/jobscout
         run: pytest -v
+      - run: node --test tests/test_highlights.mjs
 
   image:
     needs: test
