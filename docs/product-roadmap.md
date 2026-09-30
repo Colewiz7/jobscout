@@ -38,13 +38,21 @@ tables early: each migration lands only with the first UI that uses it.
 
 ## Phase 5 — Tracker and companies
 
-- Add a read-only score calibration view comparing the scout score at discovery
-  with the eventual application outcome. It must never tune or mutate scoring.
-- Import a user-selected LinkedIn connections CSV locally. Match normalized
-  company names against companies in the funnel and show “N connections” on
-  company pages and job rows.
-- Treat the CSV as third-party personal data: do not commit it, include it in
-  logs, send it to a model, or expose unmatched contact details in list views.
+- Implemented: sortable/filterable application table, status board with drag
+  and keyboard alternatives, CSV export, editable next steps, and status words
+  paired with icons.
+- Implemented: automatic seven-day follow-ups, snooze/done actions, interview
+  scheduling, upcoming-interview surfaces, and authenticated `.ics` export.
+- Implemented: small outcome insights plus a read-only score calibration view
+  comparing discovery score bands with actual outcomes. Neither mutates scout
+  scoring.
+- Implemented: company index and detail pages with postings, applications,
+  contacts, notes, links, and ATS account metadata only when protected Profile
+  access is enabled.
+- Implemented: browser-side LinkedIn CSV parsing and normalized company
+  matching. Only matched contacts are sent to the server; unmatched personal
+  details are neither persisted nor exposed. Connection counts appear on
+  company pages and job/application rows.
 
 ## Phase 6 — Eligibility and matching
 

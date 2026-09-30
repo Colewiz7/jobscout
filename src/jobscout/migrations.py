@@ -194,6 +194,99 @@ MIGRATIONS = (
             where status = 'queued';
         """,
     ),
+    Migration(
+        8,
+        "tracker_companies_and_followups",
+        """
+        alter table application_states add column if not exists next_step text not null default '';
+
+        create table if not exists companies (
+            key         text primary key,
+            name        text not null,
+            created_at  timestamptz not null default now(),
+            updated_at  timestamptz not null default now()
+        );
+        with cleaned as (
+            select company,
+                   btrim(regexp_replace(regexp_replace(lower(company), '[^a-z0-9]+', ' ', 'g'), '\\s+', ' ', 'g')) as value
+              from postings
+        ), keyed as (
+            select company,
+                   regexp_replace(regexp_replace(value, '^the\\s+', ''),
+                       '(\\s+(co|company|corp|corporation|inc|incorporated|llc|ltd|limited))+$', '') as key
+              from cleaned
+        )
+        insert into companies (key, name)
+        select key, min(company) from keyed where key <> '' group by key
+        on conflict (key) do update set name = excluded.name, updated_at = now();
+
+        update application_states s
+           set applied_at = coalesce(
+               s.applied_at,
+               (select min(h.changed_at) from application_status_history h
+                 where h.dedupe_key = s.dedupe_key and h.to_status = 'applied'),
+               s.updated_at
+           )
+         where s.status in ('applied', 'interviewing', 'offer', 'rejected')
+           and s.applied_at is null;
+
+        create table if not exists reminders (
+            id              bigserial primary key,
+            dedupe_key      text not null,
+            kind            text not null default 'follow_up'
+                            check (kind in ('follow_up', 'deadline', 'interview')),
+            due_at          timestamptz not null,
+            status          text not null default 'pending'
+                            check (status in ('pending', 'snoozed', 'done')),
+            snoozed_until   timestamptz,
+            created_at      timestamptz not null default now(),
+            completed_at    timestamptz,
+            unique (dedupe_key, kind)
+        );
+        create index if not exists reminders_due_idx
+            on reminders (coalesce(snoozed_until, due_at)) where status <> 'done';
+
+        insert into reminders (dedupe_key, kind, due_at)
+        select dedupe_key, 'follow_up', applied_at + interval '7 days'
+          from application_states
+         where status = 'applied' and applied_at is not null
+        on conflict (dedupe_key, kind) do nothing;
+
+        create table if not exists interviews (
+            id          bigserial primary key,
+            dedupe_key  text not null,
+            starts_at   timestamptz not null,
+            ends_at     timestamptz,
+            location    text not null default '',
+            notes       text not null default '',
+            created_at  timestamptz not null default now()
+        );
+        create index if not exists interviews_start_idx on interviews (starts_at);
+
+        create table if not exists contacts (
+            id           bigserial primary key,
+            company_key  text not null references companies(key) on delete cascade,
+            company_name text not null,
+            name         text not null,
+            title        text not null default '',
+            email        text not null default '',
+            linkedin_url text not null default '',
+            source       text not null default 'manual'
+                         check (source in ('manual', 'linkedin_csv')),
+            import_key   text unique,
+            created_at   timestamptz not null default now(),
+            updated_at   timestamptz not null default now()
+        );
+        create index if not exists contacts_company_idx on contacts (company_key, source);
+
+        create table if not exists company_notes (
+            company_key  text primary key references companies(key) on delete cascade,
+            company_name text not null,
+            body         text not null default '',
+            updated_at   timestamptz not null default now()
+        );
+        """,
+    ),
 )
 
 

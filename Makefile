@@ -1,4 +1,4 @@
-.PHONY: test test-pg audit-phase2 audit-phase3 audit-phase4
+.PHONY: test test-pg audit-phase2 audit-phase3 audit-phase4 audit-phase5
 
 PYTHON ?= .venv/bin/python
 
@@ -16,3 +16,6 @@ audit-phase3:
 
 audit-phase4:
 	JOBSCOUT_AUDIT_QUICK_FILL=true JOBSCOUT_AUDIT_APPLY_SESSION=true node scripts/audit-phase2.mjs
+
+audit-phase5:
+	JOBSCOUT_AUDIT_TRACKER=true node scripts/audit-phase2.mjs

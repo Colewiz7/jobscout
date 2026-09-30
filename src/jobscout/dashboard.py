@@ -52,6 +52,92 @@ def _queue_sort_key(job: dict) -> tuple:
     )
 
 
+def _parse_client_datetime(value, label: str, *, optional: bool = False) -> dt.datetime | None:
+    if value in {None, ""} and optional:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{label} must be a valid date and time") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must include a timezone")
+    return parsed
+
+
+def _company_groups(jobs: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    tracked = {"applying", "applied", "interviewing", "offer", "rejected"}
+    for job in jobs:
+        key = database.company_key(str(job.get("company") or ""))
+        if not key:
+            continue
+        group = grouped.setdefault(key, {
+            "key": key,
+            "name": job["company"],
+            "postings": [],
+            "applications": [],
+            "connections_count": 0,
+            "links": [],
+        })
+        group["postings"].append(job)
+        if job.get("status") in tracked:
+            group["applications"].append(job)
+        group["connections_count"] = max(
+            group["connections_count"], int(job.get("connections_count") or 0)
+        )
+        url = str(job.get("url") or "")
+        if url and not any(item["url"] == url for item in group["links"]):
+            group["links"].append({"label": job["title"], "url": url})
+    return sorted(
+        grouped.values(),
+        key=lambda item: (-len(item["applications"]), item["name"].casefold()),
+    )
+
+
+def _calendar_text(interviews: list[dict]) -> str:
+    def stamp(value) -> str:
+        parsed = value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def clean(value) -> str:
+        return (
+            str(value or "").replace("\\", "\\\\").replace("\n", "\\n")
+            .replace(",", "\\,").replace(";", "\\;")
+        )
+
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0",
+        "PRODID:-//JobSeer//Interviews//EN", "CALSCALE:GREGORIAN",
+    ]
+    for interview in interviews:
+        start = interview["starts_at"]
+        end = interview.get("ends_at") or (
+            (start if isinstance(start, dt.datetime) else dt.datetime.fromisoformat(
+                str(start).replace("Z", "+00:00")
+            ))
+            + dt.timedelta(hours=1)
+        )
+        summary = f"Interview — {interview.get('company', '')} — {interview.get('title', '')}"
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:jobseer-interview-{interview['id']}@local",
+            f"DTSTAMP:{now}",
+            f"DTSTART:{stamp(start)}",
+            f"DTEND:{stamp(end)}",
+            f"SUMMARY:{clean(summary)}",
+            f"LOCATION:{clean(interview.get('location'))}",
+            f"DESCRIPTION:{clean(interview.get('notes'))}",
+            "END:VEVENT",
+        ])
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
 def _json_value(value: Any) -> Any:
     if isinstance(value, (dt.datetime, dt.date)):
         return value.isoformat()
@@ -91,7 +177,11 @@ class PostgresStore:
     def jobs(self, include_closed: bool = False) -> list[dict]:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.dashboard_postings(conn, include_closed=include_closed)
+            jobs = database.dashboard_postings(conn, include_closed=include_closed)
+            counts = database.contact_counts(conn)
+        for job in jobs:
+            job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
+        return jobs
 
     def check_liveness(self, key: str, *, force: bool = False) -> LivenessResult:
         with database.connect(self.dsn) as conn:
@@ -159,6 +249,79 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.profile_data(conn)["documents"]
+
+    def tracker(self) -> dict:
+        applications = [
+            job for job in self.jobs(include_closed=True)
+            if job["status"] in {"applying", "applied", "interviewing", "offer", "rejected"}
+        ]
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            support = database.tracker_support(conn)
+        return {"applications": applications, **support}
+
+    def update_reminder(self, reminder_id: int, action: str) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_reminder(conn, reminder_id, action)
+
+    def add_interview(self, payload: dict) -> dict:
+        starts_at = _parse_client_datetime(payload.get("starts_at"), "interview start")
+        ends_at = _parse_client_datetime(payload.get("ends_at"), "interview end", optional=True)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.add_interview(
+                conn,
+                dedupe_key=str(payload.get("dedupe_key") or ""),
+                starts_at=starts_at,
+                ends_at=ends_at,
+                location=str(payload.get("location") or ""),
+                notes=str(payload.get("notes") or ""),
+            )
+
+    def save_next_step(self, key: str, value: str) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_next_step(conn, key, value)
+
+    def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
+        jobs = self.jobs(include_closed=True)
+        groups = _company_groups(jobs)
+        if not name:
+            return {"companies": groups}
+        key = database.company_key(name)
+        company = next((item for item in groups if item["key"] == key), None)
+        if company is None:
+            return {"company": None}
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            records = database.company_records(conn, company["name"])
+            account = database.company_account(conn, company["name"]) if include_account else None
+        company = {**company, **records, "account": account, "account_protected": not include_account}
+        return {"company": company}
+
+    def save_company_note(self, name: str, body: str) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_company_note(conn, name, body)
+
+    def save_contact(self, payload: dict, source: str = "manual") -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_contact(conn, payload, source=source)
+
+    def import_connections(self, contacts: list[dict]) -> dict:
+        companies = {
+            item["key"]: item["name"] for item in _company_groups(self.jobs(include_closed=True))
+        }
+        matched = []
+        for contact in contacts:
+            key = database.company_key(str(contact.get("company") or ""))
+            if key not in companies:
+                continue
+            matched.append({**contact, "company": companies[key]})
+        saved = [self.save_contact(item, source="linkedin_csv") for item in matched]
+        return {"imported": len(saved), "unmatched": len(contacts) - len(matched)}
 
     def saved_views(self) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -367,15 +530,67 @@ class DemoStore:
         self._copied_fields: dict[str, set[str]] = {}
         self._answer_overrides: dict[str, dict[str, str]] = {}
         self._company_accounts: dict[str, dict] = {}
+        self._reminders = []
+        self._interviews = []
+        self._contacts = []
+        self._company_notes: dict[str, dict] = {}
+        self._next_reminder_id = 1
+        self._next_interview_id = 1
+        self._next_contact_id = 1
+        for row in self.rows:
+            if row["status"] == "applied" and row.get("applied_at"):
+                self._reminders.append({
+                    "id": self._next_reminder_id,
+                    "dedupe_key": row["dedupe_key"],
+                    "kind": "follow_up",
+                    "due_at": row["applied_at"] + dt.timedelta(days=7),
+                    "status": "pending",
+                    "snoozed_until": None,
+                    "company": row["company"],
+                    "title": row["title"],
+                })
+                self._next_reminder_id += 1
+
+    def _upsert_demo_followup(self, row: dict) -> None:
+        reminder = next(
+            (item for item in self._reminders if item["dedupe_key"] == row["dedupe_key"]),
+            None,
+        )
+        values = {
+            "dedupe_key": row["dedupe_key"], "kind": "follow_up",
+            "due_at": row["applied_at"] + dt.timedelta(days=7),
+            "status": "pending", "snoozed_until": None,
+            "company": row["company"], "title": row["title"],
+        }
+        if reminder:
+            reminder.update(values)
+        else:
+            self._reminders.append({"id": self._next_reminder_id, **values})
+            self._next_reminder_id += 1
+
+    def _complete_demo_followup(self, key: str) -> None:
+        for reminder in self._reminders:
+            if reminder["dedupe_key"] == key and reminder["kind"] == "follow_up":
+                reminder["status"] = "done"
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
-        return [dict(row) for row in self.rows if include_closed or not row["closed"]]
+        counts: dict[str, int] = {}
+        for contact in self._contacts:
+            if contact["source"] == "linkedin_csv":
+                counts[contact["company_key"]] = counts.get(contact["company_key"], 0) + 1
+        jobs = [dict(row) for row in self.rows if include_closed or not row["closed"]]
+        for job in jobs:
+            job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
+            job.setdefault("next_step", "")
+        return jobs
 
     def save(self, key: str, status: str, notes: str) -> dict:
         if status not in database.APPLICATION_STATUSES:
             raise ValueError(f"unknown application status: {status}")
         for row in self.rows:
             if row["dedupe_key"] == key:
+                previous_status = row["status"]
+                previous_notes = row.get("notes") or ""
                 effective_status = status
                 if status == "queued":
                     row.update(
@@ -392,6 +607,13 @@ class DemoStore:
                 )
                 if effective_status != "queued":
                     row["queue_position"] = None
+                if effective_status == "applied" and row.get("applied_at") is None:
+                    row["applied_at"] = dt.datetime.now(dt.timezone.utc)
+                    self._upsert_demo_followup(row)
+                elif previous_status == "applied" and (
+                    effective_status != "applied" or notes != previous_notes
+                ):
+                    self._complete_demo_followup(key)
                 return {
                     "saved": True, "status": effective_status,
                     "liveness": {
@@ -448,6 +670,7 @@ class DemoStore:
                 queue_position=None, resume_document_id=document_id,
                 resume_name=document.get("name") if document else None,
             )
+            self._upsert_demo_followup(row)
             return {
                 "dedupe_key": key, "captured_at": now, "company": row["company"],
                 "title": row["title"], "location": row.get("location", ""),
@@ -462,6 +685,158 @@ class DemoStore:
 
     def documents(self) -> list[dict]:
         return copy.deepcopy(self._profile.get("documents", []))
+
+    def tracker(self) -> dict:
+        applications = [
+            job for job in self.jobs(include_closed=True)
+            if job["status"] in {"applying", "applied", "interviewing", "offer", "rejected"}
+        ]
+        return {
+            "applications": applications,
+            "reminders": copy.deepcopy([
+                reminder for reminder in self._reminders if reminder["status"] != "done"
+            ]),
+            "interviews": copy.deepcopy(sorted(
+                self._interviews, key=lambda item: item["starts_at"]
+            )),
+            "history": [],
+        }
+
+    def update_reminder(self, reminder_id: int, action: str) -> dict | None:
+        if action not in {"done", "snooze"}:
+            raise ValueError("reminder action must be done or snooze")
+        reminder = next((item for item in self._reminders if item["id"] == reminder_id), None)
+        if reminder is None:
+            return None
+        if action == "done":
+            reminder.update(status="done", completed_at=dt.datetime.now(dt.timezone.utc))
+        else:
+            reminder.update(
+                status="snoozed",
+                snoozed_until=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3),
+            )
+        return copy.deepcopy(reminder)
+
+    def add_interview(self, payload: dict) -> dict:
+        starts_at = _parse_client_datetime(payload.get("starts_at"), "interview start")
+        ends_at = _parse_client_datetime(payload.get("ends_at"), "interview end", optional=True)
+        if ends_at is not None and ends_at <= starts_at:
+            raise ValueError("interview end must be after its start")
+        row = next(
+            (item for item in self.rows if item["dedupe_key"] == payload.get("dedupe_key")),
+            None,
+        )
+        if row is None:
+            raise ValueError("job not found")
+        interview = {
+            "id": self._next_interview_id, "dedupe_key": row["dedupe_key"],
+            "starts_at": starts_at, "ends_at": ends_at,
+            "location": str(payload.get("location") or "")[:500],
+            "notes": str(payload.get("notes") or "")[:20_000],
+            "company": row["company"], "title": row["title"],
+        }
+        self._next_interview_id += 1
+        self._interviews.append(interview)
+        if row["status"] not in {"offer", "rejected"}:
+            row["status"] = "interviewing"
+        row["next_step"] = f"Interview {starts_at.isoformat()}"
+        row["application_updated_at"] = dt.datetime.now(dt.timezone.utc)
+        self._complete_demo_followup(row["dedupe_key"])
+        return copy.deepcopy(interview)
+
+    def save_next_step(self, key: str, value: str) -> bool:
+        if len(value) > 1_000:
+            raise ValueError("next step is too long")
+        row = next((item for item in self.rows if item["dedupe_key"] == key), None)
+        if row is None:
+            return False
+        row["next_step"] = value.strip()
+        row["application_updated_at"] = dt.datetime.now(dt.timezone.utc)
+        self._complete_demo_followup(key)
+        return True
+
+    def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
+        groups = _company_groups(self.jobs(include_closed=True))
+        if not name:
+            return {"companies": groups}
+        key = database.company_key(name)
+        company = next((item for item in groups if item["key"] == key), None)
+        if company is None:
+            return {"company": None}
+        contacts = [item for item in self._contacts if item["company_key"] == key]
+        note = self._company_notes.get(key, {"body": "", "updated_at": None})
+        account = self._company_accounts.get(database.company_key(company["name"])) if include_account else None
+        return {"company": {
+            **company,
+            "contacts": copy.deepcopy(contacts),
+            "note": copy.deepcopy(note),
+            "account": copy.deepcopy(account),
+            "account_protected": not include_account,
+        }}
+
+    def save_company_note(self, name: str, body: str) -> dict:
+        if len(body) > 20_000:
+            raise ValueError("company note is too long")
+        key = database.company_key(name)
+        if not key:
+            raise ValueError("company name is required")
+        company = next(
+            (item for item in _company_groups(self.jobs(include_closed=True)) if item["key"] == key),
+            None,
+        )
+        if company is None:
+            raise ValueError("company not found")
+        note = {"body": body, "updated_at": dt.datetime.now(dt.timezone.utc)}
+        self._company_notes[key] = note
+        return copy.deepcopy(note)
+
+    def save_contact(self, payload: dict, source: str = "manual") -> dict:
+        company = str(payload.get("company") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not company or not name or source not in {"manual", "linkedin_csv"}:
+            raise ValueError("company and contact name are required")
+        linkedin_url = str(payload.get("linkedin_url") or "").strip()
+        if linkedin_url and not linkedin_url.startswith("https://"):
+            raise ValueError("LinkedIn URL must use HTTPS")
+        key = database.company_key(company)
+        known_company = next(
+            (item for item in _company_groups(self.jobs(include_closed=True)) if item["key"] == key),
+            None,
+        )
+        if known_company is None:
+            raise ValueError("company not found")
+        company = known_company["name"]
+        if source == "linkedin_csv":
+            existing = next((item for item in self._contacts if
+                item["company_key"] == key and item["name"].casefold() == name.casefold()
+                and item["linkedin_url"] == linkedin_url), None)
+            if existing:
+                existing.update(title=str(payload.get("title") or ""), updated_at=dt.datetime.now(dt.timezone.utc))
+                return copy.deepcopy(existing)
+        contact = {
+            "id": self._next_contact_id, "company_key": key, "company_name": company,
+            "name": name, "title": str(payload.get("title") or "")[:500],
+            "email": str(payload.get("email") or "")[:500],
+            "linkedin_url": linkedin_url[:2_000], "source": source,
+            "created_at": dt.datetime.now(dt.timezone.utc),
+            "updated_at": dt.datetime.now(dt.timezone.utc),
+        }
+        self._next_contact_id += 1
+        self._contacts.append(contact)
+        return copy.deepcopy(contact)
+
+    def import_connections(self, contacts: list[dict]) -> dict:
+        companies = {
+            item["key"]: item["name"] for item in _company_groups(self.jobs(include_closed=True))
+        }
+        matched = []
+        for contact in contacts:
+            key = database.company_key(str(contact.get("company") or ""))
+            if key in companies:
+                matched.append({**contact, "company": companies[key]})
+        for contact in matched:
+            self.save_contact(contact, source="linkedin_csv")
+        return {"imported": len(matched), "unmatched": len(contacts) - len(matched)}
 
     def saved_views(self) -> list[dict]:
         return [dict(view) for view in self._saved_views]
@@ -494,7 +869,9 @@ class DemoStore:
         profile = copy.deepcopy(self._profile)
         profile["copied_fields"] = sorted(self._copied_fields.get(dedupe_key or "", set()))
         profile["answer_overrides"] = copy.deepcopy(self._answer_overrides.get(dedupe_key or "", {}))
-        profile["company_account"] = copy.deepcopy(self._company_accounts.get((company or "").casefold().strip()))
+        profile["company_account"] = copy.deepcopy(
+            self._company_accounts.get(database.company_key(company or ""))
+        )
         return profile
 
     def save_profile(self, payload: dict) -> dict:
@@ -516,7 +893,7 @@ class DemoStore:
         dedupe_key = clean["dedupe_key"]
         company = clean["company"]
         self._answer_overrides[dedupe_key] = clean["answer_overrides"]
-        self._company_accounts[company.casefold()] = clean["company_account"]
+        self._company_accounts[database.company_key(company)] = clean["company_account"]
         return self.profile(dedupe_key, company)
 
     def healthy(self) -> bool:
@@ -586,6 +963,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _error(self, status: HTTPStatus, message: str) -> None:
         self._json({"error": message}, status)
+
+    def _text(self, body: str, content_type: str, *, filename: str | None = None) -> None:
+        encoded = body.encode()
+        self.send_response(HTTPStatus.OK)
+        self._security_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def _auth_user(self) -> str | None:
         if not self.app.require_auth:
@@ -712,6 +1101,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
                 return
+            if parsed.path == "/api/v1/tracker":
+                try:
+                    self._json(self.app.store.tracker())
+                except Exception:
+                    log.exception("could not load tracker")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load the tracker. Retry shortly.")
+                return
+            if parsed.path == "/api/v1/companies":
+                query = urllib.parse.parse_qs(parsed.query)
+                try:
+                    self._json(self.app.store.companies(
+                        query.get("name", [None])[0],
+                        include_account=self.app.quick_fill_enabled,
+                    ))
+                except Exception:
+                    log.exception("could not load companies")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load companies. Retry shortly.")
+                return
+            if parsed.path == "/api/v1/interviews.ics":
+                try:
+                    interviews = self.app.store.tracker()["interviews"]
+                    query = urllib.parse.parse_qs(parsed.query)
+                    interview_id = query.get("id", [None])[0]
+                    if interview_id:
+                        interviews = [
+                            item for item in interviews if str(item["id"]) == str(interview_id)
+                        ]
+                    self._text(
+                        _calendar_text(interviews), "text/calendar; charset=utf-8",
+                        filename="jobseer-interviews.ics",
+                    )
+                except Exception:
+                    log.exception("could not export interviews")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't export interviews. Retry shortly.")
+                return
             if parsed.path == "/api/v1/saved-views":
                 self._json({"saved_views": self.app.store.saved_views()})
                 return
@@ -806,6 +1230,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/interviews":
+            if not self._require_write_security():
+                return
+            try:
+                interview = self.app.store.add_interview(self._read_json())
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save interview")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the interview. Retry shortly.")
+                return
+            self._json({"interview": interview}, HTTPStatus.CREATED)
+            return
+        if parsed.path == "/api/v1/contacts":
+            if not self._require_write_security():
+                return
+            try:
+                contact = self.app.store.save_contact(self._read_json())
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save contact")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the contact. Retry shortly.")
+                return
+            self._json({"contact": contact}, HTTPStatus.CREATED)
+            return
+        if parsed.path == "/api/v1/connections/import":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                contacts = payload.get("contacts")
+                if not isinstance(contacts, list) or len(contacts) > 100:
+                    raise ValueError("contacts must be a list of at most 100 matched connections")
+                if not all(isinstance(item, dict) for item in contacts):
+                    raise ValueError("every connection must be an object")
+                result = self.app.store.import_connections(contacts)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not import matched connections")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't import connections. Retry shortly.")
+                return
+            self._json(result, HTTPStatus.CREATED)
+            return
         if parsed.path == "/api/v1/queue/session":
             if not self._require_write_security():
                 return
@@ -876,6 +1348,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        reminder_prefix = "/api/v1/reminders/"
+        if parsed.path.startswith(reminder_prefix):
+            if not self._require_write_security():
+                return
+            try:
+                reminder_id = int(parsed.path.removeprefix(reminder_prefix))
+                reminder = self.app.store.update_reminder(
+                    reminder_id, str(self._read_json().get("action") or "")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not update reminder")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the reminder. Retry shortly.")
+                return
+            if reminder is None:
+                self._error(HTTPStatus.NOT_FOUND, "reminder not found")
+                return
+            self._json({"reminder": reminder})
+            return
+        next_step_prefix = "/api/v1/applications/"
+        next_step_suffix = "/next-step"
+        if parsed.path.startswith(next_step_prefix) and parsed.path.endswith(next_step_suffix):
+            if not self._require_write_security():
+                return
+            key = urllib.parse.unquote(
+                parsed.path[len(next_step_prefix):-len(next_step_suffix)].rstrip("/")
+            )
+            try:
+                saved = self.app.store.save_next_step(
+                    key, str(self._read_json().get("next_step") or "")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not update next step")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the next step. Retry shortly.")
+                return
+            if not saved:
+                self._error(HTTPStatus.NOT_FOUND, "application not found")
+                return
+            self._json({"ok": True})
+            return
+        if parsed.path == "/api/v1/companies/note":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                note = self.app.store.save_company_note(
+                    str(payload.get("company") or ""), str(payload.get("body") or "")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save company note")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the company note. Retry shortly.")
+                return
+            self._json({"note": note})
+            return
         if parsed.path == "/api/v1/queue/order":
             if not self._require_write_security():
                 return

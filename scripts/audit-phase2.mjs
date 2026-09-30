@@ -13,6 +13,7 @@ const profile = join(root, "config/profile.seed.json");
 const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
 const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
 const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
+const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
 
 async function freePort() {
   const server = createServer();
@@ -315,6 +316,84 @@ try {
     const summary = await cdp.evaluate("document.querySelector('.session-summary')?.textContent || ''");
     applySession = { queue, session, prompt, compactSessionOverflow, summary };
   }
+  let tracker = null;
+  if (auditTracker) {
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    await cdp.call("Page.navigate", { url: `${base}/tracker` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('.tracker-page .tracker-table'))")) break;
+      if (attempt === 99) throw new Error("Tracker did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const table = await cdp.evaluate(`(() => ({
+      applications: document.querySelectorAll('.tracker-table tbody tr').length,
+      insights: document.querySelectorAll('.tracker-insights > div').length,
+      todayVisible: !document.querySelector('#today-strip').hidden,
+      columns: [...document.querySelectorAll('.tracker-table th')].map((item) => item.textContent.trim()),
+    }))()`);
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-next-step]');
+      input.value = 'Send a concise follow-up';
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    })()`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+    await cdp.evaluate("document.querySelector('[data-tracker-view=\"board\"]').click()");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const board = await cdp.evaluate(`(() => ({
+      columns: document.querySelectorAll('.board-column').length,
+      cards: document.querySelectorAll('.board-card').length,
+      alternatives: document.querySelectorAll('[data-board-status-select]').length,
+    }))()`);
+    await cdp.evaluate("document.querySelector('[data-tracker-view=\"calibration\"]').click()");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const calibration = await cdp.evaluate(`(() => ({
+      present: Boolean(document.querySelector('.calibration')),
+      guardrail: document.querySelector('.calibration-intro')?.textContent.includes('never changes scout scoring') || false,
+      bands: document.querySelectorAll('.calibration-grid article').length,
+    }))()`);
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 320, height: 800, deviceScaleFactor: 1, mobile: true,
+    });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const trackerOverflow = await cdp.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth");
+
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    await cdp.call("Page.navigate", { url: `${base}/companies` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("document.querySelectorAll('.company-card').length > 1")) break;
+      if (attempt === 99) throw new Error("Companies did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const companyCount = await cdp.evaluate("document.querySelectorAll('.company-card').length");
+    await cdp.evaluate("document.querySelector('.company-card').click()");
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('.company-detail'))")) break;
+      if (attempt === 99) throw new Error("Company detail did not finish rendering");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const company = await cdp.evaluate(`(async () => {
+      const note = document.querySelector('#company-note');
+      note.value = 'Audit note'; note.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      document.querySelector('.contact-add').open = true;
+      const form = document.querySelector('#contact-form');
+      form.elements.name.value = 'Audit Contact'; form.elements.title.value = 'Engineer';
+      form.requestSubmit();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 900));
+      const controls = [...document.querySelectorAll('.company-detail button, .company-detail a[href], .company-detail input, .company-detail textarea, .company-detail select')]
+        .filter((element) => element.getClientRects().length > 0);
+      return {
+        protectedAccount: Boolean(document.querySelector('.protected-copy')),
+        contacts: document.querySelectorAll('.contact-row').length,
+        noteState: document.querySelector('#company-note-state')?.textContent || '',
+        unnamedControls: controls.filter((element) => !(element.getAttribute('aria-label') || element.textContent.trim() || element.closest('label'))).length,
+      };
+    })()`);
+    tracker = { table, board, calibration, trackerOverflow, companyCount, company };
+  }
   const report = {
     fixture,
     metrics: {
@@ -333,6 +412,7 @@ try {
     },
     ...(quickFill ? { quickFill } : {}),
     ...(applySession ? { applySession } : {}),
+    ...(tracker ? { tracker } : {}),
   };
   console.log(JSON.stringify(report, null, 2));
 
@@ -362,6 +442,18 @@ try {
   if (auditApplySession && applySession?.prompt.filledActions !== 1) failures.push("submission prompt has more than one filled action");
   if (auditApplySession && applySession?.compactSessionOverflow) failures.push("compact application session overflowed horizontally");
   if (auditApplySession && !applySession?.summary.includes("applied to 1 role")) failures.push("session summary did not record the application");
+  if (auditTracker && tracker?.table.applications < 1) failures.push("tracker table has no applications");
+  if (auditTracker && tracker?.table.insights !== 4) failures.push("tracker insights are incomplete");
+  if (auditTracker && tracker?.table.columns.length !== 8) failures.push("tracker table columns are incomplete");
+  if (auditTracker && tracker?.board.columns !== 5) failures.push("tracker board columns are incomplete");
+  if (auditTracker && tracker?.board.cards !== tracker?.board.alternatives) failures.push("board drag cards lack keyboard alternatives");
+  if (auditTracker && (!tracker?.calibration.present || !tracker?.calibration.guardrail || tracker?.calibration.bands !== 3)) failures.push("score calibration view is incomplete");
+  if (auditTracker && tracker?.trackerOverflow) failures.push("compact tracker overflowed horizontally");
+  if (auditTracker && tracker?.companyCount !== 50) failures.push(`expected 50 companies, got ${tracker?.companyCount}`);
+  if (auditTracker && !tracker?.company.protectedAccount) failures.push("protected ATS account state is missing");
+  if (auditTracker && tracker?.company.contacts < 1) failures.push("company contact did not save");
+  if (auditTracker && tracker?.company.noteState !== "Saved automatically") failures.push("company note did not autosave");
+  if (auditTracker && tracker?.company.unnamedControls) failures.push("unnamed company controls found");
   if (failures.length) throw new Error(failures.join("; "));
 } finally {
   cdp?.close();

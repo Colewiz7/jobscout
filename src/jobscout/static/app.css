@@ -2063,6 +2063,744 @@ dialog[open]::backdrop {
   gap: var(--s-2);
 }
 
+/* Tracker and companies */
+.today-strip:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  overflow-x: auto;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.today-strip strong {
+  color: var(--on-surface);
+  font-weight: 500;
+}
+
+.today-strip a {
+  color: var(--on-surface-variant);
+  text-underline-offset: 3px;
+}
+
+.tracker-page,
+.companies-page,
+.company-detail {
+  width: min(100%, var(--content-max));
+  margin: 0 auto;
+}
+
+.tracker-heading,
+.companies-heading,
+.company-detail-heading,
+.section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-6);
+}
+
+.tracker-heading,
+.companies-heading,
+.company-detail-heading {
+  margin-bottom: var(--s-8);
+}
+
+.tracker-heading h1,
+.companies-heading h1,
+.company-detail-heading h1 {
+  margin: 0;
+  font: 400 28px/1.2 var(--font-serif);
+  letter-spacing: -.005em;
+}
+
+.tracker-heading p,
+.companies-heading p,
+.company-detail-heading p,
+.section-heading p,
+.muted-copy,
+.protected-copy {
+  margin: var(--s-1) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 14px;
+}
+
+.view-switch {
+  display: flex;
+  gap: var(--s-1);
+  padding: var(--s-1);
+  border-radius: var(--r-full);
+  background: var(--surface-container-low);
+}
+
+.view-switch button {
+  min-height: 36px;
+  padding: 0 var(--s-4);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.view-switch button[aria-pressed="true"] {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+.tracker-insights {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.tracker-insights > div {
+  min-width: 0;
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.tracker-insights strong,
+.tracker-insights span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracker-insights strong {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.tracker-insights span {
+  margin-top: var(--s-1);
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.tracker-section,
+.company-section {
+  margin-top: var(--s-8);
+}
+
+.section-heading h2,
+.company-section > h2,
+.calibration-intro h2 {
+  margin: 0;
+  font: 500 18px/1.35 var(--font-sans);
+}
+
+.reminder-list,
+.interview-list,
+.company-application-list,
+.company-posting-list,
+.contact-list,
+.company-links {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+
+.reminder-row,
+.interview-list article,
+.company-application-list article,
+.company-posting-list article,
+.contact-row {
+  display: grid;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.reminder-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.reminder-row > div:first-child,
+.interview-list article > div,
+.company-application-list article > div,
+.company-posting-list article > div:first-child,
+.contact-row > div {
+  min-width: 0;
+}
+
+.reminder-row strong,
+.reminder-row span,
+.interview-list strong,
+.interview-list span,
+.company-application-list strong,
+.company-application-list span,
+.company-posting-list strong,
+.company-posting-list span,
+.contact-row strong,
+.contact-row span {
+  display: block;
+}
+
+.reminder-row span,
+.reminder-row time,
+.interview-list span,
+.company-application-list span,
+.company-posting-list span,
+.contact-row span {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.reminder-row > div:last-child {
+  display: flex;
+  gap: var(--s-1);
+}
+
+.interview-list article {
+  grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto;
+}
+
+.interview-list time {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.interview-add,
+.contact-add {
+  margin-top: var(--s-4);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.interview-add summary,
+.contact-add summary {
+  width: max-content;
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+#interview-form,
+#contact-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-4);
+  margin-top: var(--s-4);
+}
+
+#interview-form label,
+#contact-form label {
+  display: grid;
+  gap: var(--s-1);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+#interview-form label:has(textarea),
+#contact-form label:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+#interview-form input,
+#interview-form select,
+#interview-form textarea,
+#contact-form input,
+#contact-form textarea,
+.tracker-tools input,
+.tracker-tools select,
+.next-step-input,
+.company-notes textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  font: inherit;
+}
+
+#interview-form textarea,
+#contact-form textarea,
+.company-notes textarea {
+  resize: vertical;
+}
+
+#interview-form button,
+#contact-form button {
+  align-self: end;
+  justify-self: start;
+}
+
+.applications-section {
+  padding-bottom: var(--s-12);
+}
+
+.tracker-tools {
+  display: flex;
+  gap: var(--s-2);
+  margin: var(--s-4) 0;
+}
+
+.tracker-tools label:first-child {
+  position: relative;
+  flex: 1;
+}
+
+.tracker-tools label:first-child svg {
+  position: absolute;
+  top: 12px;
+  left: var(--s-3);
+  width: 20px;
+  height: 20px;
+  color: var(--on-surface-variant);
+}
+
+.tracker-tools label:first-child input {
+  padding-left: 40px;
+}
+
+.tracker-table-wrap,
+.calibration-table,
+.tracker-board {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.tracker-table,
+.calibration-table table {
+  width: 100%;
+  min-width: 1040px;
+  border-spacing: 0 var(--s-xxs);
+  text-align: left;
+}
+
+.tracker-table th,
+.calibration-table th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  color: var(--on-surface-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.tracker-table th button {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tracker-table td,
+.calibration-table td {
+  padding: var(--s-4);
+  background: var(--surface-container-low);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.tracker-table td:first-child,
+.calibration-table td:first-child {
+  border-radius: var(--r-md) 0 0 var(--r-md);
+}
+
+.tracker-table td:last-child,
+.calibration-table td:last-child {
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+}
+
+.tracker-table td > a {
+  color: var(--primary);
+  font-weight: 500;
+  text-underline-offset: 3px;
+}
+
+.connections-count {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--on-surface-variant);
+  font-size: 11px;
+}
+
+.next-step-input {
+  min-width: 180px;
+}
+
+.status-word {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+}
+
+.status-offer {
+  color: var(--success);
+}
+
+.status-rejected {
+  color: var(--on-surface-faint);
+}
+
+.activity-timeline,
+.activity-interviews {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+
+.activity-timeline > div,
+.activity-interviews > div,
+.resume-sent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2) var(--s-4);
+  margin: 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.activity-timeline time,
+.activity-interviews time {
+  color: var(--on-surface-faint);
+  font-size: 12px;
+}
+
+.activity-interviews > div {
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+}
+
+.activity-interviews span {
+  flex-basis: 100%;
+}
+
+.resume-sent {
+  margin-top: var(--s-4);
+}
+
+.resume-sent strong {
+  color: var(--on-surface);
+  font-weight: 500;
+}
+
+.tracker-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(230px, 1fr));
+  gap: var(--s-2);
+  padding-bottom: var(--s-2);
+}
+
+.board-column {
+  min-height: 360px;
+  padding: var(--s-3);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.board-column > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s-1) var(--s-1) var(--s-3);
+}
+
+.board-column h2 {
+  margin: 0;
+  font: 500 14px/1.4 var(--font-sans);
+}
+
+.board-column > header span {
+  color: var(--on-surface-faint);
+  font-size: 12px;
+}
+
+.board-column > div {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.board-card {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  cursor: grab;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 148px;
+  transition: transform var(--d-short4) var(--ease-standard), opacity var(--d-short2) var(--ease-standard);
+}
+
+.board-card.is-dragged {
+  box-shadow: var(--shadow-float);
+  opacity: .84;
+  transform: scale(1.02);
+}
+
+.board-card > a {
+  color: var(--primary);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.board-card > strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.board-card > span {
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.board-card select {
+  width: 100%;
+  min-height: 36px;
+  margin-top: var(--s-2);
+  padding: 0 var(--s-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+}
+
+.calibration-intro {
+  max-width: var(--measure);
+  margin-bottom: var(--s-4);
+}
+
+.calibration-intro p {
+  margin: var(--s-1) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 14px;
+}
+
+.calibration-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.calibration-grid article {
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.calibration-grid h3 {
+  margin: 0 0 var(--s-3);
+  font: 500 14px/1.4 var(--font-sans);
+}
+
+.calibration-grid dl {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+}
+
+.calibration-grid dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.calibration-grid dt,
+.calibration-grid dd {
+  margin: 0;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.calibration-table {
+  margin-top: var(--s-4);
+}
+
+.tracker-skeleton,
+.companies-skeleton {
+  width: 100%;
+  min-height: 480px;
+  border-radius: var(--r-xl);
+}
+
+.linkedin-import {
+  display: grid;
+  max-width: 280px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-high);
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.linkedin-import input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.linkedin-import small {
+  margin-top: var(--s-1);
+  color: var(--on-surface-variant);
+  font-size: 11px;
+}
+
+.company-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.company-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-4);
+  min-height: 112px;
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  text-decoration: none;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 112px;
+}
+
+.company-monogram {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.company-card h2 {
+  margin: 0;
+  font: 500 16px/1.35 var(--font-sans);
+}
+
+.company-card p,
+.company-card div > span {
+  margin: var(--s-1) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.company-detail-heading > div > a {
+  display: inline-block;
+  margin-bottom: var(--s-2);
+  color: var(--primary);
+  font-size: 13px;
+  text-underline-offset: 3px;
+}
+
+.company-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr);
+  gap: var(--s-8);
+  align-items: start;
+  padding-bottom: var(--s-12);
+}
+
+.company-detail-grid > aside {
+  padding: var(--s-1) var(--s-4) var(--s-4);
+  border-radius: var(--r-xl);
+  background: var(--surface-container-low);
+}
+
+.company-application-list article,
+.company-posting-list article,
+.contact-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.company-posting-list article > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.contact-row a:not(.text-button) {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--primary);
+  font-size: 12px;
+  text-underline-offset: 3px;
+}
+
+.company-notes {
+  display: grid;
+  gap: var(--s-1);
+  margin-top: var(--s-4);
+}
+
+.company-notes small {
+  color: var(--on-surface-faint);
+  font-size: 11px;
+}
+
+.company-facts {
+  display: grid;
+  gap: var(--s-3);
+  margin: var(--s-4) 0 0;
+}
+
+.company-facts dt {
+  color: var(--on-surface-faint);
+  font-size: 11px;
+}
+
+.company-facts dd {
+  margin: var(--s-xxs) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.company-facts a,
+.company-links a {
+  color: var(--primary);
+  text-underline-offset: 3px;
+}
+
+.company-links a {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.company-links a span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-links svg,
+.contact-row svg,
+.company-posting-list svg,
+.company-facts svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 
 body.quick-fill-popout {
   min-width: 320px;
@@ -2323,6 +3061,15 @@ body.quick-fill-popout {
   .session-quick-fill {
     min-height: 480px;
   }
+
+  .tracker-insights,
+  .company-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .company-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 599px) {
@@ -2434,6 +3181,54 @@ body.quick-fill-popout {
 
   .session-summary {
     padding: var(--s-8) var(--s-4);
+  }
+
+  .today-strip {
+    margin-inline: var(--s-4);
+  }
+
+  .tracker-heading,
+  .companies-heading,
+  .company-detail-heading,
+  .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+
+  .view-switch {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .tracker-insights,
+  .company-grid,
+  .calibration-grid,
+  #interview-form,
+  #contact-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tracker-tools,
+  .reminder-row,
+  .interview-list article,
+  .company-application-list article,
+  .company-posting-list article,
+  .contact-row {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tracker-tools {
+    display: grid;
+  }
+
+  .reminder-row > div:last-child {
+    flex-wrap: wrap;
+  }
+
+  .linkedin-import {
+    max-width: 100%;
   }
 
   .inbox-page {

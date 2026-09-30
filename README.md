@@ -210,6 +210,18 @@ captures a plain-text snapshot of the posting. Exercise the complete flow with:
 make audit-phase4
 ```
 
+Tracker provides sortable table and status-board views, automatic seven-day
+follow-ups, interview scheduling with `.ics` export, muted outcome insights,
+and read-only score calibration. Company pages combine posting/application
+history, contacts, notes, links, and protected ATS account metadata. LinkedIn
+CSV imports are parsed in the browser; only company matches are sent to the
+server, while unmatched personal details are discarded. Run the Phase 5
+browser and compact-layout audit with:
+
+```bash
+make audit-phase5
+```
+
 Run the full test suite, including PostgreSQL integration tests, in a disposable
 Postgres 16 container with either Podman or Docker:
 
