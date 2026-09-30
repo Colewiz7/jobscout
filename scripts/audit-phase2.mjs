@@ -9,9 +9,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = JSON.parse(await readFile(join(root, "tests/fixtures/dashboard_2000.seed.json"), "utf8"));
-const profile = join(root, "config/profile.seed.json");
 const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
 const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
+const auditEmptyQuickFill = process.env.JOBSCOUT_AUDIT_EMPTY_QUICK_FILL === "true";
+const profile = join(root, auditEmptyQuickFill ? "tests/fixtures/profile_empty.json" : "config/profile.seed.json");
 const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
 const auditSessionNoProfile = process.env.JOBSCOUT_AUDIT_SESSION_NO_PROFILE === "true";
 const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
@@ -90,7 +91,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
-      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || (auditApplySession && !auditSessionNoProfile) || auditEligibility ? "true" : "false",
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditEmptyQuickFill || (auditApplySession && !auditSessionNoProfile) || auditEligibility ? "true" : "false",
       JOBSCOUT_AI_OVERVIEW_ENABLED: auditOverview ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -362,6 +363,32 @@ try {
       };
     })()`);
   }
+  let emptyQuickFill = null;
+  if (auditEmptyQuickFill) {
+    emptyQuickFill = await cdp.evaluate(`(async () => {
+      const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      document.querySelector('#quick-fill-trigger')?.click();
+      for (let attempt = 0; attempt < 50 && !document.querySelector('[data-quick-fill-setup]:not(:disabled)'); attempt += 1) await wait(50);
+      const setup = document.querySelector('[data-quick-fill-setup]');
+      if (!setup || setup.disabled) return { error: 'blank-field setup was not offered' };
+      setup.click();
+      for (let attempt = 0; attempt < 50 && !document.querySelector('[data-profile-kind="fields"]'); attempt += 1) await wait(50);
+      const first = document.querySelector('[data-profile-kind="fields"][data-profile-index="0"]');
+      if (!first) return { error: 'blank fields were not created' };
+      const before = await fetch('/api/v1/profile').then((response) => response.json()).then((data) => data.profile.fields);
+      first.value = 'Audit Applicant';
+      first.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(900);
+      const saved = await fetch('/api/v1/profile').then((response) => response.json()).then((data) => data.profile.fields);
+      document.querySelector('[data-quick-fill-edit]')?.click();
+      return {
+        count: before.length,
+        blankBeforeEdit: before.every((field) => field.value === ''),
+        savedName: saved.find((field) => field.key === 'name')?.value,
+        copyTargetVisible: [...document.querySelectorAll('.copy-row')].some((row) => row.textContent.includes('Full name')),
+      };
+    })()`);
+  }
   let applySession = null;
   if (auditApplySession) {
     await cdp.call("Emulation.setDeviceMetricsOverride", {
@@ -589,6 +616,7 @@ try {
     copiedList,
     ...(overview ? { overview } : {}),
     ...(quickFill ? { quickFill } : {}),
+    ...(emptyQuickFill ? { emptyQuickFill } : {}),
     ...(applySession ? { applySession } : {}),
     ...(tracker ? { tracker } : {}),
     ...(phase6 ? { phase6 } : {}),
@@ -619,6 +647,7 @@ try {
   if (auditOverview && overview.dividers.some((width) => width !== '1px')) failures.push(`reading pane dividers missing: ${JSON.stringify(overview.dividers)}`);
   if (auditOverview && (!overview.boxedFacts || !overview.colonDivider)) failures.push(`overview boxes or colon-line divider missing: ${JSON.stringify(overview)}`);
   if (quickFill?.error) failures.push(quickFill.error);
+  if (emptyQuickFill?.error || (auditEmptyQuickFill && (emptyQuickFill?.count !== 13 || !emptyQuickFill?.blankBeforeEdit || emptyQuickFill?.savedName !== 'Audit Applicant' || !emptyQuickFill?.copyTargetVisible))) failures.push(`blank Quick-fill setup failed: ${JSON.stringify(emptyQuickFill)}`);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
   if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");
   if (auditQuickFill && quickFill?.passwordManagerLink !== "https://vault.example.invalid/jobseer") failures.push("password-manager link missing");

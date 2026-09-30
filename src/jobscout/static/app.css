@@ -2004,6 +2004,25 @@ dialog[open]::backdrop {
   text-align: center;
 }
 
+.quick-fill-setup {
+  margin: var(--s-4);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+}
+
+.quick-fill-setup h3 {
+  margin: 0 0 var(--s-2);
+  font: 500 15px/1.4 var(--font-sans);
+}
+
+.quick-fill-setup p {
+  margin: 0 0 var(--s-4);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .quick-fill-editor {
   flex: 1;
   padding: var(--s-4) var(--s-4) calc(var(--s-4) + env(safe-area-inset-bottom));

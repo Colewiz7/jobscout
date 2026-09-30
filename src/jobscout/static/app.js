@@ -26,6 +26,21 @@ const DIVIDER_HEIGHT = 32;
 const LAST_VISIT_KEY = "jobseer.inboxLastVisit";
 const allowedStatuses = new Set(["all", "new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"]);
 const allowedSorts = new Set(["score", "newest", "company"]);
+const blankQuickFillFields = [
+  ["name", "Identity", "Full name", true],
+  ["email", "Contact", "Email", true],
+  ["phone", "Contact", "Phone"],
+  ["location", "Contact", "Location"],
+  ["linkedin", "Links", "LinkedIn"],
+  ["github", "Links", "GitHub"],
+  ["portfolio", "Links", "Portfolio"],
+  ["school", "Education", "School"],
+  ["degree", "Education", "Degree"],
+  ["graduation", "Education", "Graduation date"],
+  ["gpa", "Education", "GPA"],
+  ["work_authorization", "Work authorization", "Work authorization"],
+  ["availability", "Availability", "Availability"],
+].map(([key, group, label, pinned], index) => ({ key, group, label, value: "", pinned: Boolean(pinned), sort_order: (index + 1) * 10 }));
 
 const icons = {
   inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 14h5l2 2h2l2-2h5"/></svg>',
@@ -71,6 +86,7 @@ const state = {
   quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
   copiedByJob: new Map(), copiedKey: "", quickFillPopout: null,
   quickFillEdit: false, quickFillSaveState: "", quickFillSaveTimer: null,
+  quickFillSetupSaving: false,
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
@@ -1853,7 +1869,7 @@ function quickFillEditorMarkup() {
   const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
   const account = profile.company_account || {};
   const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
-  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section><section><h3>Story bank</h3>${stories || '<p class="quick-fill-empty">No stories yet.</p>'}</section><div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section><section><h3>Story bank</h3>${stories || '<p class="quick-fill-empty">No stories yet.</p>'}</section><div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
@@ -1879,9 +1895,10 @@ function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
   const passwordManagerLink = passwordManagerUrl
     ? `<a class="quick-fill-password-link" href="${escapeHtml(passwordManagerUrl)}" target="_blank" rel="noopener noreferrer">Open password manager</a>`
     : "";
+  const emptySetup = `<div class="quick-fill-setup"><h3>Set up your copy fields.</h3><p>Start with blank labels for contact, links, education, and availability. No personal details are prefilled.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button></div>`;
   const body = state.quickFillEdit
     ? quickFillEditorMarkup()
-    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || '<p class="quick-fill-empty">No filled fields match this search.</p>'}</div>`;
+    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || (!state.quickFillProfile ? '<p class="quick-fill-empty">Loading fields…</p>' : state.quickFillProfile.fields?.length ? '<p class="quick-fill-empty">No filled fields match this search. Use Edit to add a value.</p>' : emptySetup)}</div>`;
   return `<div class="quick-fill-header"><div><h2>Quick-fill</h2><p>${state.quickFillEdit ? `<span class="quick-fill-save-state">${escapeHtml(state.quickFillSaveState || "Changes save automatically")}</span>` : escapeHtml(status)}</p></div><button class="text-button interactive quick-fill-edit-toggle" type="button" data-quick-fill-edit>${state.quickFillEdit ? "Done" : "Edit"}</button><button class="icon-button interactive" type="button" data-quick-fill-popout aria-label="Pop out Quick-fill" ${popout ? "hidden" : ""}>${icons.external}</button><button class="icon-button interactive" type="button" data-quick-fill-close aria-label="Close Quick-fill" ${embedded ? "hidden" : ""}>${icons.close}</button></div>${body}`;
 }
 
@@ -1890,6 +1907,7 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
     const copy = event.target.closest("[data-copy-index]");
     if (copy) { copyQuickFillItem(Number(copy.dataset.copyIndex)); return; }
     if (event.target.closest("[data-quick-fill-popout]")) { popOutQuickFill(); return; }
+    if (event.target.closest("[data-quick-fill-setup]")) { setupBlankQuickFill(); return; }
     if (event.target.closest("[data-quick-fill-edit]")) {
       state.quickFillEdit = !state.quickFillEdit; renderQuickFill();
       requestAnimationFrame(() => (state.quickFillEdit ? root.querySelector("[data-profile-kind]") : root.querySelector("[data-copy-index]"))?.focus());
@@ -1970,6 +1988,30 @@ async function persistQuickFillProfile(profile) {
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Quick-fill could not be saved.");
   return (await response.json()).profile;
+}
+
+async function setupBlankQuickFill() {
+  if (!state.quickFillEnabled || !state.quickFillProfile || state.quickFillProfile.fields?.length || state.quickFillSetupSaving || state.quickFillContextPendingKey) return;
+  state.quickFillSetupSaving = true;
+  setQuickFillSaveState("Saving…");
+  try {
+    const context = profileContextDocument();
+    const saved = await persistQuickFillProfile({ ...profileDocument(), fields: cloneJson(blankQuickFillFields) });
+    Object.assign(saved, context);
+    state.quickFillProfile = saved;
+    state.quickFillSavedProfile = cloneJson(saved);
+    state.quickFillEdit = true;
+    setQuickFillSaveState("Saved automatically");
+    renderQuickFill();
+    renderSessionQuickFill();
+    requestAnimationFrame(() => document.querySelector("#quick-fill-sheet [data-profile-kind], #session-quick-fill [data-profile-kind]")?.focus());
+    showSnackbar("Blank Quick-fill fields are ready. Add only details you want to reuse.");
+  } catch (error) {
+    setQuickFillSaveState("Setup failed");
+    showSnackbar(error instanceof Error ? error.message : "Quick-fill setup failed. Retry.");
+  } finally {
+    state.quickFillSetupSaving = false;
+  }
 }
 
 async function persistQuickFillContext(context, job) {
