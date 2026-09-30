@@ -132,6 +132,41 @@ def test_long_export_control_sentence_keeps_the_explicit_requirement():
     assert any("must be a U.S. citizen" in item["text"] for item in excerpts)
 
 
+def test_location_ignores_travel_and_generic_remote_benefit():
+    sections = [
+        {"key": "benefits", "text": "Our employees may find an opportunity for remote work through the Excellus Talent Acquisition team."},
+        {"key": "requirements", "text": "Ability to travel across the Health Plan service area."},
+        {"key": "logistics", "text": "This position is based in Rochester, New York."},
+        {"key": "role", "text": "You will be required to work fully on-site."},
+    ]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": json.dumps({"items": [
+            {"id": 2, "terms": ["Talent Acquisition team"]},
+            {"id": 3, "terms": ["travel across"]},
+        ]})}).encode())
+
+    items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(sections)
+    location = [term for item in items if item["kind"] == "location" for term in item["terms"]]
+    assert "based in Rochester, New York" in location
+    assert "fully on-site" in location
+    assert not any("remote" in term or "travel" in term or "Talent" in term for term in location)
+
+
+def test_remote_access_and_hybrid_cloud_are_not_work_modes():
+    sections = [{"key": "responsibilities", "text":
+                 "Support remote access and hybrid cloud infrastructure for the engineering team."}]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": '{"items":[]}'}).encode())
+
+    items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(sections)
+    assert any(item["kind"] == "work" for item in items)
+    assert not any(item["kind"] == "location" for item in items)
+
+
 def test_caci_nike_and_audax_examples_surface_decision_facts():
     examples = [
         (

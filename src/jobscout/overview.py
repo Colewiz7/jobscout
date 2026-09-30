@@ -89,6 +89,32 @@ def _explicit_skills(excerpts: list[dict[str, str]]) -> list[str]:
     return found[:12]
 
 
+def _location_terms(section: str, source: str) -> list[str]:
+    """Use only role-specific work mode or location phrases, never travel/HR boilerplate."""
+    if section in {"about", "benefits", "nice_to_have"}:
+        return []
+    patterns = (
+        (r"\b(?:not |no |fully |entirely |primarily |mostly |partially )?"
+         r"(?:on[- ]site|onsite)(?: work| schedule| position| role| only)?\b", re.I),
+        (r"\b(?:not |no |fully |entirely |primarily |mostly |partially )?"
+         r"remote(?:[- ]first| work| schedule| position| role| job| only)\b", re.I),
+        (r"\b(?:fully|entirely|primarily|mostly|partially) remote\b", re.I),
+        (r"\b(?:partially |mostly )?hybrid(?: work| schedule| position| role| arrangement| model)\b", re.I),
+        (r"\b(?i:hybrid|remote) in [A-Z][A-Za-z.]+(?:,?\s+[A-Z][A-Za-z.]+){0,3}\b", 0),
+        (r"\b(?:work mode|work arrangement|location)\s*:\s*(?:remote|hybrid|on[- ]site|onsite)\b", re.I),
+        (r"\b(?i:willingness to work|(?:required|expected) to work|you will work|based|located) in "
+         r"[A-Z][A-Za-z.]+(?:,?\s+[A-Z][A-Za-z.]+){0,4}\b", 0),
+        (r"\brelocation assistance (?:provided|available|offered)\b", re.I),
+    )
+    found: list[str] = []
+    for pattern, flags in patterns:
+        for match in re.finditer(pattern, source, flags):
+            term = match.group().strip()
+            if term.casefold() not in {existing.casefold() for existing in found}:
+                found.append(term)
+    return found[:3]
+
+
 def candidates(sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
     """Bound the model input to source-exact posting excerpts."""
     result: list[dict[str, str]] = []
@@ -150,7 +176,7 @@ def _excerpt_kind(section: str, text: str) -> str | None:
         return "pay"
     if re.search(r"\b(?:\d+[ -]?(?:to|[-–])[ -]?\d+[ -]?weeks?|\d+[ -]?weeks?|start(?:s|ing)? (?:in|on)|begin(?:s|ning)? in|through (?:june|august|december)|spring 20\d\d|summer 20\d\d|fall 20\d\d)\b", lower):
         return "dates"
-    if re.search(r"\b(?:remote|hybrid|on-site|onsite|in office|relocation|willingness to work in |based in |work location|travel)\b", lower):
+    if _location_terms(section, text):
         return "location"
     if section == "nice_to_have" or re.search(r"\b(?:preferred|nice to have|bonus qualification)\b", lower):
         return "preferred"
@@ -241,7 +267,8 @@ class OverviewService:
                 kind = _excerpt_kind(source["section"], source["text"])
                 if kind and len(groups[kind]) < limits[kind] and not any(item["text"] == source["text"] for item in groups[kind]):
                     proposed = model_terms.get(index, [])
-                    terms = [_exact_term(source["text"], term) for term in proposed] if isinstance(proposed, list) else []
+                    terms = (_location_terms(source["section"], source["text"]) if kind == "location"
+                             else [_exact_term(source["text"], term) for term in proposed] if isinstance(proposed, list) else [])
                     terms = list(dict.fromkeys(term for term in terms if term))[:3]
                     groups[kind].append({"kind": kind, "text": source["text"], "terms": terms or [_compact_fallback(source["text"], kind)]})
             items = [
