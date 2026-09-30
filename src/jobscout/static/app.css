@@ -2366,6 +2366,18 @@ dialog[open]::backdrop {
   overflow-wrap: break-word;
 }
 
+.session-review .overview-cell {
+  background: var(--surface-container);
+}
+
+.session-review .overview-cell[data-overview-kind="work"],
+.session-review .overview-cell[data-overview-kind="skills"],
+.session-review .overview-cell[data-overview-kind="required"],
+.session-review .overview-cell[data-overview-kind="preferred"],
+.session-review .overview-cell[data-overview-kind="dates"] {
+  grid-column: 1 / -1;
+}
+
 .session-review > h2 {
   margin: 0 0 var(--s-6);
   font: 500 18px/1.35 var(--font-sans);
@@ -3758,12 +3770,15 @@ body.quick-fill-popout {
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--s-5) var(--s-8);
-  margin: var(--s-5) 0 0;
+  gap: var(--s-3);
+  margin: var(--s-6) 0 0;
 }
 
 .overview-cell {
   min-width: 0;
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
 }
 
 .overview-cell dt {
@@ -3778,6 +3793,13 @@ body.quick-fill-popout {
   font-size: 15px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.overview-terms {
+  display: grid;
+  gap: var(--s-1);
+  margin: 0;
+  padding-left: var(--s-6);
 }
 
 @media (max-width: 720px) {
@@ -3810,6 +3832,12 @@ body.quick-fill-popout {
 
 .parsed-section > div p {
   margin: 0 0 var(--s-3);
+}
+
+.parsed-section > div p.posting-colon-line {
+  margin-top: var(--s-6);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--outline-variant);
 }
 
 .parsed-section > div p:last-child {

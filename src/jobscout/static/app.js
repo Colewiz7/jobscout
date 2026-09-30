@@ -408,7 +408,7 @@ function descriptionMarkup(job, { compact = false } = {}) {
   const parsed = sorted.map((section) => {
     const seen = new Set();
     const lines = String(section.text).split(/\n+/).map((line) => line.trim()).filter(Boolean);
-    const content = lines.map((line) => `<p>${highlightPostingText(line.replace(/^[-*•]\s*/, ""), seen, usedHighlights)}</p>`).join("");
+    const content = lines.map((line) => `<p${line.includes(":") ? ' class="posting-colon-line"' : ""}>${highlightPostingText(line.replace(/^[-*•]\s*/, ""), seen, usedHighlights)}</p>`).join("");
     const title = section.title && section.title !== "Overview" ? section.title : labels[section.key] || "Details";
     return `<details class="parsed-section" data-section-key="${escapeHtml(section.key)}" ${!compact && ["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
   }).join("");
@@ -428,7 +428,11 @@ function overviewMarkup(job) {
   const groups = Object.entries(labels).map(([kind, label]) => {
     const items = entry.items.filter((item) => item.kind === kind);
     const terms = [...new Set(items.flatMap((item) => Array.isArray(item.terms) && item.terms.length ? item.terms : [item.text]).filter(Boolean))];
-    return terms.length ? `<div class="overview-cell"><dt>${label}</dt><dd>${terms.map(escapeHtml).join(", ")}</dd></div>` : "";
+    const listed = ["work", "required", "preferred", "dates"].includes(kind) && terms.length > 1;
+    const value = listed
+      ? `<ul class="overview-terms">${terms.map((term) => `<li>${escapeHtml(term)}</li>`).join("")}</ul>`
+      : terms.map(escapeHtml).join(", ");
+    return terms.length ? `<div class="overview-cell" data-overview-kind="${kind}"><dt>${label}</dt><dd>${value}</dd></div>` : "";
   }).join("");
   return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Only facts stated in the posting</span></div><dl class="overview-grid">${groups}</dl></section>`;
 }

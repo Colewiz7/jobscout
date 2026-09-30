@@ -144,8 +144,11 @@ try {
             { kind: "location", text: "Hybrid in Boston", terms: ["Hybrid", "Boston"] },
           ] }), { headers: { "Content-Type": "application/json" } }));
           if (url.endsWith("/description")) return Promise.resolve(new Response(JSON.stringify({ description: {
-            description_text: "Build tools with Claude and Codex using Python. Hybrid in Boston.",
-            sections: [{ key: "responsibilities", title: "Responsibilities", text: "Build tools with Claude and Codex using Python. Hybrid in Boston." }],
+            description_text: "Responsibilities:\\nBuild tools with Claude and Codex using Python. Hybrid in Boston.",
+            sections: [
+              { key: "responsibilities", title: "Responsibilities", text: "Responsibilities:\\nBuild tools with Claude and Codex using Python. Hybrid in Boston." },
+              { key: "requirements", title: "Requirements", text: "Python is required.\\nClear communication matters." },
+            ],
           } }), { headers: { "Content-Type": "application/json" } }));
           return originalFetch(input, options);
         };
@@ -192,6 +195,8 @@ try {
           return element ? getComputedStyle(element).borderTopWidth : 'missing';
         }),
         customField: Boolean(document.querySelector('#highlight-terms')),
+        boxedFacts: (() => { const style = getComputedStyle(grid?.querySelector('.overview-cell')); return style.paddingTop === '16px' && style.backgroundColor !== 'rgba(0, 0, 0, 0)'; })(),
+        colonDivider: (() => { const line = document.querySelector('.posting-colon-line'); return line?.textContent.trim() === 'Responsibilities:' && getComputedStyle(line).borderTopWidth === '1px'; })(),
       };
     })()`);
   }
@@ -389,6 +394,7 @@ try {
       reviewWidth: Math.round(document.querySelector('.session-review')?.getBoundingClientRect().width || 0),
       previewItems: document.querySelectorAll('.session-requirements li').length,
       expandedPostingSections: document.querySelectorAll('.session-review .parsed-section[open]').length,
+      overviewWorkSpans: (() => { const cell = document.querySelector('.session-review .overview-cell[data-overview-kind="work"]'); return cell ? getComputedStyle(cell).gridColumnEnd === '-1' : false; })(),
       filledActions: document.querySelectorAll('.apply-session .filled-button').length,
       routeHeight: Math.round(document.querySelector('#route-view').getBoundingClientRect().height),
       jobVisible: (() => { const r = document.querySelector('.session-job')?.getBoundingClientRect(); return Boolean(r && r.top < innerHeight && r.bottom > 64); })(),
@@ -611,6 +617,7 @@ try {
   if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 48)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
   if (auditOverview && overview.dividers.some((width) => width !== '1px')) failures.push(`reading pane dividers missing: ${JSON.stringify(overview.dividers)}`);
+  if (auditOverview && (!overview.boxedFacts || !overview.colonDivider)) failures.push(`overview boxes or colon-line divider missing: ${JSON.stringify(overview)}`);
   if (quickFill?.error) failures.push(quickFill.error);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
   if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");
@@ -625,6 +632,7 @@ try {
   if (auditApplySession && auditSessionNoProfile && !applySession?.session.postingReview) failures.push("production session had no posting review");
   if (auditApplySession && auditSessionNoProfile && (applySession?.session.reviewWidth < 480 || applySession?.session.previewItems > 4 || applySession?.session.expandedPostingSections)) failures.push(`production session is not compact: ${JSON.stringify(applySession?.session)}`);
   if (auditApplySession && auditSessionNoProfile && !applySession?.session.readFullOpens) failures.push("requirements preview did not open the full section");
+  if (auditApplySession && auditSessionNoProfile && auditOverview && !applySession?.session.overviewWorkSpans) failures.push("session overview responsibilities did not span the review pane");
   if (auditApplySession && applySession?.session.filledActions !== 1) failures.push("application session has more than one filled action");
   if (auditApplySession && (!applySession?.prompt.visible || applySession?.prompt.resumeOptions < (auditSessionNoProfile ? 1 : 2))) failures.push("submission prompt or resume selector missing");
   if (auditApplySession && applySession?.prompt.filledActions !== 1) failures.push("submission prompt has more than one filled action");
