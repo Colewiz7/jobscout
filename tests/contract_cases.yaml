@@ -57,6 +57,8 @@ titles:
   - ["Smart Buildings Fire & Life Safety Solutions Sales Intern", false]
   - ["2027 Enterprise Finance Intern", false]
   - ["Ratings Analytical Intern - Americas", false]
+  - ["Platform Engineering Graduate Intern", false]
+  - ["Systems Engineer Intern 🎓", false]
 
 # The level, where a feed publishes schema.org employmentType. A hint, not a
 # verdict. [title, employmentType, expected]
@@ -88,3 +90,25 @@ locations:
   - ["Toronto, Ontario", false]
   - ["Bangalore, India", false]
   - ["OK COMPUTER", false]
+  - ["4 Locations; Melbourne AUS; Perth, Australia; Remote", false]
+  - ["Austin, TX; Remote", true]
+
+postings:
+  - source: workday
+    company: GE Vernova
+    title: 'DevSecOps Intern (Energy Transition): Nov/Dec 2026 intake'
+    location: '4 Locations; Melbourne AUS; Perth, Australia; Remote'
+    remote: true
+    expected: false
+    stale_term: true
+  - source: workday
+    company: Booz Allen Hamilton
+    title: 'University, 2026 Fall Technologist Intern'
+    location: 'Honolulu, HI'
+    expected: false
+    stale_term: true
+  - source: workday
+    company: Example
+    title: 'Platform Engineering Intern - Spring 2027'
+    location: 'Rochester, NY'
+    expected: true

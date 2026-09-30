@@ -1,5 +1,5 @@
 """Dedupe keys: provider id when we can get one, hash when we cannot."""
-from jobscout.models import Posting, normalise, provider_id_from_url
+from jobscout.models import Posting, normalise, provider_id_from_url, workday_req_from_url
 
 
 def _posting(**kwargs):
@@ -33,6 +33,12 @@ def test_provider_id_from_lever_and_ashby():
 def test_unknown_ats_falls_back_to_hash():
     key = _posting(url="https://careers-gdms.icims.com/jobs/74880/job").dedupe_key
     assert key.startswith("sha256:")
+
+
+def test_workday_req_survives_site_locale_and_rewritten_title():
+    simplify = "https://cigna.wd5.myworkdayjobs.com/cignacareers/job/Bloomfield-CT/Foo_26009533"
+    board = "https://cigna.wd5.myworkdayjobs.com/en-US/cignacareers/job/Bloomfield-CT/Bar_26009533"
+    assert workday_req_from_url(simplify) == workday_req_from_url(board) == "workday:cigna:26009533"
 
 
 def test_same_job_on_two_hosts_shares_a_key():

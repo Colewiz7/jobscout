@@ -93,7 +93,7 @@ def test_dashboard_serves_shell_and_history_routes(dashboard):
     assert "default-src 'self'" in shell.headers["content-security-policy"]
     assert nested.status_code == 200
     assert nested.text == shell.text
-    assert "/static/icons/jobseer-fan-32.png" in shell.text
+    assert '<link rel="icon" href="/static/icons/jobseer-fan-transparent-112.png?v=2"' in shell.text
     assert "/static/icons/jobseer-fan-transparent-112.png" in shell.text
     icon = httpx.get(f"{base}/static/icons/jobseer-fan-32.png", timeout=2)
     assert icon.status_code == 200
@@ -498,6 +498,8 @@ def test_queue_writes_require_csrf(dashboard):
         timeout=2,
     )
     session = httpx.post(f"{base}/api/v1/queue/session", headers=AUTH, timeout=2)
+    check = httpx.post(f"{base}/api/v1/queue/check", headers=AUTH,
+                       json={"dedupe_key": "demo:1"}, timeout=2)
     applied = httpx.post(
         f"{base}/api/v1/applications/demo%3A1/applied",
         headers=AUTH,
@@ -506,7 +508,45 @@ def test_queue_writes_require_csrf(dashboard):
     )
     assert reorder.status_code == 403
     assert session.status_code == 403
+    assert check.status_code == 403
     assert applied.status_code == 403
+
+
+def test_session_starts_without_checking_every_job_then_checks_current(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        client.patch("/api/v1/jobs/demo%3A1", headers={"X-CSRF-Token": csrf},
+                     json={"status": "queued", "notes": ""})
+        queued = next(job for job in store.rows if job["dedupe_key"] == "demo:1")
+        queued["liveness_checked_at"] = None
+        session = client.post("/api/v1/queue/session", headers={"X-CSRF-Token": csrf})
+        assert session.status_code == 201
+        assert queued["liveness_checked_at"] is None
+        checked = client.post("/api/v1/queue/check", headers={"X-CSRF-Token": csrf},
+                              json={"dedupe_key": "demo:1"})
+        assert checked.status_code == 200
+        assert checked.json()["status"] == "live"
+        assert queued["liveness_checked_at"] is not None
+    finally:
+        client.close()
+
+
+def test_session_check_archives_closed_current_job(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        client.patch("/api/v1/jobs/demo%3A1", headers={"X-CSRF-Token": csrf},
+                     json={"status": "queued", "notes": ""})
+        queued = next(job for job in store.rows if job["dedupe_key"] == "demo:1")
+        queued["url"] = ""
+        checked = client.post("/api/v1/queue/check", headers={"X-CSRF-Token": csrf},
+                              json={"dedupe_key": "demo:1"})
+        assert checked.status_code == 200
+        assert checked.json()["status"] == "closed"
+        assert queued["status"] == "archived"
+    finally:
+        client.close()
 
 
 def test_closed_posting_is_archived_instead_of_entering_queue(dashboard):

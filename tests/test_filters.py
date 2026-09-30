@@ -48,6 +48,10 @@ def test_title_rules(title, expected, config):
     ("Multiple Locations", True),
     ("CA-ON-Toronto", False),             # dash-delimited but not a US state
     ("Toronto, Ontario", False),
+    ("Melbourne AUS; Perth, Australia; Remote", False),
+    ("4 Locations; Melbourne AUS; Perth, Australia; Remote", False),
+    ("Austin, TX; Remote", True),
+    ("Remote - US; Melbourne AUS", True),
     ("OK COMPUTER", False),               # undelimited capitals are not a state
 ])
 def test_location_rules(location, expected, config):
@@ -57,6 +61,7 @@ def test_location_rules(location, expected, config):
 def test_remote_flag_still_respects_the_deny_list(config):
     assert location_matches("Remote (Canada)", config, remote=True) is False
     assert location_matches("Remote", config, remote=True) is True
+    assert location_matches("Melbourne AUS; Perth, Australia; Remote", config, remote=True) is False
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -64,6 +69,8 @@ def test_remote_flag_still_respects_the_deny_list(config):
     ("Electrical Engineer Internship (Fall Term 2026)", {"fall 2026"}),
     ("Software Engineering Intern (Summer '27)", {"summer 2027"}),
     ("Autumn 2027", {"fall 2027"}),
+    ("2026 Fall Technologist Intern", {"fall 2026"}),
+    ("Nov/Dec 2026 intake", {"fall 2026"}),
     ("Software Engineering Intern", set()),
 ])
 def test_extract_terms(text, expected):
@@ -96,6 +103,28 @@ def test_board_without_a_named_season_passes_by_default(config):
 def test_board_with_the_wrong_named_season_is_rejected(config):
     posting = _p(source="greenhouse", title="Cloud Infrastructure Intern (Fall Term 2026)")
     assert keep(posting, config) is False
+    assert keep(_p(source="workday", title="University, 2026 Fall Technologist Intern"), config) is False
+
+
+def test_ge_vernova_foreign_remote_and_stale_intake(config):
+    from jobscout.filters import score_breakdown
+    posting = _p(source="workday", company="GE Vernova",
+                 title="DevSecOps Intern (Energy Transition): Nov/Dec 2026 intake",
+                 location="4 Locations; Melbourne AUS; Perth, Australia; Remote", remote=True)
+    assert keep(posting, config) is False
+    assert score_breakdown({"title": posting.title, "terms": ""}, config)[1]["stale_term"] == -70
+
+
+@pytest.mark.parametrize("title", [
+    "Platform Engineering Graduate Internship", "Cloud Intern - Master's",
+    "Cloud Intern - Masters", "Systems Engineering PhD Intern", "Systems Engineer Intern 🎓",
+])
+def test_graduate_only_titles_do_not_pass(config, title):
+    assert keep(_p(title=title), config) is False
+
+
+def test_testnisc_board_dropped(config):
+    assert keep(_p(source="greenhouse", board="testnisc"), config) is False
 
 
 def test_board_strict_mode_requires_the_season(config):
@@ -120,7 +149,23 @@ def test_rank_collapses_one_job_posted_per_city(config):
     rows = [_row("Booz Allen Hamilton",
                  f"University - 2027 Summer Games Systems Engineer Intern - {c}", 5)
             for c in cities]
-    assert len(rank(rows, config)) == 1
+    ranked = rank(rows, config)
+    assert len(ranked) == 1
+    assert len(ranked[0]["duplicate_keys"]) == len(rows)
+
+
+def test_rank_collapses_simplify_and_direct_workday_by_req(config):
+    from jobscout.filters import rank
+
+    rows = [
+        {**_row("Cigna Group", "Data & Analytics Engineering Intern", 1),
+         "url": "https://cigna.wd5.myworkdayjobs.com/cignacareers/job/Bloomfield-CT/Foo_26009533"},
+        {**_row("Cigna", "Technology Development Program - Data & Analytics Engineering Internship", 1),
+         "url": "https://cigna.wd5.myworkdayjobs.com/en-US/cignacareers/job/Bloomfield-CT/Bar_26009533"},
+    ]
+    ranked = rank(rows, config)
+    assert len(ranked) == 1
+    assert len(ranked[0]["duplicate_keys"]) == 2
 
 
 def test_rank_puts_the_real_role_above_the_vague_one(config):

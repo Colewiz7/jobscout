@@ -215,7 +215,8 @@ def cmd_run(args) -> int:
                 if not notify.push(fetcher, base, topic, token, title, body):
                     return 5
 
-            database.mark_notified(conn, [r["dedupe_key"] for r in sending])
+            database.mark_notified(conn, [key for row in sending
+                                           for key in row.get("duplicate_keys", [row["dedupe_key"]])])
             log.info(
                 "notified %d matches, %d held for the next run", len(sending), len(held)
             )

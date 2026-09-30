@@ -13,6 +13,7 @@ const profile = join(root, "config/profile.seed.json");
 const chromium = process.env.CHROMIUM || "/usr/bin/chromium";
 const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
 const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
+const auditSessionNoProfile = process.env.JOBSCOUT_AUDIT_SESSION_NO_PROFILE === "true";
 const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
 const auditEligibility = process.env.JOBSCOUT_AUDIT_ELIGIBILITY === "true";
 const auditOverview = process.env.JOBSCOUT_AUDIT_OVERVIEW === "true";
@@ -89,7 +90,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
-      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditApplySession || auditEligibility ? "true" : "false",
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || (auditApplySession && !auditSessionNoProfile) || auditEligibility ? "true" : "false",
       JOBSCOUT_AI_OVERVIEW_ENABLED: auditOverview ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -184,6 +185,12 @@ try {
         highlightCategories: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.className),
         highlightKey: [...document.querySelectorAll('.highlight-key-item')].map((item) => item.textContent),
         brandSize: document.querySelector('.brand-mark img')?.getBoundingClientRect().width || 0,
+        dividers: ['.job-detail-body', '.job-detail-body > .posting-sections',
+          '.job-detail-body > [aria-labelledby="posting-details-heading"]',
+          '.job-detail-body > [aria-labelledby="activity-heading"]'].map((selector) => {
+          const element = document.querySelector(selector);
+          return element ? getComputedStyle(element).borderTopWidth : 'missing';
+        }),
         customField: Boolean(document.querySelector('#highlight-terms')),
       };
     })()`);
@@ -378,6 +385,7 @@ try {
     const session = await cdp.evaluate(`(() => ({
       navHidden: getComputedStyle(document.querySelector('.nav-rail')).display === 'none',
       quickFillEmbedded: Boolean(document.querySelector('#session-quick-fill .copy-row')),
+      postingReview: Boolean(document.querySelector('.session-review h2')),
       filledActions: document.querySelectorAll('.apply-session .filled-button').length,
     }))()`);
     await cdp.evaluate(`(() => {
@@ -589,6 +597,7 @@ try {
   if (auditOverview && (overview.columns !== 2 || !overview.labels.includes("Skills") || !overview.values.includes("Python, leadership"))) failures.push(`overview fact grid failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 56)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
+  if (auditOverview && overview.dividers.some((width) => width !== '1px')) failures.push(`reading pane dividers missing: ${JSON.stringify(overview.dividers)}`);
   if (quickFill?.error) failures.push(quickFill.error);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
   if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");
@@ -598,9 +607,10 @@ try {
   if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
   if (auditApplySession && applySession?.queue.before[0] === applySession?.queue.after[0]) failures.push("queue reorder did not persist in the UI");
   if (auditApplySession && !applySession?.session.navHidden) failures.push("application session did not hide app chrome");
-  if (auditApplySession && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
+  if (auditApplySession && !auditSessionNoProfile && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
+  if (auditApplySession && auditSessionNoProfile && !applySession?.session.postingReview) failures.push("production session had no posting review");
   if (auditApplySession && applySession?.session.filledActions !== 1) failures.push("application session has more than one filled action");
-  if (auditApplySession && (!applySession?.prompt.visible || applySession?.prompt.resumeOptions < 2)) failures.push("submission prompt or resume selector missing");
+  if (auditApplySession && (!applySession?.prompt.visible || applySession?.prompt.resumeOptions < (auditSessionNoProfile ? 1 : 2))) failures.push("submission prompt or resume selector missing");
   if (auditApplySession && applySession?.prompt.filledActions !== 1) failures.push("submission prompt has more than one filled action");
   if (auditApplySession && applySession?.compactSessionOverflow) failures.push("compact application session overflowed horizontally");
   if (auditApplySession && !applySession?.summary.includes("applied to 1 role")) failures.push("session summary did not record the application");

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from .config import Config, boundary_pattern
-from .models import Posting
+from .models import Posting, normalise, workday_req_from_url
 
 # "Austin, TX" / "Manassas, VA (HQ)" / Workday's "US-NY-Rochester". A code only
 # counts when a comma or dash actually delimits it, so a title full of capitals
@@ -32,6 +32,11 @@ _STATE_NAMES = boundary_pattern(
 _TERM = re.compile(
     r"\b(spring|summer|fall|autumn|winter)(?:\s+term)?\s*'?(\d{2,4})\b", re.I
 )
+_YEAR_FIRST_TERM = re.compile(
+    r"\b(20\d{2})\s+(spring|summer|fall|autumn|winter)\b", re.I
+)
+_INTAKE_MONTH = re.compile(r"\b(nov(?:ember)?|dec(?:ember)?)(?:\s*/\s*(?:nov(?:ember)?|dec(?:ember)?))?\s+(20\d{2})\s+intake\b", re.I)
+_GRADUATE_ONLY = re.compile(r"\bgraduate\b|\bmasters?\b|master['\u2019]s|\bph\.?d\.?\b|\U0001f393", re.I)
 
 
 def extract_terms(text: str) -> set[str]:
@@ -44,6 +49,10 @@ def extract_terms(text: str) -> set[str]:
         if len(year) == 2:
             year = "20" + year
         out.add(f"{season} {year}")
+    for year, season in _YEAR_FIRST_TERM.findall(text or ""):
+        out.add(f"{('fall' if season.lower() == 'autumn' else season.lower())} {year}")
+    for month, year in _INTAKE_MONTH.findall(text or ""):
+        out.add(f"{'fall' if month.lower().startswith('nov') else 'winter'} {year}")
     return out
 
 
@@ -68,7 +77,7 @@ def level_matches(title: str, config: Config) -> bool:
 
 def title_matches(title: str, config: Config) -> bool:
     """Infrastructure-shaped AND internship-shaped."""
-    return infra_matches(title, config) and level_matches(title, config)
+    return not _GRADUATE_ONLY.search(title or "") and infra_matches(title, config) and level_matches(title, config)
 
 
 # Schema.org employmentType, where a source publishes one.
@@ -84,6 +93,8 @@ def posting_level_matches(posting: Posting, config: Config) -> bool:
     on their own, and a FULL_TIME label on a posting titled Intern is a
     mislabelled feed rather than a full-time job, so the title still carries.
     """
+    if _GRADUATE_ONLY.search(posting.title or ""):
+        return False
     by_title = level_matches(posting.title, config)
     label = (posting.employment_type or "").strip().upper()
     if label in _LEVEL_IS_PROOF:
@@ -118,16 +129,23 @@ def _has_state_code(segment: str) -> bool:
 
 
 def location_matches(location: str, config: Config, remote: bool = False) -> bool:
-    """US or remote. Any qualifying segment carries the whole cell."""
+    """US locations qualify; bare Remote cannot launder foreign locations."""
     location = location or ""
     denied = config.location_deny.search if config.location_deny else lambda _s: None
     allowed = config.location_allow_extra.search if config.location_allow_extra else lambda _s: None
 
-    if remote and not denied(location):
-        return True
-    for segment in re.split(r"[;\n]", location):
+    segments = [part.strip() for part in re.split(r"[;\n]", location) if part.strip()]
+    bare_remote = re.compile(r"^remote$", re.I)
+    explicit_us = re.compile(r"\b(?:US|USA|U\.S\.|United States)\b", re.I)
+    for segment in segments:
         segment = segment.strip()
         if not segment or denied(segment):
+            continue
+        if bare_remote.fullmatch(segment):
+            continue
+        if location_is_collapsed(segment) and len(segments) > 1:
+            continue
+        if "remote" in segment.lower() and not explicit_us.search(segment):
             continue
         if _has_state_code(segment):
             return True
@@ -135,6 +153,14 @@ def location_matches(location: str, config: Config, remote: bool = False) -> boo
             return True
         if allowed(segment):
             return True
+    if remote or any(bare_remote.fullmatch(part) for part in segments):
+        others = [part for part in segments if not bare_remote.fullmatch(part)]
+        if not others:
+            return True
+        return all(not denied(part) and (
+            _has_state_code(part) or bool(_STATE_NAMES and _STATE_NAMES.search(part))
+            or bool(explicit_us.search(part))
+        ) for part in others)
     return False
 
 
@@ -208,7 +234,7 @@ _TRAILING_PLACE = re.compile(r"\s*[-\u2013\u2014,]\s*[A-Za-z .'\u2019]+,\s*[A-Z]
 
 
 def _title_key(title: str) -> str:
-    return re.sub(r"\s+", " ", _TRAILING_PLACE.sub("", title or "")).strip().lower()
+    return normalise(_TRAILING_PLACE.sub("", title or ""))
 
 
 def score_breakdown(row, config: Config) -> tuple[int, dict]:
@@ -258,20 +284,27 @@ def rank(rows, config: Config) -> list:
     Booz Allen posts a single co-op once per city, eleven rows for one job,
     which would fill the notification budget on its own.
     """
-    best: dict[tuple[str, str], tuple[int, dict]] = {}
+    best: dict[object, tuple[int, dict]] = {}
+    members: dict[object, set[str]] = {}
     for row in rows:
-        key = ((row.get("company") or "").lower(), _title_key(row.get("title")))
+        key = workday_req_from_url(str(row.get("url") or "")) or (
+            normalise(row.get("company") or ""), _title_key(row.get("title"))
+        )
+        members.setdefault(key, set()).add(str(row.get("dedupe_key") or ""))
         points = score(row, config)
         if key not in best or points > best[key][0]:
             best[key] = (points, row)
     ordered = sorted(
-        best.values(),
-        key=lambda pair: (-pair[0], pair[1].get("age_days") if pair[1].get("age_days") is not None else 999),
+        best.items(),
+        key=lambda pair: (-pair[1][0], pair[1][1].get("age_days") if pair[1][1].get("age_days") is not None else 999),
     )
-    return [row for _, row in ordered]
+    return [{**row, "duplicate_keys": sorted(members[key] - {""})}
+            for key, (_, row) in ordered]
 
 
 def keep(posting: Posting, config: Config) -> bool:
+    if posting.source == "greenhouse" and (posting.board or "").lower() == "testnisc":
+        return False
     if not infra_matches(posting.title, config):
         return False
     if not posting_level_matches(posting, config):

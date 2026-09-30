@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import re
+import urllib.parse
 
 # Providers whose job id is stable enough to dedupe on directly. A posting that
 # appears both in the Simplify README and on the company's own board is the
@@ -71,6 +72,17 @@ def provider_id_from_url(url: str) -> str | None:
         if match:
             return f"{provider}:{match.group(1)}"
     return None
+
+
+def workday_req_from_url(url: str) -> str | None:
+    """Stable requisition identity across Workday site names and locales."""
+    parts = urllib.parse.urlsplit(url or "")
+    match = re.fullmatch(r"([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com", parts.hostname or "")
+    if not match or "/job/" not in parts.path:
+        return None
+    ending = parts.path.rstrip("/").rsplit("/", 1)[-1]
+    req = re.search(r"_([A-Za-z]{0,3}\d[A-Za-z0-9-]*)$", ending)
+    return f"workday:{match.group(1)}:{req.group(1).lower()}" if req else None
 
 
 @dataclasses.dataclass(frozen=True)
