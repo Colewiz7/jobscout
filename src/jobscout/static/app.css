@@ -837,7 +837,7 @@ dialog[open]::backdrop {
 
 .list-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px 40px;
   align-items: center;
   gap: var(--s-2);
 }
@@ -849,8 +849,13 @@ dialog[open]::backdrop {
   gap: var(--s-1);
 }
 
-.list-tools > .icon-button {
+.list-tools > [data-open-filters] {
   grid-column: 2;
+  grid-row: 2;
+}
+
+.list-tools > [data-copy-list] {
+  grid-column: 3;
   grid-row: 2;
 }
 
@@ -973,6 +978,7 @@ dialog[open]::backdrop {
 }
 
 .job-logo {
+  position: relative;
   display: grid;
   width: 32px;
   height: 32px;
@@ -982,6 +988,34 @@ dialog[open]::backdrop {
   color: var(--on-surface-variant);
   font-size: 12px;
   font-weight: 500;
+  overflow: hidden;
+}
+
+.job-logo img,
+.company-monogram img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  outline: 1px solid color-mix(in srgb, var(--on-surface) 6%, transparent);
+  outline-offset: -1px;
+  pointer-events: none;
+}
+
+.job-logo.has-logo,
+.company-monogram.has-logo {
+  background: var(--surface-container-high);
+}
+
+.job-logo.logo-needs-light,
+.company-monogram.logo-needs-light {
+  background: var(--on-surface);
+}
+
+.logo-initials {
+  position: relative;
+  z-index: 0;
 }
 
 .job-row-copy,
@@ -1160,12 +1194,29 @@ dialog[open]::backdrop {
 }
 
 .reading-pane {
+  view-transition-name: job-reading;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-top: 200px;
   background: var(--surface);
+}
+
+::view-transition-old(job-reading) {
+  animation: job-reading-out var(--d-short3) var(--ease-standard-acc) both;
+}
+
+::view-transition-new(job-reading) {
+  animation: job-reading-in var(--d-short3) var(--ease-standard-dec) both;
+}
+
+@keyframes job-reading-out {
+  to { opacity: 0; }
+}
+
+@keyframes job-reading-in {
+  from { opacity: 0; }
 }
 
 .job-detail {
@@ -3084,6 +3135,7 @@ dialog[open]::backdrop {
 }
 
 .company-monogram {
+  position: relative;
   display: grid;
   width: 48px;
   height: 48px;
@@ -3092,6 +3144,13 @@ dialog[open]::backdrop {
   background: var(--surface-container-high);
   color: var(--on-surface-variant);
   font-size: 13px;
+  overflow: hidden;
+}
+
+.company-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
 }
 
 .company-card h2 {
@@ -3373,6 +3432,158 @@ body.quick-fill-popout {
   margin-bottom: var(--s-2);
 }
 
+.overview-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+
+.overview-heading span,
+.overview-error p,
+.overview-pending {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.ai-overview > .tonal-button {
+  margin-top: var(--s-1);
+}
+
+.capture-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 40px;
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-full);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  font: 500 13px/1 var(--font-sans);
+}
+
+.capture-trigger svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.capture-dialog {
+  width: min(100% - var(--s-8), 520px);
+  max-height: min(90vh, 760px);
+  padding: var(--s-6);
+  border: 0;
+  border-radius: var(--r-xl);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  overflow-y: auto;
+}
+
+.capture-dialog::backdrop {
+  background: var(--scrim);
+}
+
+.capture-dialog .dialog-heading h2 {
+  margin: 0;
+}
+
+.capture-dialog .dialog-heading p,
+.capture-bookmarklet {
+  margin: var(--s-2) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.capture-field {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+  font-size: 13px;
+}
+
+.capture-field input {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  font: inherit;
+}
+
+.capture-manual {
+  margin-top: var(--s-4);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.capture-manual summary {
+  cursor: pointer;
+}
+
+.capture-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+}
+
+.capture-error {
+  margin: var(--s-4) 0 0;
+  color: var(--error);
+  font-size: 13px;
+}
+
+.capture-bookmarklet a {
+  color: var(--primary);
+}
+
+.offline-state {
+  position: fixed;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  z-index: 20;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  font-size: 12px;
+}
+
+.ai-overview ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-overview li {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+}
+
+.ai-overview li + li {
+  border-top: 1px solid var(--outline-variant);
+}
+
+.ai-overview li span {
+  color: var(--on-surface-faint);
+  font-size: 12px;
+}
+
+.ai-overview li p {
+  margin: 0;
+  color: var(--on-surface);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
 .parsed-section {
   border-radius: var(--r-lg);
   background: var(--surface-container-low);
@@ -3395,6 +3606,18 @@ body.quick-fill-popout {
   font-size: 14px;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.parsed-section > div p {
+  margin: 0 0 var(--s-3);
+}
+
+.parsed-section > div p:last-child {
+  margin-bottom: 0;
+}
+
+.parsed-section > .original-text {
+  white-space: pre-line;
 }
 
 .original-posting {

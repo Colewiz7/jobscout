@@ -14,6 +14,10 @@ const snackbarRegion = document.querySelector("#snackbar-region");
 const assertiveRegion = document.querySelector("#assertive-region");
 const quickFillTrigger = document.querySelector("#quick-fill-trigger");
 const quickFillSheet = document.querySelector("#quick-fill-sheet");
+const captureDialog = document.querySelector("#capture-dialog");
+const captureForm = document.querySelector("#capture-form");
+const captureError = document.querySelector("#capture-error");
+const offlineState = document.querySelector("#offline-state");
 
 const ROW_HEIGHT = 72;
 const DIVIDER_HEIGHT = 32;
@@ -58,6 +62,7 @@ const state = {
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  aiOverviewEnabled: false, overviews: new Map(),
   eligibility: new Map(),
   quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
   quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
@@ -74,6 +79,7 @@ const state = {
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
+  companyLogos: {},
 };
 
 let commandSelection = 0;
@@ -84,6 +90,7 @@ let loadingTimer = null;
 let snackbarTimer = null;
 let snackbarDeadline = 0;
 let snackbarRemaining = 0;
+let jobViewTransition = null;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -267,6 +274,18 @@ function initials(company) {
   return String(company || "Job").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
+const lightLogoTiles = new Set([
+  "amd", "cesiumastro", "costar group", "dv trading", "ge aerospace",
+  "micron", "rtx", "the aerospace corporation", "vertiv",
+]);
+
+function companyLogoMarkup(company, className = "job-logo") {
+  const key = normalizeCompany(company);
+  const filename = state.companyLogos[key];
+  const tile = lightLogoTiles.has(key) ? " logo-needs-light" : "";
+  return `<span class="${className}${filename ? ` has-logo${tile}` : ""}" aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="lazy" decoding="async" alt="">` : ""}</span>`;
+}
+
 function jobRowMarkup(entry) {
   const job = entry.job;
   const sources = sourceList(job);
@@ -282,7 +301,7 @@ function jobRowMarkup(entry) {
   if (sources.length > 1) chips.push(`${sources.length} sources`);
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
   return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
-    <span class="job-logo" aria-hidden="true">${escapeHtml(initials(job.company))}</span>
+    ${companyLogoMarkup(job.company)}
     <span class="job-row-copy"><span class="job-row-title">${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
     ${bulkSelected ? '<span class="selection-check" aria-label="Selected">✓</span>' : ""}
@@ -312,6 +331,19 @@ function emptyListMarkup() {
   return `<div class="list-empty"><h2>${filtered ? "No roles match this view." : "Your inbox is clear."}</h2><p>${filtered ? "Change or clear the active filters." : "New roles will appear here when the scout finds them."}</p>${filtered ? '<button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button>' : ""}</div>`;
 }
 
+async function copyInboxList() {
+  const jobs = filteredJobs();
+  if (!jobs.length) return;
+  const contents = jobs.map((job) => [job.company, job.title, job.location, job.url]
+    .filter(Boolean).map((value) => String(value).replace(/\s+/g, " ").trim()).join(" — ")).join("\n");
+  try {
+    await navigator.clipboard.writeText(contents);
+    showSnackbar(`Copied ${new Intl.NumberFormat().format(jobs.length)} jobs in this view.`);
+  } catch {
+    showSnackbar("Couldn't copy the list. Check clipboard permission and retry.");
+  }
+}
+
 function factItem(label, value) {
   return value ? `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>` : "";
 }
@@ -332,27 +364,48 @@ function descriptionMarkup(job) {
   if (detail.error) return `<section class="detail-section inline-error" role="alert"><div><h2>Description unavailable</h2><p>${escapeHtml(detail.error)}</p></div><button class="text-button interactive" type="button" data-retry-description>Retry</button></section>`;
   const value = detail.value || {};
   const sections = Array.isArray(value.sections) ? value.sections.filter((section) => section?.text) : [];
-  const labels = { about: "About", responsibilities: "Responsibilities", requirements: "Requirements", nice_to_have: "Nice to have", benefits: "Benefits" };
-  const parsed = sections.map((section) => `<details class="parsed-section" ${section.key === "requirements" ? "open" : ""}><summary>${escapeHtml(labels[section.key] || section.key || "Details")}</summary><div>${escapeHtml(section.text).replace(/\n/g, "<br>")}</div></details>`).join("");
-  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div>${escapeHtml(value.description_text).replace(/\n/g, "<br>")}</div></details>` : "";
+  const labels = { about: "About the company", role: "The role", responsibilities: "What you'll do", requirements: "What you'll need", nice_to_have: "Nice to have", benefits: "Benefits", logistics: "Practical details" };
+  const order = { role: 0, responsibilities: 1, requirements: 2, logistics: 3, nice_to_have: 4, benefits: 5, about: 6 };
+  const sorted = [...sections].sort((left, right) => (order[left.key] ?? 7) - (order[right.key] ?? 7));
+  const parsed = sorted.map((section) => {
+    const lines = String(section.text).split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const content = lines.map((line) => `<p>${escapeHtml(line.replace(/^[-*•]\s*/, ""))}</p>`).join("");
+    const title = section.title && section.title !== "Overview" ? section.title : labels[section.key] || "Details";
+    return `<details class="parsed-section" ${["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
+  }).join("");
+  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${escapeHtml(value.description_text)}</div></details>` : "";
   return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${parsed}${original}</section>` : "";
 }
 
+function overviewMarkup(job) {
+  if (!state.aiOverviewEnabled) return "";
+  const entry = state.overviews.get(job.dedupe_key);
+  if (!entry) return `<section class="detail-section ai-overview"><div class="overview-heading"><h2>AI overview</h2><span>Selected from the posting</span></div><button class="tonal-button interactive" type="button" data-generate-overview>Generate overview</button></section>`;
+  if (entry.loading) return `<section class="detail-section ai-overview" aria-live="polite"><h2>AI overview</h2><p class="overview-pending">Generating from the posting…</p></section>`;
+  if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
+  if (!entry.items?.length) return "";
+  const labels = { role: "Role", responsibilities: "Work", requirements: "Requirements", logistics: "Practical", about: "Context", nice_to_have: "Preferred" };
+  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Selected from the posting</span></div><ul>${entry.items.map((item) => `<li><span>${escapeHtml(labels[item.kind] || "Detail")}</span><p>${escapeHtml(item.text)}</p></li>`).join("")}</ul></section>`;
+}
+
 function atGlanceMarkup(job) {
+  if (state.aiOverviewEnabled && state.overviews.get(job.dedupe_key)?.items?.length) return "";
   const value = state.descriptions.get(job.dedupe_key)?.value || {};
   const sections = Array.isArray(value.sections) ? value.sections : [];
   const bullets = [];
-  for (const key of ["about", "responsibilities", "requirements"]) {
-    const section = sections.find((item) => item?.key === key);
-    if (!section?.text) continue;
-    for (const line of String(section.text).split(/\n+|(?<=[.!?])\s+/)) {
+  for (const key of ["role", "responsibilities", "requirements", "logistics", "about"]) {
+    if (key === "about" && bullets.length >= 3) break;
+    for (const section of sections.filter((item) => item?.key === key)) {
+      for (const line of String(section.text).split(/\n+|(?<=[.!?])\s+/)) {
       const clean = line.trim().replace(/^[-*•]\s*/, "");
-      if (clean && !bullets.includes(clean)) bullets.push(clean);
+      if (clean.length >= 5 && clean.length <= 240 && !bullets.includes(clean)) bullets.push(clean);
+      if (bullets.length >= 5) break;
+      }
       if (bullets.length >= 5) break;
     }
     if (bullets.length >= 5) break;
   }
-  if (bullets.length < 3) return "";
+  if (bullets.length < 2) return "";
   return `<section class="detail-section at-glance" aria-labelledby="at-glance-heading"><h2 id="at-glance-heading">At a glance</h2><ul>${bullets.slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
 }
 
@@ -416,6 +469,7 @@ function detailMarkup(job) {
       ${eligibilityMarkup(job)}
       ${ruleNotice}
       ${repostWarning}
+      ${overviewMarkup(job)}
       ${atGlanceMarkup(job)}
       ${skillMatchMarkup(job)}
       ${descriptionMarkup(job)}
@@ -439,7 +493,7 @@ function inboxMarkup() {
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();
   return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}" aria-label="Inbox">
-    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs">${icons.filter}</button><label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
+    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button><button class="icon-button interactive" type="button" data-copy-list aria-label="Copy jobs in this view" title="Copy jobs in this view" ${jobs.length ? "" : "disabled"}>${icons.copy}</button><label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
       <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true">${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
     <main class="reading-pane" id="inbox-reading-pane">${detailMarkup(selectedJob)}</main>
   </section>`;
@@ -460,7 +514,7 @@ async function loadDescription(key) {
   const indicator = setTimeout(() => {
     loading.showLoader = true;
     loading.shownAt = performance.now();
-    if (state.selectedKey === key && routeRoot() === "inbox") renderInbox();
+    if (state.selectedKey === key && routeRoot() === "inbox") renderSelectedJob();
     if (state.selectedKey === key && window.location.pathname.startsWith("/queue/session/")) renderApplySession();
   }, 300);
   try {
@@ -483,9 +537,24 @@ async function loadDescription(key) {
   } finally {
     clearTimeout(indicator);
     if (state.quickFillEnabled) loadEligibility(key);
-    if (state.selectedKey === key && routeRoot() === "inbox") renderInbox();
+    if (state.selectedKey === key && routeRoot() === "inbox") renderSelectedJob();
     if (state.selectedKey === key && window.location.pathname.startsWith("/queue/session/")) renderApplySession();
   }
+}
+
+async function loadOverview(key, { force = false } = {}) {
+  if (!state.aiOverviewEnabled || !key || (!force && state.overviews.has(key))) return;
+  state.overviews.set(key, { loading: true, items: [], error: "" });
+  try {
+    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview`, {
+      credentials: "same-origin", headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The overview could not be generated.");
+    state.overviews.set(key, { loading: false, items: (await response.json()).items || [], error: "" });
+  } catch (error) {
+    state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be generated." });
+  }
+  if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
 }
 
 async function loadEligibility(key, { force = false } = {}) {
@@ -500,7 +569,7 @@ async function loadEligibility(key, { force = false } = {}) {
   } catch (error) {
     state.eligibility.set(key, { loading: false, value: null, error: error instanceof Error ? error.message : "Eligibility did not respond." });
   }
-  if (routeRoot() === "inbox" && state.selectedKey === key) renderInbox();
+  if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
 }
 
 async function overrideEligibility() {
@@ -526,10 +595,16 @@ function renderInbox({ focus = false } = {}) {
   else if (!state.loaded) routeView.innerHTML = state.skeletonAt ? loadingMarkup() : "";
   else routeView.innerHTML = inboxMarkup();
   document.title = "Inbox — JobSeer";
+  const pane = document.querySelector("#inbox-reading-pane");
+  if (pane) pane.dataset.jobKey = state.selectedKey;
   const viewport = document.querySelector("#job-viewport");
   if (viewport && state.entries.length) {
     viewport.scrollTop = Math.min(state.scrollTop, Math.max(0, state.totalHeight - viewport.clientHeight));
-    viewport.addEventListener("scroll", () => { state.scrollTop = viewport.scrollTop; renderVirtualRows(); }, { passive: true });
+    viewport.addEventListener("scroll", () => {
+      if (!viewport.isConnected || document.querySelector("#job-viewport") !== viewport) return;
+      state.scrollTop = viewport.scrollTop;
+      renderVirtualRows();
+    }, { passive: true });
     renderVirtualRows();
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
@@ -539,6 +614,35 @@ function renderInbox({ focus = false } = {}) {
     if (contextKey && contextKey !== state.quickFillContextKey) loadQuickFillContext(); else renderQuickFill();
   }
   if (focus) document.querySelector("#job-title, .inbox-list h1")?.focus({ preventScroll: true });
+}
+
+function renderSelectedJob() {
+  const pane = document.querySelector("#inbox-reading-pane");
+  if (!pane) { renderInbox(); return; }
+  const sameJob = pane.dataset.jobKey === state.selectedKey;
+  const note = pane.querySelector("#job-notes");
+  const noteDraft = sameJob ? note?.value : null;
+  const noteFocused = note === document.activeElement;
+  const noteStart = noteFocused ? note.selectionStart : null;
+  const noteEnd = noteFocused ? note.selectionEnd : null;
+  const previousScroll = pane.scrollTop;
+  const job = state.jobs.find((item) => item.dedupe_key === state.selectedKey);
+  pane.innerHTML = detailMarkup(job);
+  pane.dataset.jobKey = state.selectedKey;
+  pane.scrollTop = sameJob ? previousScroll : 0;
+  if (noteDraft !== null) pane.querySelector("#job-notes").value = noteDraft;
+  if (noteFocused) {
+    const replacement = pane.querySelector("#job-notes");
+    replacement?.focus({ preventScroll: true });
+    replacement?.setSelectionRange(noteStart, noteEnd);
+  }
+  for (const row of document.querySelectorAll("#job-list-layer .job-row")) {
+    const selected = row.dataset.jobKey === state.selectedKey;
+    row.setAttribute("aria-selected", String(selected || state.selectedKeys.has(row.dataset.jobKey)));
+    row.tabIndex = selected ? 0 : -1;
+  }
+  if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
+  if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) renderQuickFill();
 }
 
 function renderPlaceholder(root, { focus = false } = {}) {
@@ -778,7 +882,7 @@ function normalizeCompany(value) {
 
 function companyListMarkup(companies) {
   if (!companies.length) return '<div class="empty-state"><h2>No companies yet.</h2><p>Companies appear after the scout finds a posting.</p><a class="tonal-button interactive" href="/inbox" data-route>Open inbox</a></div>';
-  return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route><span class="company-monogram" aria-hidden="true">${escapeHtml(initials(company.name))}</span><div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
+  return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route>${companyLogoMarkup(company.name, "company-monogram")}<div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
 }
 
 function contactMarkup(contact) {
@@ -791,7 +895,7 @@ function companyDetailMarkup(company) {
   const accountMarkup = company.account_protected
     ? '<p class="protected-copy">ATS account details stay unavailable until protected profile access is enabled.</p>'
     : account ? `<dl class="company-facts">${factItem("Account", account.account_exists === true ? "Exists" : account.account_exists === false ? "Does not exist" : "Unknown")}${factItem("Sign-in email", account.sign_in_email)}${account.password_manager_url ? `<div><dt>Password manager</dt><dd><a href="${escapeHtml(account.password_manager_url)}" target="_blank" rel="noopener noreferrer">Open entry ${icons.external}</a></dd></div>` : ""}</dl>` : '<p class="muted-copy">No ATS account status recorded.</p>';
-  return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
+  return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><div class="company-title-row">${companyLogoMarkup(company.name, "company-monogram")}<h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1></div><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
     <section class="company-section" aria-labelledby="company-applications-title"><h2 id="company-applications-title">Applications</h2>${company.applications.length ? `<div class="company-application-list">${company.applications.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${job.applied_at ? `Applied ${escapeHtml(formatDate(job.applied_at))}` : escapeHtml(formatDate(job.application_updated_at))}</span></div>${statusMarkup(job.status)}</article>`).join("")}</div>` : '<p class="muted-copy">No applications at this company yet.</p>'}</section>
     <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2><div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
     <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map(contactMarkup).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
@@ -1404,22 +1508,31 @@ async function loadInbox() {
     else if (routeRoot() === "queue") renderRoute();
   }, 300);
   try {
-    const sessionResponse = await fetch("/api/v1/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
-    if (!sessionResponse.ok) throw new Error((await sessionResponse.json().catch(() => ({}))).error || "The session could not be verified.");
-    const session = await sessionResponse.json();
+    let session;
+    if (navigator.onLine) {
+      const sessionResponse = await fetch("/api/v1/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!sessionResponse.ok) throw new Error((await sessionResponse.json().catch(() => ({}))).error || "The session could not be verified.");
+      session = await sessionResponse.json();
+    } else {
+      session = { csrf_token: "", features: {} };
+    }
     state.csrf = session.csrf_token || "";
     state.quickFillEnabled = Boolean(session.features?.quick_fill);
+    state.aiOverviewEnabled = Boolean(session.features?.ai_overview);
     quickFillTrigger.hidden = !state.quickFillEnabled;
     quickFillSheet.hidden = !state.quickFillEnabled;
     if (state.quickFillEnabled && !state.quickFillProfile && !state.quickFillError) loadQuickFillData();
     if (!state.quickFillEnabled) closeQuickFill({ restoreFocus: false });
-    const [jobsResponse, viewsResponse] = await Promise.all([
+    const [jobsResponse, viewsResponse, logosResponse] = await Promise.all([
       fetch("/api/v1/jobs", { credentials: "same-origin", headers: { Accept: "application/json" } }),
       fetch("/api/v1/saved-views", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+      fetch("/static/company-logos/manifest.json", { credentials: "same-origin", headers: { Accept: "application/json" } }),
     ]);
     if (!jobsResponse.ok) throw new Error((await jobsResponse.json().catch(() => ({}))).error || "The job list did not respond.");
     if (!viewsResponse.ok) throw new Error((await viewsResponse.json().catch(() => ({}))).error || "Saved views did not respond.");
     const [payload, viewsPayload] = await Promise.all([jobsResponse.json(), viewsResponse.json()]);
+    const logos = logosResponse.ok ? await logosResponse.json().catch(() => ({})) : {};
+    state.companyLogos = Object.fromEntries(Object.entries(logos).map(([name, filename]) => [normalizeCompany(name), filename]));
     const wait = state.skeletonAt ? Math.max(0, 500 - (performance.now() - state.skeletonAt)) : 0;
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
@@ -1435,6 +1548,16 @@ async function loadInbox() {
     clearTimeout(loadingTimer);
     state.loading = false;
     renderRoute();
+  }
+}
+
+function updateOfflineState() {
+  offlineState.hidden = navigator.onLine;
+  if (!navigator.onLine) {
+    state.csrf = "";
+    state.quickFillEnabled = false;
+    quickFillTrigger.hidden = true;
+    quickFillSheet.hidden = true;
   }
 }
 
@@ -2000,12 +2123,68 @@ function runCommand(id) {
   if (command.action === "shortcuts") openShortcuts(document.querySelector("[data-open-shortcuts]"));
 }
 
+function openCapture(url = "", title = "") {
+  if (!captureDialog || captureDialog.open) return;
+  captureError.hidden = true;
+  captureError.textContent = "";
+  captureForm.reset();
+  captureForm.elements.url.value = url;
+  if (title) captureForm.elements.title.value = title;
+  captureDialog.showModal();
+  captureForm.elements.url.focus();
+}
+
+async function submitCapture() {
+  const payload = Object.fromEntries(new FormData(captureForm));
+  const button = document.querySelector("#capture-submit");
+  button.disabled = true;
+  captureError.hidden = true;
+  try {
+    const response = await fetch("/api/v1/capture", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "The posting could not be added.");
+    captureDialog.close();
+    state.status = "all";
+    state.selectedKey = result.job.dedupe_key;
+    state.scrollTop = 0;
+    syncInboxUrl();
+    await loadInbox();
+    showSnackbar("Job added to Inbox.");
+  } catch (error) {
+    captureError.textContent = error instanceof Error ? error.message : "The posting could not be added.";
+    captureError.hidden = false;
+    document.querySelector("#capture-manual").open = true;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function selectJob(key, { push = true, focusDetail = false } = {}) {
   if (!state.jobs.some((job) => job.dedupe_key === key)) return;
-  state.selectedKey = key;
-  if (push) syncInboxUrl();
-  renderInbox();
-  if (focusDetail) document.querySelector("#job-title")?.focus({ preventScroll: true });
+  const changed = key !== state.selectedKey;
+  const update = () => {
+    state.selectedKey = key;
+    if (push) syncInboxUrl();
+    renderSelectedJob();
+  };
+  const reduceMotion = document.documentElement.dataset.motion === "reduce"
+    || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (changed && !reduceMotion && document.startViewTransition && document.querySelector(".reading-pane")?.getClientRects().length) {
+    jobViewTransition?.skipTransition();
+    const transition = document.startViewTransition(update);
+    jobViewTransition = transition;
+    transition.finished.finally(() => {
+      if (jobViewTransition === transition) jobViewTransition = null;
+    }).catch(() => {});
+    if (focusDetail) transition.updateCallbackDone.then(() => document.querySelector("#job-title")?.focus({ preventScroll: true })).catch(() => {});
+  } else {
+    update();
+    if (focusDetail) document.querySelector("#job-title")?.focus({ preventScroll: true });
+  }
 }
 
 function handleRowSelection(row, event) {
@@ -2244,6 +2423,9 @@ function handleGlobalKeydown(event) {
 }
 
 document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-copy-list]")) { copyInboxList(); return; }
+  if (event.target.closest("[data-open-capture]")) { openCapture(); return; }
+  if (event.target.closest("[data-close-capture]")) { captureDialog.close(); return; }
   const route = event.target.closest("[data-route]");
   if (route instanceof HTMLAnchorElement) {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -2317,6 +2499,8 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-exit-focus]")) { state.focus = false; syncInboxUrl(); renderInbox({ focus: true }); return; }
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
   if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey); renderInbox(); return; }
+  if (event.target.closest("[data-retry-overview]")) { loadOverview(state.selectedKey, { force: true }); return; }
+  if (event.target.closest("[data-generate-overview]")) { loadOverview(state.selectedKey); renderSelectedJob(); return; }
   if (event.target.closest("[data-open-command]")) { openCommand(event.target.closest("[data-open-command]")); return; }
   if (event.target.closest("[data-open-shortcuts]")) { openShortcuts(event.target.closest("[data-open-shortcuts]")); return; }
   if (event.target.closest("[data-quick-fill-toggle]")) { state.quickFillOpen ? closeQuickFill() : openQuickFill(); return; }
@@ -2397,14 +2581,30 @@ document.addEventListener("change", (event) => {
   else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
 });
 
+document.addEventListener("error", (event) => {
+  if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .company-monogram")) {
+    event.target.hidden = true;
+  }
+}, true);
+
 document.addEventListener("focusout", (event) => {
   if (event.target.matches("[data-next-step]")) saveTrackerNextStep(event.target.dataset.nextStep, event.target.value, event.target);
 });
 
 document.addEventListener("submit", (event) => {
+  if (event.target.id === "capture-form") { event.preventDefault(); submitCapture(); }
   if (event.target.id === "interview-form") { event.preventDefault(); submitInterview(event.target); }
   if (event.target.id === "contact-form") { event.preventDefault(); submitContact(event.target); }
   if (event.target.id === "rule-form") { event.preventDefault(); submitRule(event.target); }
+});
+
+document.addEventListener("paste", (event) => {
+  if (routeRoot() !== "inbox" || captureDialog.open) return;
+  if (event.target.closest("input, textarea, [contenteditable='true']")) return;
+  const pasted = event.clipboardData?.getData("text/plain")?.trim() || "";
+  if (!/^https:\/\/\S+$/i.test(pasted)) return;
+  event.preventDefault();
+  openCapture(pasted);
 });
 
 filterForm.addEventListener("submit", (event) => {
@@ -2422,7 +2622,7 @@ commandInput.addEventListener("keydown", (event) => {
   else if (event.key === "Enter" && commandMatches[commandSelection]) { event.preventDefault(); runCommand(commandMatches[commandSelection].id); }
 });
 
-for (const dialog of [commandDialog, shortcutDialog, filterDialog]) {
+for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog]) {
   dialog.addEventListener("close", restoreDialogTrigger);
   dialog.addEventListener("click", (event) => {
     if (event.target !== dialog) return;
@@ -2441,9 +2641,25 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) showSubmissionPrompt();
 });
 window.addEventListener("focus", showSubmissionPrompt);
+window.addEventListener("online", () => { updateOfflineState(); if (state.loaded) loadInbox(); });
+window.addEventListener("offline", updateOfflineState);
 
 history.scrollRestoration = "manual";
 if (window.location.pathname === "/" || window.location.pathname === "/index.html") navigate("/inbox", { replace: true }); else renderRoute();
 
+const shareParams = new URLSearchParams(window.location.search);
+const sharedUrl = shareParams.get("share_url") || shareParams.get("url") || (shareParams.get("text") || "").match(/https:\/\/\S+/)?.[0];
+if (sharedUrl && routeRoot() === "inbox") {
+  history.replaceState(history.state, "", inboxUrl());
+  openCapture(sharedUrl, shareParams.get("title") || "");
+}
+const bookmarklet = document.querySelector("#capture-bookmarklet");
+bookmarklet.href = `javascript:(()=>{window.open(${JSON.stringify(`${window.location.origin}/inbox?share_url=`)}+encodeURIComponent(location.href),'_blank')})()`;
+bookmarklet.addEventListener("click", (event) => { event.preventDefault(); showSnackbar("Drag this link to your bookmarks bar."); });
+
 const themeColor = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
 document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
+updateOfflineState();
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+  navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+}

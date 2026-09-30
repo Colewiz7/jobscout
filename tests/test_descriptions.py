@@ -32,6 +32,31 @@ def test_sections_follow_deterministic_headings():
     assert sections[1]["text"] == "Ship reliable code."
 
 
+def test_provider_heading_variants_preserve_source_order_and_labels():
+    sections = parse_sections(
+        "<p>Please Note:</p><p>US work authorization is required.</p>"
+        "<h2>About Invesco</h2><p>We manage investments.</p>"
+        "<h2>What’s in it for you?</h2><p>Mentorship and support.</p>"
+        "<h2>Job Description</h2><p>Join the platform team.</p>"
+        "<h2>What you’ll do</h2><p>Build internal tools.</p>"
+        "<h2>What We're Looking For</h2><p>Python experience.</p>"
+    )
+    assert [section["key"] for section in sections] == [
+        "logistics", "about", "benefits", "role", "responsibilities", "requirements",
+    ]
+    assert sections[3]["text"] == "Join the platform team."
+    assert sections[4]["title"] == "What you’ll do"
+
+
+def test_plain_text_workday_headings_are_segmented():
+    sections = parse_sections(
+        "Your Team, Your Impact\nBuild satellite software.\n"
+        "What You Can Expect\nWork with flight engineers.\n"
+        "What We're Looking For\nExperience with Python."
+    )
+    assert [section["key"] for section in sections] == ["role", "role", "requirements"]
+
+
 def test_greenhouse_detail_uses_public_job_endpoint_and_exact_deadline():
     client = FakeFetcher({
         "content": "<h2>Requirements</h2><p>Linux</p>",

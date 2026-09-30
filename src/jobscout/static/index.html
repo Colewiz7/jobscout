@@ -11,6 +11,7 @@
   <link rel="icon" href="/static/icons/jobseer-32.png" type="image/png" sizes="32x32">
   <link rel="icon" href="/static/icons/jobseer-16.png" type="image/png" sizes="16x16">
   <link rel="apple-touch-icon" href="/static/icons/jobseer-192.png" sizes="192x192">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" type="module"></script>
@@ -66,6 +67,10 @@
           <span>Search or run a command</span>
           <kbd>Ctrl K</kbd>
         </button>
+        <button class="capture-trigger interactive" type="button" data-open-capture aria-label="Add a job">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Add job</span>
+        </button>
         <button class="quick-fill-trigger interactive" id="quick-fill-trigger" type="button" data-quick-fill-toggle aria-label="Open Quick-fill" aria-controls="quick-fill-sheet" aria-expanded="false" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16H7zM10 8h4m-4 4h4m-4 4h2"/></svg>
           <span>Quick-fill</span>
@@ -112,6 +117,7 @@
       <div><span>Toggle Quick-fill</span><kbd>C</kbd></div>
       <div><span>Pop out Quick-fill</span><kbd>P</kbd></div>
       <div><span>Search jobs</span><kbd>/</kbd></div>
+      <div><span>Paste a job URL in Inbox</span><kbd>Ctrl V</kbd></div>
       <div><span>Undo last decision</span><span><kbd>U</kbd> <kbd>Ctrl Z</kbd></span></div>
       <div><span>Go to Inbox</span><span><kbd>G</kbd> <kbd>I</kbd></span></div>
       <div><span>Go to Queue</span><span><kbd>G</kbd> <kbd>Q</kbd></span></div>
@@ -152,6 +158,29 @@
       </div>
     </form>
   </dialog>
+
+  <dialog class="capture-dialog" id="capture-dialog" aria-labelledby="capture-title">
+    <div class="dialog-heading">
+      <div><h2 id="capture-title">Add a job</h2><p>Paste a posting link. Known job boards fill in the details.</p></div>
+      <button class="icon-button interactive" type="button" data-close-dialog aria-label="Close Add job">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <form id="capture-form">
+      <p class="capture-error" id="capture-error" role="alert" hidden></p>
+      <label class="capture-field" for="capture-url"><span>Posting URL</span><input id="capture-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://" required></label>
+      <details class="capture-manual" id="capture-manual"><summary>Add details manually</summary>
+        <label class="capture-field" for="capture-company"><span>Company</span><input id="capture-company" name="company" type="text" maxlength="500" autocomplete="organization"></label>
+        <label class="capture-field" for="capture-role"><span>Role title</span><input id="capture-role" name="title" type="text" maxlength="500"></label>
+        <label class="capture-field" for="capture-location"><span>Location <small>(optional)</small></span><input id="capture-location" name="location" type="text" maxlength="1000"></label>
+        <label class="capture-field" for="capture-terms"><span>Term <small>(optional)</small></span><input id="capture-terms" name="terms" type="text" maxlength="500"></label>
+      </details>
+      <div class="capture-actions"><button class="text-button interactive" type="button" data-close-capture>Cancel</button><button class="filled-button interactive" id="capture-submit" type="submit">Add job</button></div>
+    </form>
+    <p class="capture-bookmarklet">From another site: <a id="capture-bookmarklet" href="#" draggable="true">drag “Add to JobSeer” to your bookmarks bar</a>.</p>
+  </dialog>
+
+  <p class="offline-state" id="offline-state" role="status" hidden>Offline · showing cached data</p>
 
   <div class="snackbar-region" id="snackbar-region" aria-live="polite" aria-atomic="true"></div>
   <div class="visually-hidden" id="assertive-region" role="alert" aria-live="assertive"></div>

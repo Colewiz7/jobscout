@@ -1,0 +1,19 @@
+{
+  "name": "JobSeer",
+  "short_name": "JobSeer",
+  "description": "A calm desk for job triage and applications",
+  "start_url": "/inbox",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "rgb(21 20 18)",
+  "theme_color": "rgb(21 20 18)",
+  "icons": [
+    {"src": "/static/icons/jobseer-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/static/icons/jobseer-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ],
+  "share_target": {
+    "action": "/inbox",
+    "method": "GET",
+    "params": {"title": "title", "text": "text", "url": "share_url"}
+  }
+}

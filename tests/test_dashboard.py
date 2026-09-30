@@ -102,6 +102,48 @@ def test_v1_api_requires_authentik(dashboard):
     assert "Authentik" in response.json()["error"]
 
 
+def test_ai_overview_is_flagged_and_auth_protected():
+    class FakeOverviews:
+        def overview(self, sections):
+            return [{"kind": "role", "text": sections[0]["text"]}]
+
+    server = DashboardServer(
+        ("127.0.0.1", 0), DemoStore(), require_auth=True,
+        authentik_user="cole", overviews=FakeOverviews(),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        assert httpx.get(f"{base}/api/v1/jobs/fixture%3A0000/overview").status_code == 401
+        with httpx.Client(base_url=base, headers=AUTH) as client:
+            assert client.get("/api/v1/session").json()["features"]["ai_overview"] is True
+            key = DemoStore().jobs()[0]["dedupe_key"]
+            response = client.get(f"/api/v1/jobs/{key}/overview")
+            assert response.status_code == 200
+            assert response.json()["items"][0]["text"].startswith("Build reliable systems")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_manual_capture_requires_auth_and_csrf_then_adds_a_job(dashboard):
+    base, _ = dashboard
+    payload = {
+        "url": "https://example.org/jobs/platform-intern",
+        "company": "Example Labs", "title": "Platform Intern",
+        "location": "Boston, MA",
+    }
+    assert httpx.post(f"{base}/api/v1/capture", json=payload).status_code == 401
+    with httpx.Client(base_url=base, headers=AUTH) as client:
+        assert client.post("/api/v1/capture", json=payload).status_code == 403
+        token = client.get("/api/v1/session").json()["csrf_token"]
+        response = client.post("/api/v1/capture", json=payload, headers={"X-CSRF-Token": token})
+        assert response.status_code == 201
+        assert response.json()["job"]["company"] == "Example Labs"
+
+
 def test_forged_username_without_outpost_metadata_is_rejected(dashboard):
     base, _ = dashboard
     response = httpx.get(

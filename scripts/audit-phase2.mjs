@@ -165,6 +165,7 @@ try {
     const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
     const rowHeights = rows.map((row) => row.getBoundingClientRect().height);
     const rowTops = rows.map((row) => Math.round(row.getBoundingClientRect().top));
+    const selectedBefore = document.querySelector('#job-title')?.textContent.trim() || '';
     const start = performance.now();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
     const interaction = performance.now() - start;
@@ -175,11 +176,47 @@ try {
       duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
       unnamedControls: unnamed.map((element) => element.outerHTML.slice(0, 120)),
       interaction,
+      selectedBefore,
       lcp: window.__audit.lcp,
       cls: window.__audit.cls,
       visibility: document.visibilityState,
       paintEntries: performance.getEntriesByType('paint').map((entry) => ({ name: entry.name, startTime: entry.startTime })),
       selectedJob: document.querySelector('#job-title')?.textContent.trim() || '',
+    };
+  })()`);
+  await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  const selectedAfter = await cdp.evaluate("document.querySelector('#job-title')?.textContent.trim() || ''");
+  const copiedList = await cdp.evaluate(`(async () => {
+    let copied = '';
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { copied = value; } } });
+    document.querySelector('[data-copy-list]').click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return { lines: copied.split('\\n').length, containsPostingUrl: copied.includes('https://') };
+  })()`);
+  const scrolledSelection = await cdp.evaluate(`(async () => {
+    const viewport = document.querySelector('#job-viewport');
+    viewport.scrollTop = 72 * 120;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const before = viewport.scrollTop;
+    const row = [...viewport.querySelectorAll('.job-row')].find((item) => {
+      const rect = item.getBoundingClientRect();
+      const host = viewport.getBoundingClientRect();
+      return rect.top >= host.top + 16 && rect.bottom <= host.bottom - 16;
+    });
+    if (!row) return { error: 'no visible row after scroll' };
+    const expected = row.querySelector('.job-row-title')?.textContent.trim();
+    const key = row.dataset.jobKey;
+    row.click();
+    const immediate = document.querySelector('#job-viewport')?.scrollTop;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return {
+      before,
+      immediate,
+      after: document.querySelector('#job-viewport')?.scrollTop,
+      expected,
+      actual: document.querySelector('#job-title')?.textContent.trim(),
+      route: decodeURIComponent(location.pathname.split('/').slice(2).join('/')),
+      key,
     };
   })()`);
 
@@ -461,6 +498,8 @@ try {
       unnamedControls: desktop.unnamedControls,
       horizontalOverflowAt320: compact.hasHorizontalOverflow,
     },
+    scrolledSelection,
+    copiedList,
     ...(quickFill ? { quickFill } : {}),
     ...(applySession ? { applySession } : {}),
     ...(tracker ? { tracker } : {}),
@@ -473,6 +512,9 @@ try {
   if (desktop.renderedRows >= 50) failures.push(`virtual list rendered ${desktop.renderedRows} rows`);
   if (desktop.rowHeights.some((height) => height !== 72)) failures.push(`row heights were ${desktop.rowHeights.join(", ")}`);
   if (new Set(desktop.rowTops).size !== desktop.rowTops.length) failures.push("virtual rows overlap at the same position");
+  if (desktop.selectedBefore === selectedAfter) failures.push("next-job shortcut did not update the reading pane");
+  if (scrolledSelection.error || scrolledSelection.after !== scrolledSelection.before || scrolledSelection.actual !== scrolledSelection.expected || scrolledSelection.route !== scrolledSelection.key) failures.push(`scrolled row selection failed: ${JSON.stringify(scrolledSelection)}`);
+  if (copiedList.lines !== jobCount || !copiedList.containsPostingUrl) failures.push(`copy list did not include the whole view: ${JSON.stringify(copiedList)}`);
   const observedLcp = desktop.lcp || renderReadyMs;
   if (observedLcp >= 2000) failures.push(`render-ready/LCP was ${observedLcp.toFixed(1)}ms`);
   if (desktop.interaction >= 200) failures.push(`selection interaction was ${desktop.interaction.toFixed(1)}ms`);
