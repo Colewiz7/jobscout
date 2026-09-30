@@ -1481,7 +1481,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     sections = detail.get("sections") or []
                     cached_only = urllib.parse.parse_qs(parsed.query).get("cached") == ["1"]
                     items = self.app.overviews.cached_overview(sections) if cached_only else self.app.overviews.overview(sections)
-                    self._json({"items": items or []})
+                    fallback = getattr(self.app.overviews, "is_fallback", lambda _: False)(sections)
+                    self._json({"items": items or [], "source": "posting" if fallback else "ai"})
                 except Exception:
                     log.exception("could not generate posting overview")
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "AI overview is unavailable. Retry shortly.")

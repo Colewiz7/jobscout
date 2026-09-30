@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 import urllib.request
 from collections import OrderedDict
+
+log = logging.getLogger(__name__)
 
 
 _SCHEMA = {
@@ -87,6 +90,18 @@ def _explicit_skills(excerpts: list[dict[str, str]]) -> list[str]:
         if term and not any(term.casefold() in previous.casefold() for previous in found):
             found.append(term)
     return found[:12]
+
+
+def _model_selections(raw: object) -> list[dict]:
+    """Keep valid IDs even when a local model truncates its JSON response."""
+    try:
+        document = json.loads(raw)
+    except (TypeError, ValueError):
+        log.warning("local model returned malformed overview JSON; using valid IDs only")
+        return [{"id": int(value)} for value in re.findall(r'"id"\s*:\s*(\d{1,3})(?!\d)', str(raw))[:10]]
+    if not isinstance(document, dict) or not isinstance(document.get("items"), list):
+        return []
+    return [item for item in document["items"][:10] if isinstance(item, dict)]
 
 
 def _location_terms(section: str, source: str) -> list[str]:
@@ -204,10 +219,11 @@ class OverviewService:
         self.opener = opener or urllib.request.urlopen
         self._lock = threading.Lock()
         self._cache: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
+        self._fallback_keys: set[str] = set()
 
     def _cache_key(self, excerpts: list[dict[str, str]]) -> str:
         digest = hashlib.sha256(json.dumps(excerpts, sort_keys=True).encode()).hexdigest()
-        return f"v4:{self.model}:{digest}"
+        return f"v5:{self.model}:{digest}"
 
     def cached_overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]] | None:
         key = self._cache_key(candidates(sections))
@@ -216,6 +232,12 @@ class OverviewService:
             if items is not None:
                 self._cache.move_to_end(key)
             return items
+
+    def is_fallback(self, sections: list[dict] | tuple[dict, ...]) -> bool:
+        """True when the displayed facts were selected without a valid model ID."""
+        key = self._cache_key(candidates(sections))
+        with self._lock:
+            return key in self._fallback_keys
 
     def overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
         excerpts = candidates(sections)
@@ -243,7 +265,7 @@ class OverviewService:
             payload = json.dumps({
                 "model": self.model, "prompt": prompt, "stream": False,
                 "think": False, "format": _SCHEMA,
-                "options": {"temperature": 0, "num_predict": 256},
+                "options": {"temperature": 0, "num_predict": 512},
             }).encode()
             request = urllib.request.Request(
                 self.url, data=payload,
@@ -251,7 +273,7 @@ class OverviewService:
             )
             with self.opener(request, timeout=30) as response:
                 result = json.loads(response.read(65537))
-            selected = json.loads(result["response"]).get("items", [])
+            selected = _model_selections(result.get("response") if isinstance(result, dict) else None)
             ranked = [item.get("id") for item in selected if isinstance(item, dict)]
             ranked = [index for index in ranked if type(index) is int and 0 <= index < len(excerpts)]
             ranked.extend(index for index in range(len(excerpts)) if index not in ranked)
@@ -278,6 +300,9 @@ class OverviewService:
             if skills:
                 items.insert(len(groups["work"]), {"kind": "skills", "text": ", ".join(skills), "terms": skills})
             self._cache[cache_key] = items
+            if not any(type(item.get("id")) is int and 0 <= item["id"] < len(excerpts) for item in selected):
+                self._fallback_keys.add(cache_key)
             if len(self._cache) > 256:
-                self._cache.popitem(last=False)
+                removed, _ = self._cache.popitem(last=False)
+                self._fallback_keys.discard(removed)
             return items
