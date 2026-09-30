@@ -33,11 +33,11 @@ class DescriptionAccessBlocked(Exception):
 
 _HEADINGS = {
     "about": ("about", "about us", "about the company", "about our company", "about the team", "who we are", "our company"),
-    "role": ("the role", "about the role", "the opportunity", "job description", "position overview", "role overview", "your team, your impact", "overview of department", "what you can expect"),
+    "role": ("the role", "about the role", "the opportunity", "job description", "position overview", "position summary", "role overview", "your team, your impact", "overview of department"),
     "responsibilities": ("responsibilities", "what you'll do", "what you will do", "your impact", "what you will be doing", "what you'll be doing", "duties", "in this role", "your responsibilities"),
-    "requirements": ("requirements", "qualifications", "minimum qualifications", "required qualifications", "what you bring", "what we're looking for", "what we are looking for", "what you'll need", "what you will need", "who you are", "required skills"),
-    "nice_to_have": ("nice to have", "preferred qualifications", "bonus", "preferred", "desired qualifications", "nice-to-have"),
-    "benefits": ("benefits", "perks", "what we offer", "compensation and benefits", "what's in it for you", "what is in it for you", "pay and benefits"),
+    "requirements": ("requirements", "qualifications", "minimum qualifications", "required qualifications", "competencies", "what you bring", "what we're looking for", "what we are looking for", "who we are looking for", "what you'll need", "what you will need", "who you are", "required skills"),
+    "nice_to_have": ("nice to have", "preferred qualifications", "bonus", "preferred", "desired", "desired qualifications", "nice-to-have"),
+    "benefits": ("benefits", "perks", "what we offer", "what you can expect", "compensation and benefits", "what's in it for you", "what is in it for you", "pay and benefits"),
     "logistics": ("please note", "work authorization", "employment eligibility", "location", "work location", "salary", "compensation", "pay range", "application process"),
 }
 _HEADING_LOOKUP = {label: key for key, labels in _HEADINGS.items() for label in labels}
@@ -75,7 +75,7 @@ def _plain_text(raw_html: str) -> str:
 
 def _section_key(value: str) -> str | None:
     normalized = re.sub(r"\s+", " ", value).strip(" :\u2013\u2014?").casefold().replace("\u2019", "'")
-    if re.fullmatch(r"(?:qualifications?\s*/\s*requirements?|requirements?\s*/\s*qualifications?)", normalized):
+    if re.fullmatch(r"(?:qualifications?\s*[/ :]\s*(?:requirements?|required)|requirements?\s*[/ :]\s*qualifications?)", normalized):
         return "requirements"
     if normalized in _HEADING_LOOKUP:
         return _HEADING_LOOKUP[normalized]
@@ -94,7 +94,7 @@ def _section_key(value: str) -> str | None:
         if re.search(r"\b(?:offer|benefit|perk|in it for you)\b", normalized):
             return "benefits"
         if normalized.startswith("who we") or normalized.startswith("who are we"):
-            return "about"
+            return "requirements" if "looking for" in normalized else "about"
         if normalized.startswith("who you are") or normalized.startswith("who are you"):
             return "requirements"
         return "responsibilities" if normalized.startswith("what") else "role"
@@ -115,17 +115,24 @@ def parse_sections(raw_html: str) -> tuple[dict[str, str], ...]:
             body.clear()
 
     for line in lines:
-        value = line.strip()
-        if not value:
-            continue
-        heading = _section_key(value)
-        if heading:
-            flush()
-            current_key = heading
-            current_title = value.rstrip(" :\u2013\u2014")
-            continue
-        if not body or body[-1] != value:
-            body.append(value)
+        # ATS HTML sometimes appends "Responsibilities:" to the end of an
+        # intro paragraph. Split only explicit, known labels at sentence edges.
+        pieces = re.split(
+            r"(?<=[.!?])\s+(?=(?:Responsibilities|Qualifications\s*:\s*Required|Required|Desired|Preferred)\s*:)",
+            line.strip(), flags=re.I,
+        )
+        for value in pieces:
+            value = value.strip()
+            if not value:
+                continue
+            heading = _section_key(value)
+            if heading:
+                flush()
+                current_key = heading
+                current_title = value.rstrip(" :\u2013\u2014")
+                continue
+            if not body or body[-1] != value:
+                body.append(value)
     flush()
     return tuple(sections)
 

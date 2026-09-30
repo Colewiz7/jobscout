@@ -60,7 +60,7 @@ def test_plain_text_workday_headings_are_segmented():
         "What You Can Expect\nWork with flight engineers.\n"
         "What We're Looking For\nExperience with Python."
     )
-    assert [section["key"] for section in sections] == ["role", "role", "requirements"]
+    assert [section["key"] for section in sections] == ["role", "benefits", "requirements"]
 
 
 def test_short_what_and_who_lines_divide_sections_but_sentences_do_not():
@@ -83,6 +83,29 @@ def test_combined_qualifications_requirements_heading_starts_a_new_section():
         "Qualifications/Requirements\nPursuing a systems engineering degree."
     )
     assert [section["key"] for section in sections] == ["role", "requirements"]
+
+
+def test_real_posting_heading_shapes_split_work_requirements_and_benefits():
+    caci = parse_sections(
+        "The Opportunity:\nThe internship begins in May and lasts 12 weeks. Responsibilities:\n"
+        "Build software with Python.\nQualifications: Required:\nExperience with Linux.\n"
+        "Desired:\nGPA 3.0 preferred.\nWhat You Can Expect:\nA culture of integrity."
+    )
+    assert [section["key"] for section in caci] == [
+        "role", "responsibilities", "requirements", "nice_to_have", "benefits",
+    ]
+    nike = parse_sections(
+        "WHO YOU’LL WORK WITH\nMeet the team.\nWHAT YOU WILL WORK ON\n"
+        "Design cushioning systems.\nWHO WE ARE LOOKING FOR\n"
+        "Experience with Design of Experiments (DOE)."
+    )
+    assert [section["key"] for section in nike] == ["role", "responsibilities", "requirements"]
+    audax = parse_sections(
+        "POSITION SUMMARY:\nSupport IT.\nRESPONSIBILITIES:\nHelp users.\n"
+        "COMPETENCIES:\nWindows OS and macOS.\nREQUIREMENTS/QUALIFICATIONS:\n"
+        "Currently enrolled in a BS/BA program."
+    )
+    assert [section["key"] for section in audax] == ["role", "responsibilities", "requirements", "requirements"]
 
 
 def test_greenhouse_detail_uses_public_job_endpoint_and_exact_deadline():

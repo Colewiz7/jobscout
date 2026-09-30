@@ -1,5 +1,7 @@
 "use strict";
 
+import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
+
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
 const commandInput = document.querySelector("#command-input");
@@ -373,35 +375,15 @@ function deadlineLabel(value) {
   return days >= 0 && days < 7 ? `${formatted} (${days === 0 ? "today" : `${days}d left`})` : formatted;
 }
 
-// One curated, source-text-only vocabulary; longest terms win over their abbreviations.
-const HIGHLIGHT_TERMS = [
-  "Claude", "Claude Code", "Codex", "ChatGPT", "OpenAI", "Anthropic", "Gemini", "Copilot", "LangChain", "LlamaIndex", "RAG", "LLM", "machine learning", "deep learning", "computer vision", "natural language processing", "PyTorch", "TensorFlow", "scikit-learn", "Hugging Face",
-  "C++", "C#", "Python", "JavaScript", "TypeScript", "Java", "Rust", "Golang", "Kotlin", "Swift", "Scala", "Ruby", "PHP", "MATLAB", "Simulink", "LabVIEW", "Verilog", "VHDL", "SQL", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Snowflake", "Databricks", "Spark", "Pandas", "NumPy",
-  "AWS", "Azure", "Google Cloud", "GCP", "Kubernetes", "Docker", "Terraform", "Ansible", "GitOps", "ArgoCD", "Jenkins", "GitHub Actions", "CI/CD", "Linux", "Unix", "Bash", "PowerShell", "REST", "GraphQL", "React", "Next.js", "Node.js", "FastAPI", "Django", "Flask", "Spring Boot", ".NET",
-  "CAD", "AutoCAD", "SolidWorks", "Creo", "CATIA", "Fusion 360", "PCB", "Altium", "FPGA", "embedded systems", "microcontrollers", "ROS", "robotics", "control systems", "signal processing", "finite element analysis", "FEA", "GD&T", "Six Sigma", "FMEA", "ISO 13485", "FDA", "GMP", "HIPAA",
-  "data analysis", "data engineering", "data visualization", "statistics", "experimental design", "technical writing", "project management", "leadership", "mentorship", "cross-functional", "stakeholder management", "public speaking", "communication", "problem solving",
-  "security clearance", "clearance", "US citizenship", "work authorization", "visa sponsorship", "sponsorship", "GPA", "bachelor's degree", "master's degree", "remote", "hybrid", "on-site", "onsite", "in-person", "relocation", "hourly", "per hour", "spring", "summer", "fall", "winter",
-];
-const HIGHLIGHT_PATTERN = new RegExp([
-  String.raw`\$\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*[-–]\s*\$?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:/hr|per hour|hourly|per year|annually))?`,
-  String.raw`\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(?:\d{1,2}(?:,?\s+\d{4})?|20\d{2})\b`,
-  String.raw`\b(?:Spring|Summer|Fall|Autumn|Winter)\s+20\d{2}\b`,
-  String.raw`\b\d{1,2}/\d{1,2}/20\d{2}\b`,
-  `(?<![A-Za-z0-9])(?:${HIGHLIGHT_TERMS.sort((a, b) => b.length - a.length).map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9])`,
-].join("|"), "gi");
-
-function highlightPostingText(value) {
+function highlightPostingText(value, seen, used) {
   const text = String(value || "");
-  HIGHLIGHT_PATTERN.lastIndex = 0;
   let html = "";
   let previous = 0;
-  let count = 0;
-  for (const match of text.matchAll(HIGHLIGHT_PATTERN)) {
-    if (count >= 60) break;
-    html += escapeHtml(text.slice(previous, match.index));
-    html += `<mark class="posting-highlight">${escapeHtml(match[0])}</mark>`;
-    previous = match.index + match[0].length;
-    count += 1;
+  for (const match of findPostingHighlights(text, { seen })) {
+    used.add(match.category);
+    html += escapeHtml(text.slice(previous, match.start));
+    html += `<mark class="posting-highlight posting-highlight--${match.category}" aria-label="${escapeHtml(HIGHLIGHT_LABELS[match.category])}: ${escapeHtml(match.text)}">${escapeHtml(match.text)}</mark>`;
+    previous = match.end;
   }
   return html + escapeHtml(text.slice(previous));
 }
@@ -416,14 +398,17 @@ function descriptionMarkup(job) {
   const labels = { about: "About the company", role: "The role", responsibilities: "What you'll do", requirements: "What you'll need", nice_to_have: "Nice to have", benefits: "Benefits", logistics: "Practical details" };
   const order = { role: 0, responsibilities: 1, requirements: 2, logistics: 3, nice_to_have: 4, benefits: 5, about: 6 };
   const sorted = [...sections].sort((left, right) => (order[left.key] ?? 7) - (order[right.key] ?? 7));
+  const usedHighlights = new Set();
   const parsed = sorted.map((section) => {
+    const seen = new Set();
     const lines = String(section.text).split(/\n+/).map((line) => line.trim()).filter(Boolean);
-    const content = lines.map((line) => `<p>${highlightPostingText(line.replace(/^[-*•]\s*/, ""))}</p>`).join("");
+    const content = lines.map((line) => `<p>${highlightPostingText(line.replace(/^[-*•]\s*/, ""), seen, usedHighlights)}</p>`).join("");
     const title = section.title && section.title !== "Overview" ? section.title : labels[section.key] || "Details";
     return `<details class="parsed-section" ${["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
   }).join("");
-  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${highlightPostingText(value.description_text)}</div></details>` : "";
-  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${parsed}${original}</section>` : "";
+  const legend = [...usedHighlights].map((kind) => `<span class="highlight-key-item highlight-key-item--${kind}">${escapeHtml(HIGHLIGHT_LABELS[kind])}</span>`).join("");
+  const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${escapeHtml(value.description_text)}</div></details>` : "";
+  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${legend ? `<div class="highlight-key" aria-label="Highlight key">${legend}</div>` : ""}${parsed}${original}</section>` : "";
 }
 
 function overviewMarkup(job) {
@@ -432,7 +417,7 @@ function overviewMarkup(job) {
   if (!entry) return `<section class="detail-section ai-overview"><div class="overview-heading"><h2>AI overview</h2><span>Selected from the posting</span></div><button class="tonal-button interactive" type="button" data-generate-overview>Generate overview</button></section>`;
   if (entry.loading) return `<section class="detail-section ai-overview" aria-live="polite"><h2>AI overview</h2><p class="overview-pending">Generating from the posting…</p></section>`;
   if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
-  if (!entry.items?.length) return "";
+  if (!entry.items?.length) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>There isn't enough readable posting detail for an overview. Open the original posting or paste its description, then retry.</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   const labels = { work: "Responsibilities", skills: "Skills", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
   const groups = Object.entries(labels).map(([kind, label]) => {
     const items = entry.items.filter((item) => item.kind === kind);

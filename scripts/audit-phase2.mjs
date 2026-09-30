@@ -181,6 +181,9 @@ try {
         values: [...(grid?.querySelectorAll('dd') || [])].map((item) => item.textContent),
         columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 0,
         highlighted: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.textContent),
+        highlightCategories: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.className),
+        highlightKey: [...document.querySelectorAll('.highlight-key-item')].map((item) => item.textContent),
+        brandSize: document.querySelector('.brand-mark img')?.getBoundingClientRect().width || 0,
         customField: Boolean(document.querySelector('#highlight-terms')),
       };
     })()`);
@@ -585,6 +588,7 @@ try {
   if (compact.hasHorizontalOverflow) failures.push(`320px layout overflowed to ${compact.content}px`);
   if (auditOverview && (overview.columns !== 2 || !overview.labels.includes("Skills") || !overview.values.includes("Python, leadership"))) failures.push(`overview fact grid failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
+  if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 56)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
   if (quickFill?.error) failures.push(quickFill.error);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
   if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");

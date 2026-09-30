@@ -94,9 +94,13 @@ def test_dashboard_serves_shell_and_history_routes(dashboard):
     assert nested.status_code == 200
     assert nested.text == shell.text
     assert "/static/icons/jobseer-fan-32.png" in shell.text
+    assert "/static/icons/jobseer-fan-transparent-112.png" in shell.text
     icon = httpx.get(f"{base}/static/icons/jobseer-fan-32.png", timeout=2)
     assert icon.status_code == 200
     assert icon.headers["content-type"] == "image/png"
+    brand_icon = httpx.get(f"{base}/static/icons/jobseer-fan-transparent-112.png", timeout=2)
+    assert brand_icon.status_code == 200
+    assert brand_icon.headers["content-type"] == "image/png"
 
 
 def test_ge_company_names_have_real_icons(dashboard):

@@ -151,18 +151,16 @@ input:-webkit-autofill {
 
 .brand-mark {
   display: grid;
-  width: 48px;
-  height: 48px;
+  width: 64px;
+  height: 64px;
   place-items: center;
-  border-radius: var(--r-lg);
   text-decoration: none;
 }
 
 .brand-mark img {
   display: block;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
+  width: 56px;
+  height: 56px;
 }
 
 .nav-items {
@@ -3466,11 +3464,44 @@ body.quick-fill-popout {
 .posting-highlight {
   padding: 0 2px;
   border-radius: var(--r-xs);
-  background: var(--primary-container);
-  color: var(--on-primary-container);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
+
+.posting-highlight--blocker { background: var(--error-container); color: var(--on-error-container); }
+.posting-highlight--caution { background: var(--warning-container); color: var(--on-warning-container); }
+.posting-highlight--fit { background: var(--success-container); color: var(--on-success-container); }
+.posting-highlight--money { background: var(--brass-container); color: var(--brass-on-container); }
+.posting-highlight--stack { background: var(--ink-container); color: var(--ink-on-container); }
+.posting-highlight--logistics { background: var(--plum-container); color: var(--plum-on-container); }
+.posting-highlight--boilerplate { background: var(--surface-container-high); color: var(--on-surface-variant); }
+
+.highlight-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  margin-bottom: var(--s-2);
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.highlight-key-item::before {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: var(--s-1);
+  border-radius: var(--r-full);
+  background: currentColor;
+  content: "";
+}
+
+.highlight-key-item--blocker { color: var(--error); }
+.highlight-key-item--caution { color: var(--warning); }
+.highlight-key-item--fit { color: var(--success); }
+.highlight-key-item--money { color: var(--brass-on-container); }
+.highlight-key-item--stack { color: var(--ink-on-container); }
+.highlight-key-item--logistics { color: var(--plum-on-container); }
+.highlight-key-item--boilerplate { color: var(--on-surface-variant); }
 
 .overview-heading {
   display: flex;

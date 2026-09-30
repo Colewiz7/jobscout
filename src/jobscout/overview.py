@@ -30,13 +30,18 @@ _SCHEMA = {
 }
 
 _SKILLS = (
-    "Python", "C++", "C#", "JavaScript", "TypeScript", "Java", "Rust", "Golang",
+    "Python", "C/C++", "C++", "C#", "JavaScript", "TypeScript", "Java", "Rust", "Golang",
     "Kotlin", "Swift", "SQL", "PostgreSQL", "AWS", "Azure", "GCP", "Docker",
-    "Kubernetes", "Terraform", "Linux", "Git", "React", "Node.js", "MATLAB",
+    "Kubernetes", "Terraform", "Linux", "Unix", "Windows", "macOS", "iOS",
+    "Office 365", "Outlook", "Git", "React", "Node.js", "MATLAB",
     "Simulink", "SolidWorks", "AutoCAD", "CAD", "FPGA", "PCB", "ROS",
     "PyTorch", "TensorFlow", "machine learning", "data analysis", "statistics",
     "Claude", "Codex", "ChatGPT", "technical writing", "project management",
     "leadership", "communication", "problem solving", "cross-functional",
+    "IP networking", "telecommunications", "protocol analyzers", "cyber security",
+    "security analysis", "software test", "systems engineering", "mechanical engineering",
+    "chemical engineering", "Design of Experiments", "DOE", "data analytics",
+    "Rhino", "Siemens NX", "plastics molding", "mold design", "3D models",
 )
 
 
@@ -79,7 +84,7 @@ def _explicit_skills(excerpts: list[dict[str, str]]) -> list[str]:
     found = []
     for skill in sorted(_SKILLS, key=len, reverse=True):
         term = _exact_term(text, skill)
-        if term and not any(term.casefold() == previous.casefold() for previous in found):
+        if term and not any(term.casefold() in previous.casefold() for previous in found):
             found.append(term)
     return found[:12]
 
@@ -92,14 +97,36 @@ def candidates(sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
         key = str(section.get("key") or "about")
         for line in str(section.get("text") or "").splitlines():
             line = re.sub(r"^[\s\-*•]+", "", line).strip()
-            if len(line) > 320:
-                pieces = re.split(r"(?<=[.!?])\s+(?=[A-Z])", line)
-            else:
-                pieces = [line]
+            sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", line)
+            pieces = []
+            for sentence in sentences:
+                if len(sentence) <= 320:
+                    pieces.append(sentence)
+                    continue
+                # Export-control and legal sentences can be long; split at
+                # their own punctuation so a real requirement is not dropped.
+                current = ""
+                for clause in re.split(r"(?<=[,;])\s+", sentence):
+                    if current and len(current) + len(clause) + 1 > 320:
+                        pieces.append(current)
+                        current = ""
+                    if len(clause) > 320:
+                        words = clause.split()
+                        for word in words:
+                            if current and len(current) + len(word) + 1 > 320:
+                                pieces.append(current)
+                                current = ""
+                            current = f"{current} {word}".strip()
+                    else:
+                        current = f"{current} {clause}".strip()
+                if current:
+                    pieces.append(current)
             for piece in pieces:
                 piece = piece.strip()
                 normalized = re.sub(r"\s+", " ", piece).casefold()
-                short_requirement = key in {"requirements", "nice_to_have"} and 6 <= len(piece) <= 320
+                short_requirement = key in {"requirements", "nice_to_have"} and (
+                    6 <= len(piece) <= 320 or any(piece.casefold() == skill.casefold() for skill in _SKILLS)
+                )
                 if (not (24 <= len(piece) <= 320 or short_requirement)
                         or piece.endswith(":")
                         or normalized in seen
@@ -121,16 +148,26 @@ def _excerpt_kind(section: str, text: str) -> str | None:
     lower = text.casefold()
     if re.search(r"\$\s?\d|\b(?:salary|hourly rate|pay range|compensation range)\b", lower) and re.search(r"\d|\$", lower):
         return "pay"
-    if re.search(r"\b(?:\d+[ -]?(?:to|[-–])[ -]?\d+[ -]?week|\d+[ -]?week|start(?:s|ing)? (?:in|on)|through (?:june|august|december)|spring 20\d\d|summer 20\d\d|fall 20\d\d)\b", lower):
+    if re.search(r"\b(?:\d+[ -]?(?:to|[-–])[ -]?\d+[ -]?weeks?|\d+[ -]?weeks?|start(?:s|ing)? (?:in|on)|begin(?:s|ning)? in|through (?:june|august|december)|spring 20\d\d|summer 20\d\d|fall 20\d\d)\b", lower):
         return "dates"
-    if re.search(r"\b(?:remote|hybrid|on-site|onsite|relocation|willingness to work in |based in |work location|travel)\b", lower):
+    if re.search(r"\b(?:remote|hybrid|on-site|onsite|in office|relocation|willingness to work in |based in |work location|travel)\b", lower):
         return "location"
     if section == "nice_to_have" or re.search(r"\b(?:preferred|nice to have|bonus qualification)\b", lower):
         return "preferred"
     if section == "requirements":
         return "required"
-    if section in {"role", "responsibilities"} and not re.search(r"\b(?:equal opportunity|great work environment|competitive compensation|employment decisions)\b", lower):
+    if section == "responsibilities" and not re.search(r"\b(?:equal opportunity|great work environment|competitive compensation|employment decisions)\b", lower):
         return "work"
+    if section == "role" and (
+        re.search(r"\b(?:you will|you'll|in this role|as an? .{0,70} you|build|design|develop|implement|test|support|assist|work with)\b", lower)
+        or re.match(r"(?:provide|understanding|cross.functional collaboration|coordinate|contribute|participate|manage|analyze|create)\b", lower)
+    ):
+        return "work"
+    if section in {"about", "logistics"}:
+        if re.search(r"\b(?:must|is required|experience with|familiar with|proficiency in|degree in|currently enrolled)\b", lower):
+            return "required"
+        if re.search(r"\b(?:you will|you'll|tasks may include|in this role|you will work|you'll work|you will support)\b", lower):
+            return "work"
     return None
 
 
@@ -144,7 +181,7 @@ class OverviewService:
 
     def _cache_key(self, excerpts: list[dict[str, str]]) -> str:
         digest = hashlib.sha256(json.dumps(excerpts, sort_keys=True).encode()).hexdigest()
-        return f"v3:{self.model}:{digest}"
+        return f"v4:{self.model}:{digest}"
 
     def cached_overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]] | None:
         key = self._cache_key(candidates(sections))
@@ -156,7 +193,7 @@ class OverviewService:
 
     def overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
         excerpts = candidates(sections)
-        if len(excerpts) < 3:
+        if not excerpts:
             return []
         cache_key = self._cache_key(excerpts)
         with self._lock:

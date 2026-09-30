@@ -46,6 +46,13 @@
   --warning: #e6c07a;
   --warning-container: #4a3a14;
   --on-warning-container: #fde2a6;
+  /* Static Carrel palette roles for the user's multi-category reading highlights. */
+  --brass-container: #4f411a;
+  --brass-on-container: #fbe0a2;
+  --ink-container: #293d59;
+  --ink-on-container: #d4e3ff;
+  --plum-container: #4a3550;
+  --plum-on-container: #f5d9f9;
 
   --r-xs: 4px;
   --r-sm: 8px;
