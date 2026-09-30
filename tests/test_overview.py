@@ -95,3 +95,77 @@ def test_overview_terms_are_short_and_reject_unsupported_model_claims():
     assert next(item for item in items if item["kind"] == "skills")["terms"] == ["leadership", "Python"]
     assert next(item for item in items if item["kind"] == "required")["terms"] == ["Python", "leadership"]
     assert all("Rust" not in item["terms"] and "Kubernetes" not in item["terms"] for item in items)
+
+
+def test_unstructured_lever_posting_still_produces_actual_work():
+    sections = parse_sections(
+        "Please Note:\nApplicants must be authorized to work in the United States.\n"
+        "As a Systems Engineering Intern, you will work alongside experienced engineers "
+        "to contribute to the success of our projects. You will support the design and "
+        "verification of real-world space systems, collaborating with electrical, mechanical, "
+        "software, RF, and test teams. Tasks may include requirements development, "
+        "interface definition, system-level analysis, integration planning, and test execution."
+    )
+    assert [section["key"] for section in sections] == ["logistics"]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": '{"items":[]}'}).encode())
+
+    items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(sections)
+    assert any(item["kind"] == "work" and "work alongside" in item["text"] for item in items)
+    assert any(item["kind"] == "work" and "support the design" in item["text"] for item in items)
+    assert any(item["kind"] == "required" and "authorized" in item["text"] for item in items)
+
+
+def test_long_export_control_sentence_keeps_the_explicit_requirement():
+    sentence = (
+        "To conform with United States Government Space Technology Export Regulations, "
+        "the applicant must be a U.S. citizen, lawful permanent resident of the U.S., "
+        "conditional resident, asylee or refugee, or eligible to obtain the required "
+        "authorizations from the U.S. Department of State, including any applicable "
+        "export-control authorization before starting work in this program."
+    )
+    excerpts = candidates([{"key": "about", "text": sentence}])
+    assert excerpts
+    assert all(len(item["text"]) <= 320 for item in excerpts)
+    assert any("must be a U.S. citizen" in item["text"] for item in excerpts)
+
+
+def test_caci_nike_and_audax_examples_surface_decision_facts():
+    examples = [
+        (
+            "The Opportunity:\nThe internship will begin in May and last 12 weeks. "
+            "You will be required to work fully on-site. Responsibilities:\n"
+            "Implement and test software in IP networking equipment.\n"
+            "Qualifications: Required:\nSoftware development skills in JavaScript, Python and C/C++.\n"
+            "Desired:\nMinimum GPA of 3.0 is preferred.\n",
+            {"work", "skills", "required", "preferred", "dates", "location"},
+            {"Python", "JavaScript", "C/C++"},
+        ),
+        (
+            "WHAT YOU WILL WORK ON\nInvent and evaluate future cushioning systems.\n"
+            "WHO WE ARE LOOKING FOR\nExperience creating and executing Design of Experiments (DOE).\n"
+            "This is a 10-week paid internship opportunity.\n",
+            {"work", "skills", "required", "dates"},
+            {"Design of Experiments", "DOE"},
+        ),
+        (
+            "RESPONSIBILITIES:\nSupport desktops, laptops, and mobile devices.\n"
+            "COMPETENCIES:\nWindows OS, macOS, Apple iOS, Outlook and Office 365.\n"
+            "REQUIREMENTS/QUALIFICATIONS:\nCurrently enrolled in a BS/BA program.\n"
+            "For New York: The hourly range is $28.00-$30.00.\n",
+            {"work", "skills", "required", "pay"},
+            {"Windows", "macOS", "iOS", "Outlook", "Office 365"},
+        ),
+    ]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": '{"items":[]}'}).encode())
+
+    for posting, expected_kinds, expected_skills in examples:
+        items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(parse_sections(posting))
+        assert expected_kinds <= {item["kind"] for item in items}
+        skills = next(item["terms"] for item in items if item["kind"] == "skills")
+        assert expected_skills <= set(skills)
