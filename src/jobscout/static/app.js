@@ -65,7 +65,7 @@ const state = {
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
-  aiOverviewEnabled: false, overviews: new Map(),
+  aiOverviewEnabled: false, overviews: new Map(), overviewCacheAttempted: new Set(),
   eligibility: new Map(),
   quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
   quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
@@ -394,7 +394,7 @@ function highlightPostingText(value, seen, used) {
   return html + escapeHtml(text.slice(previous));
 }
 
-function descriptionMarkup(job) {
+function descriptionMarkup(job, { compact = false } = {}) {
   const detail = state.descriptions.get(job.dedupe_key);
   if (!detail) return "";
   if (detail.loading && detail.showLoader) return '<section class="detail-section description-skeleton skeleton" aria-label="Loading posting description"></section>';
@@ -410,7 +410,7 @@ function descriptionMarkup(job) {
     const lines = String(section.text).split(/\n+/).map((line) => line.trim()).filter(Boolean);
     const content = lines.map((line) => `<p>${highlightPostingText(line.replace(/^[-*•]\s*/, ""), seen, usedHighlights)}</p>`).join("");
     const title = section.title && section.title !== "Overview" ? section.title : labels[section.key] || "Details";
-    return `<details class="parsed-section" ${["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
+    return `<details class="parsed-section" data-section-key="${escapeHtml(section.key)}" ${!compact && ["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
   }).join("");
   const legend = [...usedHighlights].map((kind) => `<span class="highlight-key-item highlight-key-item--${kind}">${escapeHtml(HIGHLIGHT_LABELS[kind])}</span>`).join("");
   const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${escapeHtml(value.description_text)}</div></details>` : "";
@@ -607,7 +607,8 @@ async function loadOverview(key, { force = false } = {}) {
 }
 
 async function showCachedOverview(key) {
-  if (!state.aiOverviewEnabled || state.overviews.has(key)) return;
+  if (!state.aiOverviewEnabled || state.overviews.has(key) || state.overviewCacheAttempted.has(key)) return;
+  state.overviewCacheAttempted.add(key);
   try {
     const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview?cached=1`, {
       credentials: "same-origin", headers: { Accept: "application/json" },
@@ -701,6 +702,7 @@ function renderInbox({ focus = false } = {}) {
     renderVirtualRows();
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
+  if (state.loaded && state.selectedKey) showCachedOverview(state.selectedKey);
   if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) {
     const job = currentJob();
     const contextKey = job ? `${job.dedupe_key}\u0000${job.company}` : "";
@@ -735,6 +737,7 @@ function renderSelectedJob() {
     row.tabIndex = selected ? 0 : -1;
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
+  if (state.loaded && state.selectedKey) showCachedOverview(state.selectedKey);
   if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) renderQuickFill();
 }
 
@@ -1427,7 +1430,17 @@ function sessionRequirements(job) {
   const detail = state.descriptions.get(job.dedupe_key);
   if (detail?.loading && detail.showLoader) return '<div class="session-requirements skeleton" aria-label="Loading requirements"></div>';
   const requirements = detail?.value?.sections?.find((section) => section.key === "requirements")?.text;
-  return requirements ? `<div class="session-requirements">${escapeHtml(requirements).replace(/\n/g, "<br>")}</div>` : '<p class="session-muted">No parsed requirements yet.</p>';
+  if (!requirements) return '<p class="session-muted">No parsed requirements yet.</p>';
+  const lines = String(requirements).split(/\n+/).map((line) => line.trim().replace(/^[-*•]\s*/, "")).filter(Boolean);
+  const preview = lines.slice(0, 4).map((line) => `<li>${escapeHtml(line.length > 150 ? `${line.slice(0, 147)}…` : line)}</li>`).join("");
+  return `<div class="session-requirements"><ul>${preview}</ul><button class="text-button interactive" type="button" data-session-see-requirements>Read full requirements</button></div>`;
+}
+
+function sessionLocationFact(location) {
+  if (!location) return "";
+  const places = String(location).split(";").map((place) => place.trim()).filter(Boolean);
+  if (places.length < 2) return factItem("Location", location);
+  return `<div class="session-location-fact"><dt>Location</dt><dd><details class="session-locations"><summary>${escapeHtml(places[0])} <span>+${places.length - 1} more</span></summary><ul>${places.slice(1).map((place) => `<li>${escapeHtml(place)}</li>`).join("")}</ul></details></dd></div>`;
 }
 
 function sessionPromptMarkup(job) {
@@ -1450,10 +1463,10 @@ function applySessionMarkup(job) {
   const progress = `${session.index + 1} of ${session.keys.length}`;
   const quickFill = state.quickFillEnabled
     ? `<aside class="session-quick-fill" id="session-quick-fill" aria-label="Quick-fill">${state.quickFillProfile ? quickFillInnerMarkup({ embedded: true }) : '<p class="session-muted">Loading Quick-fill…</p>'}</aside>`
-    : `<aside class="session-review" aria-label="Posting review"><h2>Posting review</h2>${overviewMarkup(job)}${atGlanceMarkup(job)}${descriptionMarkup(job)}<p class="session-muted">Quick-fill stays disabled until protected Profile access is verified.</p></aside>`;
+    : `<aside class="session-review" id="session-posting-review" aria-label="Posting review">${overviewMarkup(job)}${atGlanceMarkup(job)}${descriptionMarkup(job, { compact: true })}</aside>`;
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>${job.public_apply_url ? "Apply opens the verified public posting." : "No public apply link verified. Find this role on the employer’s public careers site."}</p>` : "";
   const uncertain = job.liveness_status === "unknown" ? `<p class="company-warning"><span aria-hidden="true">?</span>Couldn’t confirm this posting is open: ${escapeHtml(job.liveness_evidence || "the provider did not respond")}. Check before submitting.</p>` : "";
-  return `<section class="apply-session" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-skip>Skip</button><button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${factItem("Location", job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job) : ""}</main>${quickFill}</div></section>`;
+  return `<section class="apply-session${state.quickFillEnabled ? "" : " apply-session--review"}" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-skip>Skip</button><button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${sessionLocationFact(job.location)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements preview</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job, { compact: true }) : ""}</main>${quickFill}</div></section>`;
 }
 
 function sessionSummaryMarkup() {
@@ -1500,6 +1513,7 @@ function renderApplySession({ focus = false } = {}) {
   if (!job) { endApplySession(); return; }
   state.selectedKey = key;
   routeView.innerHTML = applySessionMarkup(job);
+  showCachedOverview(key);
   const surface = document.querySelector("#session-quick-fill");
   if (surface && state.quickFillEnabled && state.quickFillProfile) bindQuickFillSurface(surface);
   loadDescription(key);
@@ -2623,6 +2637,11 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest("[data-session-apply]")) { openSessionApplication(); return; }
+  if (event.target.closest("[data-session-see-requirements]")) {
+    const section = document.querySelector('.apply-session .parsed-section[data-section-key="requirements"]');
+    if (section) { section.open = true; section.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); }
+    return;
+  }
   if (event.target.closest("[data-session-applied]")) { markSessionApplied(); return; }
   if (event.target.closest("[data-session-not-yet]")) { if (state.applySession) state.applySession.awaitingReturn = ""; renderApplySession({ focus: true }); return; }
   if (event.target.closest("[data-session-skip]")) { advanceApplySession("skipped"); return; }
