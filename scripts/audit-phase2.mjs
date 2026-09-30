@@ -15,6 +15,7 @@ const auditQuickFill = process.env.JOBSCOUT_AUDIT_QUICK_FILL === "true";
 const auditApplySession = process.env.JOBSCOUT_AUDIT_APPLY_SESSION === "true";
 const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
 const auditEligibility = process.env.JOBSCOUT_AUDIT_ELIGIBILITY === "true";
+const auditOverview = process.env.JOBSCOUT_AUDIT_OVERVIEW === "true";
 
 async function freePort() {
   const server = createServer();
@@ -89,6 +90,7 @@ const dashboard = spawn(
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
       JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditApplySession || auditEligibility ? "true" : "false",
+      JOBSCOUT_AI_OVERVIEW_ENABLED: auditOverview ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
   },
@@ -131,6 +133,22 @@ try {
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) if (!entry.hadRecentInput) window.__audit.cls += entry.value;
       }).observe({ type: "layout-shift", buffered: true });
+      ${auditOverview ? `
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, options) => {
+          const url = String(typeof input === "string" ? input : input.url);
+          if (url.includes("/overview?cached=1")) return Promise.resolve(new Response(JSON.stringify({ items: [
+            { kind: "work", text: "Build tools with Claude and Codex.", terms: ["Build tools"] },
+            { kind: "skills", text: "Python, leadership", terms: ["Python", "leadership"] },
+            { kind: "location", text: "Hybrid in Boston", terms: ["Hybrid", "Boston"] },
+          ] }), { headers: { "Content-Type": "application/json" } }));
+          if (url.endsWith("/description")) return Promise.resolve(new Response(JSON.stringify({ description: {
+            description_text: "Build tools with Claude and Codex using Python. Hybrid in Boston.",
+            sections: [{ key: "responsibilities", title: "Responsibilities", text: "Build tools with Claude and Codex using Python. Hybrid in Boston." }],
+          } }), { headers: { "Content-Type": "application/json" } }));
+          return originalFetch(input, options);
+        };
+      ` : ""}
     `,
   });
   await cdp.call("Page.navigate", { url: `${base}/inbox?status=all` });
@@ -150,6 +168,23 @@ try {
     if (await cdp.evaluate("window.__audit.lcp > 0")) break;
   }
   const renderReadyMs = Date.now() - navigationStarted;
+  let overview = null;
+  if (auditOverview) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('.overview-grid'))")) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    overview = await cdp.evaluate(`(() => {
+      const grid = document.querySelector('.overview-grid');
+      return {
+        labels: [...(grid?.querySelectorAll('dt') || [])].map((item) => item.textContent),
+        values: [...(grid?.querySelectorAll('dd') || [])].map((item) => item.textContent),
+        columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 0,
+        highlighted: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.textContent),
+        customField: Boolean(document.querySelector('#highlight-terms')),
+      };
+    })()`);
+  }
 
   const jobCount = await fetch(`${base}/api/v1/jobs`).then((response) => response.json()).then((data) => data.jobs.length);
   const desktop = await cdp.evaluate(`(() => {
@@ -522,6 +557,7 @@ try {
     scrolledSelection,
     logoScroll,
     copiedList,
+    ...(overview ? { overview } : {}),
     ...(quickFill ? { quickFill } : {}),
     ...(applySession ? { applySession } : {}),
     ...(tracker ? { tracker } : {}),
@@ -547,6 +583,8 @@ try {
   if (desktop.duplicateIds.length) failures.push("duplicate IDs found");
   if (desktop.unnamedControls.length) failures.push("unnamed interactive controls found");
   if (compact.hasHorizontalOverflow) failures.push(`320px layout overflowed to ${compact.content}px`);
+  if (auditOverview && (overview.columns !== 2 || !overview.labels.includes("Skills") || !overview.values.includes("Python, leadership"))) failures.push(`overview fact grid failed: ${JSON.stringify(overview)}`);
+  if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
   if (quickFill?.error) failures.push(quickFill.error);
   if (auditQuickFill && quickFill?.override !== "A job-specific answer for {company}.") failures.push("job-specific answer did not autosave");
   if (auditQuickFill && quickFill?.accountEmail !== "audit@example.invalid") failures.push("ATS account did not autosave");

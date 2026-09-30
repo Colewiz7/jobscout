@@ -22,7 +22,6 @@ const offlineState = document.querySelector("#offline-state");
 const ROW_HEIGHT = 72;
 const DIVIDER_HEIGHT = 32;
 const LAST_VISIT_KEY = "jobseer.inboxLastVisit";
-const HIGHLIGHT_TERMS_KEY = "jobseer.highlightTerms";
 const allowedStatuses = new Set(["all", "new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"]);
 const allowedSorts = new Set(["score", "newest", "company"]);
 
@@ -82,9 +81,7 @@ const state = {
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
   companyLogos: {},
-  highlightTerms: readStoredHighlightTerms(), highlightInput: "", highlightTimer: null,
 };
-state.highlightInput = state.highlightTerms.join(", ");
 
 let commandSelection = 0;
 let commandMatches = commands;
@@ -108,13 +105,6 @@ function readStoredDate(key) {
     const value = raw ? new Date(raw) : null;
     return value && !Number.isNaN(value.valueOf()) ? value : null;
   } catch { return null; }
-}
-
-function readStoredHighlightTerms() {
-  try {
-    const terms = JSON.parse(localStorage.getItem(HIGHLIGHT_TERMS_KEY) || "[]");
-    return Array.isArray(terms) ? terms.filter((term) => typeof term === "string" && term.trim()).slice(0, 20).map((term) => term.slice(0, 40)) : [];
-  } catch { return []; }
 }
 
 function routeRoot(pathname = window.location.pathname) {
@@ -383,22 +373,30 @@ function deadlineLabel(value) {
   return days >= 0 && days < 7 ? `${formatted} (${days === 0 ? "today" : `${days}d left`})` : formatted;
 }
 
+// One curated, source-text-only vocabulary; longest terms win over their abbreviations.
+const HIGHLIGHT_TERMS = [
+  "Claude", "Claude Code", "Codex", "ChatGPT", "OpenAI", "Anthropic", "Gemini", "Copilot", "LangChain", "LlamaIndex", "RAG", "LLM", "machine learning", "deep learning", "computer vision", "natural language processing", "PyTorch", "TensorFlow", "scikit-learn", "Hugging Face",
+  "C++", "C#", "Python", "JavaScript", "TypeScript", "Java", "Rust", "Golang", "Kotlin", "Swift", "Scala", "Ruby", "PHP", "MATLAB", "Simulink", "LabVIEW", "Verilog", "VHDL", "SQL", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Snowflake", "Databricks", "Spark", "Pandas", "NumPy",
+  "AWS", "Azure", "Google Cloud", "GCP", "Kubernetes", "Docker", "Terraform", "Ansible", "GitOps", "ArgoCD", "Jenkins", "GitHub Actions", "CI/CD", "Linux", "Unix", "Bash", "PowerShell", "REST", "GraphQL", "React", "Next.js", "Node.js", "FastAPI", "Django", "Flask", "Spring Boot", ".NET",
+  "CAD", "AutoCAD", "SolidWorks", "Creo", "CATIA", "Fusion 360", "PCB", "Altium", "FPGA", "embedded systems", "microcontrollers", "ROS", "robotics", "control systems", "signal processing", "finite element analysis", "FEA", "GD&T", "Six Sigma", "FMEA", "ISO 13485", "FDA", "GMP", "HIPAA",
+  "data analysis", "data engineering", "data visualization", "statistics", "experimental design", "technical writing", "project management", "leadership", "mentorship", "cross-functional", "stakeholder management", "public speaking", "communication", "problem solving",
+  "security clearance", "clearance", "US citizenship", "work authorization", "visa sponsorship", "sponsorship", "GPA", "bachelor's degree", "master's degree", "remote", "hybrid", "on-site", "onsite", "in-person", "relocation", "hourly", "per hour", "spring", "summer", "fall", "winter",
+];
+const HIGHLIGHT_PATTERN = new RegExp([
+  String.raw`\$\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*[-–]\s*\$?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:/hr|per hour|hourly|per year|annually))?`,
+  String.raw`\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(?:\d{1,2}(?:,?\s+\d{4})?|20\d{2})\b`,
+  String.raw`\b(?:Spring|Summer|Fall|Autumn|Winter)\s+20\d{2}\b`,
+  String.raw`\b\d{1,2}/\d{1,2}/20\d{2}\b`,
+  `(?<![A-Za-z0-9])(?:${HIGHLIGHT_TERMS.sort((a, b) => b.length - a.length).map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9])`,
+].join("|"), "gi");
+
 function highlightPostingText(value) {
   const text = String(value || "");
-  const custom = state.highlightTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const skills = ["C++", "C#", "Python", "JavaScript", "TypeScript", "SQL", "AWS", "Azure", "GCP", "Kubernetes", "Docker", "Terraform", "Crossplane", "React", "Java", "Rust", "MATLAB", "CAD", "Linux", "GitOps", "ArgoCD"];
-  const keywords = [...custom, ...skills.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "remote", "hybrid", "on-site", "onsite", "in-person", "must", "required", "preferred", "nice to have"];
-  const pattern = new RegExp([
-    String.raw`\$\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*[-–]\s*\$?\s?\d[\d,]*(?:\.\d{1,2})?)?(?:\s*(?:/hr|per hour|hourly|per year|annually))?`,
-    String.raw`\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(?:\d{1,2}(?:,?\s+\d{4})?|20\d{2})\b`,
-    String.raw`\b(?:Spring|Summer|Fall|Autumn|Winter)\s+20\d{2}\b`,
-    String.raw`\b\d{1,2}/\d{1,2}/20\d{2}\b`,
-    `(?<![A-Za-z0-9])(?:${keywords.join("|")})(?![A-Za-z0-9])`,
-  ].join("|"), "gi");
+  HIGHLIGHT_PATTERN.lastIndex = 0;
   let html = "";
   let previous = 0;
   let count = 0;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of text.matchAll(HIGHLIGHT_PATTERN)) {
     if (count >= 60) break;
     html += escapeHtml(text.slice(previous, match.index));
     html += `<mark class="posting-highlight">${escapeHtml(match[0])}</mark>`;
@@ -406,13 +404,6 @@ function highlightPostingText(value) {
     count += 1;
   }
   return html + escapeHtml(text.slice(previous));
-}
-
-function setHighlightTerms(value) {
-  state.highlightInput = value;
-  state.highlightTerms = [...new Set(value.split(",").map((term) => term.trim()).filter(Boolean))]
-    .slice(0, 20).map((term) => term.slice(0, 40));
-  try { localStorage.setItem(HIGHLIGHT_TERMS_KEY, JSON.stringify(state.highlightTerms)); } catch { /* Optional local preference. */ }
 }
 
 function descriptionMarkup(job) {
@@ -432,7 +423,7 @@ function descriptionMarkup(job) {
     return `<details class="parsed-section" ${["role", "responsibilities", "requirements"].includes(section.key) ? "open" : ""}><summary>${escapeHtml(title)}</summary><div>${content}</div></details>`;
   }).join("");
   const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${highlightPostingText(value.description_text)}</div></details>` : "";
-  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2><label class="highlight-field" for="highlight-terms"><span>Highlight your terms</span><input id="highlight-terms" type="text" maxlength="320" autocomplete="off" value="${escapeHtml(state.highlightInput)}" placeholder="e.g. MATLAB, clearance"></label>${parsed}${original}</section>` : "";
+  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${parsed}${original}</section>` : "";
 }
 
 function overviewMarkup(job) {
@@ -442,12 +433,13 @@ function overviewMarkup(job) {
   if (entry.loading) return `<section class="detail-section ai-overview" aria-live="polite"><h2>AI overview</h2><p class="overview-pending">Generating from the posting…</p></section>`;
   if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   if (!entry.items?.length) return "";
-  const labels = { work: "What you'll do", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
+  const labels = { work: "Responsibilities", skills: "Skills", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
   const groups = Object.entries(labels).map(([kind, label]) => {
     const items = entry.items.filter((item) => item.kind === kind);
-    return items.length ? `<div class="overview-group"><h3>${label}</h3><ul>${items.map((item) => `<li>${escapeHtml(item.text)}</li>`).join("")}</ul></div>` : "";
+    const terms = [...new Set(items.flatMap((item) => Array.isArray(item.terms) && item.terms.length ? item.terms : [item.text]).filter(Boolean))];
+    return terms.length ? `<div class="overview-cell"><dt>${label}</dt><dd>${terms.map(escapeHtml).join(", ")}</dd></div>` : "";
   }).join("");
-  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Only facts stated in the posting</span></div>${groups}</section>`;
+  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Only facts stated in the posting</span></div><dl class="overview-grid">${groups}</dl></section>`;
 }
 
 function atGlanceMarkup(job) {
@@ -2670,22 +2662,6 @@ document.addEventListener("input", (event) => {
     clearTimeout(state.notesTimer); document.querySelector("#notes-state").textContent = "Unsaved changes"; state.notesTimer = setTimeout(() => saveNotes(key, value), 600);
   } else if (event.target.id === "manual-description-text") {
     state.manualDescriptionDrafts.set(state.selectedKey, event.target.value);
-  } else if (event.target.id === "highlight-terms") {
-    state.highlightInput = event.target.value;
-    clearTimeout(state.highlightTimer);
-    state.highlightTimer = setTimeout(() => {
-      const current = document.querySelector("#highlight-terms");
-      const focused = current === document.activeElement;
-      const cursor = focused ? current.selectionStart : null;
-      setHighlightTerms(state.highlightInput);
-      if (routeRoot() !== "inbox") return;
-      renderSelectedJob();
-      if (focused) {
-        const replacement = document.querySelector("#highlight-terms");
-        replacement?.focus({ preventScroll: true });
-        replacement?.setSelectionRange(cursor, cursor);
-      }
-    }, 250);
   } else if (event.target.id === "tracker-search") {
     state.trackerQuery = event.target.value; syncTrackerUrl({ replace: true }); renderTracker();
     const search = document.querySelector("#tracker-search"); search?.focus(); search?.setSelectionRange(state.trackerQuery.length, state.trackerQuery.length);
@@ -2709,6 +2685,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("error", (event) => {
   if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .detail-company-logo, .company-monogram")) {
     event.target.hidden = true;
+    event.target.parentElement.classList.remove("has-logo", "logo-needs-light");
   }
 }, true);
 
