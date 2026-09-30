@@ -1,32 +1,25 @@
 # Authentik boundary
 
-Production serves JobSeer only through the existing Authentik forward-auth
-route. The application treats `X-authentik-username` as proof that the request
-passed through that route and rejects every `/api/v1/*` request without it.
-The Service must remain cluster-private, and the ingress or proxy must discard
-any client-supplied `X-authentik-*` headers before Authentik adds its own.
+Production routes `jobs.colewiz.dev` through Cloudflare Tunnel to the
+Authentik embedded proxy outpost, then to the JobSeer ClusterIP. There is no
+Traefik or public JobSeer Service. The JobSeer NetworkPolicy admits only the
+outpost/server pods selected by both namespace and pod labels.
 
-State-changing requests require all three checks:
+Every `/api/v1/*` request requires Authentik's username, application, and
+outpost metadata headers. JobSeer also requires the configured `cole` user and
+`jobseer` application. Authentik's proxy-provider upstream contract does not
+provide a signed `X-authentik-jwt` in the deployed version, so this header
+check must remain paired with the single-user Authentik binding and the
+pod-level NetworkPolicy. A public request with a forged username but no login
+must redirect to Authentik; it must not reach the dashboard.
 
-1. an Authentik username header;
-2. a same-origin `Origin` when the browser supplies one;
-3. the random token from `/api/v1/session` in both the Strict, HttpOnly cookie
-   and `X-CSRF-Token` header.
+State-changing requests additionally require a same-origin `Origin`, when
+present, and the random `/api/v1/session` token in both a Strict, HttpOnly
+cookie and the `X-CSRF-Token` header.
 
-Before enabling a structured profile route, verify from outside the cluster:
-
-```bash
-# No Authentik session: redirect at the ingress or 401 at the application.
-curl -i https://jobs.example.invalid/api/v1/session
-
-# Authenticated browser session: 200, a CSRF cookie, and the current username.
-# Perform this check in browser developer tools; do not paste a session cookie
-# into shell history.
-```
-
-Also verify that a direct request from another namespace cannot reach the
-dashboard Service. Until these checks pass in the GitOps deployment, the
-application returns 404 for `/api/v1/profile` and renders no Quick-fill UI by
-default. After every verification in the deployment runbook passes, set
-`JOBSCOUT_QUICK_FILL_ENABLED=true` on the dashboard Deployment to enable both
-as one security boundary.
+Production Quick-fill was enabled on 2026-09-30 after the five checks in the
+GitOps `apps/jobscout/docs/deploy/verify.md` runbook passed, including the
+single-user binding and second-user denial. The profile was initially empty;
+the local `config/profile.seed.json` is not production data. The Super+J
+snippet import streamed personal answers into the database without committing
+them to git. Do not print profile responses or session cookies in logs.
