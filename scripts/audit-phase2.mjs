@@ -164,12 +164,14 @@ try {
     });
     const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
     const rowHeights = rows.map((row) => row.getBoundingClientRect().height);
+    const rowTops = rows.map((row) => Math.round(row.getBoundingClientRect().top));
     const start = performance.now();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
     const interaction = performance.now() - start;
     return {
       renderedRows: rows.length,
       rowHeights,
+      rowTops,
       duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
       unnamedControls: unnamed.map((element) => element.outerHTML.slice(0, 120)),
       interaction,
@@ -448,6 +450,7 @@ try {
       jobs: jobCount,
       renderedRows: desktop.renderedRows,
       rowHeight: [...new Set(desktop.rowHeights)],
+      distinctRowPositions: new Set(desktop.rowTops).size,
       lcpMs: desktop.lcp ? Math.round(desktop.lcp) : null,
       renderReadyMs,
       interactionMs: Number(desktop.interaction.toFixed(2)),
@@ -469,6 +472,7 @@ try {
   if (jobCount !== fixture.count) failures.push(`expected ${fixture.count} jobs, got ${jobCount}`);
   if (desktop.renderedRows >= 50) failures.push(`virtual list rendered ${desktop.renderedRows} rows`);
   if (desktop.rowHeights.some((height) => height !== 72)) failures.push(`row heights were ${desktop.rowHeights.join(", ")}`);
+  if (new Set(desktop.rowTops).size !== desktop.rowTops.length) failures.push("virtual rows overlap at the same position");
   const observedLcp = desktop.lcp || renderReadyMs;
   if (observedLcp >= 2000) failures.push(`render-ready/LCP was ${observedLcp.toFixed(1)}ms`);
   if (desktop.interaction >= 200) failures.push(`selection interaction was ${desktop.interaction.toFixed(1)}ms`);

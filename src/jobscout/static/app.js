@@ -246,7 +246,7 @@ function buildEntries(jobs) {
 
 function visibleStatusTabs() {
   const counts = statusCounts();
-  const tabs = [["new", "New"], ["saved", "Saved"], ["queued", "Queued"], ["applied", "Applied"], ["all", "All"]];
+  const tabs = [["new", "New"], ["saved", "Saved"], ["queued", "Queued"], ["all", "All"]];
   return tabs.map(([value, label]) => `<button class="status-tab interactive" type="button" role="tab" data-status-tab="${value}" aria-selected="${state.status === value}" tabindex="${state.status === value ? "0" : "-1"}"><span>${label}</span><span class="count">${new Intl.NumberFormat().format(counts[value] || 0)}</span></button>`).join("");
 }
 
@@ -281,7 +281,7 @@ function jobRowMarkup(entry) {
   if (job.connections_count) chips.push(`${new Intl.NumberFormat().format(job.connections_count)} connections`);
   if (sources.length > 1) chips.push(`${sources.length} sources`);
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
-  return `<button class="job-row interactive" type="button" role="option" style="transform:translateY(${entry.offset}px)" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
+  return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
     <span class="job-logo" aria-hidden="true">${escapeHtml(initials(job.company))}</span>
     <span class="job-row-copy"><span class="job-row-title">${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
@@ -298,10 +298,13 @@ function renderVirtualRows() {
   const visible = state.entries.filter((entry) => entry.offset + entry.height >= top - ROW_HEIGHT * 4 && entry.offset <= bottom + ROW_HEIGHT * 4);
   layer.style.height = `${state.totalHeight}px`;
   layer.innerHTML = visible.map((entry) => {
-    if (entry.type === "divider") return `<div class="new-divider" style="transform:translateY(${entry.offset}px)"><span>New since last visit</span><span>${entry.count}</span></div>`;
-    if (entry.type === "seen-divider") return `<div class="new-divider seen" style="transform:translateY(${entry.offset}px)"><span>Seen earlier</span></div>`;
+    if (entry.type === "divider") return `<div class="new-divider" data-offset="${entry.offset}"><span>New since last visit</span><span>${entry.count}</span></div>`;
+    if (entry.type === "seen-divider") return `<div class="new-divider seen" data-offset="${entry.offset}"><span>Seen earlier</span></div>`;
     return jobRowMarkup(entry);
   }).join("");
+  for (const item of layer.querySelectorAll("[data-offset]")) {
+    item.style.transform = `translateY(${Number(item.dataset.offset) || 0}px)`;
+  }
 }
 
 function emptyListMarkup() {
@@ -326,7 +329,7 @@ function descriptionMarkup(job) {
   const detail = state.descriptions.get(job.dedupe_key);
   if (!detail) return "";
   if (detail.loading && detail.showLoader) return '<section class="detail-section description-skeleton skeleton" aria-label="Loading posting description"></section>';
-  if (detail.error) return `<section class="detail-section inline-error" role="alert"><h2>Couldn't load the posting.</h2><p>${escapeHtml(detail.error)} Retry when the source is available.</p><button class="outlined-button interactive" type="button" data-retry-description>Retry</button></section>`;
+  if (detail.error) return `<section class="detail-section inline-error" role="alert"><div><h2>Description unavailable</h2><p>${escapeHtml(detail.error)}</p></div><button class="text-button interactive" type="button" data-retry-description>Retry</button></section>`;
   const value = detail.value || {};
   const sections = Array.isArray(value.sections) ? value.sections.filter((section) => section?.text) : [];
   const labels = { about: "About", responsibilities: "Responsibilities", requirements: "Requirements", nice_to_have: "Nice to have", benefits: "Benefits" };
@@ -415,8 +418,8 @@ function detailMarkup(job) {
       ${repostWarning}
       ${atGlanceMarkup(job)}
       ${skillMatchMarkup(job)}
-      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
       ${descriptionMarkup(job)}
+      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
       <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>

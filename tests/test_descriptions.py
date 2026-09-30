@@ -69,3 +69,21 @@ def test_lever_and_ashby_fetches_are_provider_specific():
     })
     assert ashby.urls == ["https://api.ashbyhq.com/posting-api/job-board/acme"]
     assert ashby_detail.text == "Ashby body"
+
+
+def test_workday_is_inferred_from_a_simplify_posting_url():
+    client = FakeFetcher({"jobPostingInfo": {"jobDescription": "<p>Workday body</p>"}})
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:100e91f1bfc56f33a2a31feee6ff087f",
+        "board": "simplify-s27",
+        "url": (
+            "https://globalhr.wd5.myworkdayjobs.com/rec_rtx_ext_gateway/"
+            "job/US-IA-CEDAR-RAPIDS-182/Systems-Engineer-Co-Op_01873686"
+        ),
+    })
+    assert client.urls == [
+        "https://globalhr.wd5.myworkdayjobs.com/wday/cxs/globalhr/"
+        "rec_rtx_ext_gateway/job/US-IA-CEDAR-RAPIDS-182/"
+        "Systems-Engineer-Co-Op_01873686"
+    ]
+    assert detail.text == "Workday body"
