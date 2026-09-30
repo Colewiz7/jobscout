@@ -112,7 +112,10 @@ def parse_deadline(text: str) -> dt.date | None:
     return None
 
 
-def _result(raw_html: str, *, provider_deadline: str | None = None) -> ParsedDescription:
+def parse_description(
+    raw_html: str, *, provider_deadline: str | None = None
+) -> ParsedDescription:
+    """Parse provider HTML without generating or guessing any posting facts."""
     text = _plain_text(raw_html)
     deadline = parse_deadline(text)
     source = "description" if deadline else None
@@ -133,6 +136,23 @@ def _slug_from_url(url: str, provider: str) -> str | None:
     if provider in {"lever", "ashby"} and len(parts) >= 1:
         return parts[0]
     return None
+
+
+def _workday_spec_from_url(url: str) -> tuple[str, str] | None:
+    """Return (tenant/dc/site, API job path) for a public Workday URL."""
+    parsed = urllib.parse.urlsplit(url or "")
+    host = (parsed.hostname or "").casefold()
+    labels = host.split(".")
+    if len(labels) < 4 or labels[-2:] != ["myworkdayjobs", "com"]:
+        return None
+    tenant, dc = labels[0], labels[1]
+    parts = [part for part in parsed.path.split("/") if part]
+    if parts and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]):
+        parts = parts[1:]
+    if len(parts) < 3 or parts[1] != "job":
+        return None
+    site = parts[0]
+    return f"{tenant}/{dc}/{site}", "/" + "/".join(parts[1:])
 
 
 class ProviderDescriptionFetcher:
@@ -156,9 +176,18 @@ class ProviderDescriptionFetcher:
     def fetch(self, target: dict) -> ParsedDescription | None:
         key = str(target.get("dedupe_key") or "")
         provider, _, provider_id = key.partition(":")
+        workday_spec = _workday_spec_from_url(str(target.get("url") or ""))
+        if provider not in {"greenhouse", "lever", "ashby", "workday"} and workday_spec:
+            provider = "workday"
+            target = {**target, "board": workday_spec[0]}
+            provider_id = workday_spec[1]
         if provider == "workday":
-            workday_parts = key.split(":", 2)
-            provider_id = workday_parts[2] if len(workday_parts) == 3 else ""
+            if workday_spec:
+                target = {**target, "board": workday_spec[0]}
+                provider_id = workday_spec[1]
+            else:
+                workday_parts = key.split(":", 2)
+                provider_id = workday_parts[2] if len(workday_parts) == 3 else ""
         board = target.get("board") or _slug_from_url(str(target.get("url") or ""), provider)
         if not board or not provider_id:
             return None
@@ -169,7 +198,7 @@ class ProviderDescriptionFetcher:
                 f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{provider_id}",
             )
             if isinstance(payload, dict) and payload.get("content"):
-                return _result(
+                return parse_description(
                     str(payload["content"]),
                     provider_deadline=payload.get("application_deadline"),
                 )
@@ -181,7 +210,7 @@ class ProviderDescriptionFetcher:
             if isinstance(payload, dict):
                 raw = payload.get("description") or payload.get("descriptionPlain")
                 if raw:
-                    return _result(str(raw))
+                    return parse_description(str(raw))
         elif provider == "ashby":
             payload = self._get_json(
                 provider,
@@ -189,7 +218,7 @@ class ProviderDescriptionFetcher:
             )
             for posting in (payload or {}).get("jobs", []):
                 if str(posting.get("id")) == provider_id and posting.get("descriptionHtml"):
-                    return _result(str(posting["descriptionHtml"]))
+                    return parse_description(str(posting["descriptionHtml"]))
         elif provider == "workday":
             spec = str(target.get("board") or "").split("/")
             path = provider_id
@@ -203,5 +232,5 @@ class ProviderDescriptionFetcher:
                 info = (payload or {}).get("jobPostingInfo") or {}
                 raw = info.get("jobDescription")
                 if raw:
-                    return _result(str(raw))
+                    return parse_description(str(raw))
         return None

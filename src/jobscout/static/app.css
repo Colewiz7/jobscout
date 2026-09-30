@@ -155,13 +155,14 @@ input:-webkit-autofill {
   height: 48px;
   place-items: center;
   border-radius: var(--r-lg);
-  color: var(--primary);
   text-decoration: none;
 }
 
-.brand-mark svg {
-  width: 28px;
-  height: 28px;
+.brand-mark img {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
 }
 
 .nav-items {
@@ -243,7 +244,7 @@ input:-webkit-autofill {
   position: relative;
   z-index: 10;
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(280px, 520px) auto minmax(120px, 1fr);
+  grid-template-columns: minmax(120px, 1fr) minmax(280px, 520px) auto minmax(0, 1fr);
   align-items: center;
   gap: var(--s-6);
   padding: 0 var(--s-6);
@@ -836,22 +837,27 @@ dialog[open]::backdrop {
 
 .list-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px auto;
+  grid-template-columns: minmax(0, 1fr) 40px;
   align-items: center;
   gap: var(--s-2);
 }
 
 .status-tabs {
-  display: flex;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--s-1);
-  overflow-x: auto;
-  scrollbar-width: none;
+}
+
+.list-tools > .icon-button {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .status-tab {
   display: inline-flex;
   min-height: 40px;
-  flex: 0 0 auto;
+  min-width: 0;
   align-items: center;
   gap: var(--s-1);
   padding: 0 var(--s-3);
@@ -860,6 +866,16 @@ dialog[open]::backdrop {
   color: var(--on-surface-variant);
   font-size: 13px;
   cursor: pointer;
+}
+
+.sort-field,
+.sort-field select {
+  width: 100%;
+}
+
+.sort-field {
+  grid-column: 1;
+  grid-row: 2;
 }
 
 .status-tab[aria-selected="true"] {
@@ -874,7 +890,7 @@ dialog[open]::backdrop {
 
 .sort-field select {
   min-height: 40px;
-  max-width: 112px;
+  max-width: none;
   padding: 0 var(--s-3);
   border: 1px solid var(--outline);
   border-radius: var(--r-md);
@@ -940,7 +956,7 @@ dialog[open]::backdrop {
   align-items: center;
   gap: var(--s-3);
   padding: 0 var(--s-4);
-  border-radius: var(--r-full);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--on-surface);
   text-align: left;
@@ -973,6 +989,10 @@ dialog[open]::backdrop {
 .job-row-meta {
   display: block;
   min-width: 0;
+}
+
+.job-row-copy {
+  overflow: hidden;
 }
 
 .job-row-title,
@@ -1024,7 +1044,8 @@ dialog[open]::backdrop {
 
 .job-row-end {
   display: flex;
-  max-width: 92px;
+  width: 84px;
+  min-width: 0;
   flex-direction: column;
   align-items: flex-end;
   gap: var(--s-1);
@@ -1039,7 +1060,7 @@ dialog[open]::backdrop {
 
 .row-chip {
   display: block;
-  max-width: 92px;
+  max-width: 84px;
   min-height: 24px;
   padding: var(--s-1) var(--s-2);
   overflow: hidden;
@@ -1161,6 +1182,16 @@ dialog[open]::backdrop {
   padding: var(--s-6) var(--s-8);
   background: var(--surface);
   transition: background-color var(--d-short3) var(--ease-standard);
+}
+
+.detail-heading {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.detail-actions {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .detail-heading {
@@ -3378,19 +3409,31 @@ body.quick-fill-popout {
 }
 
 .inline-error {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
   padding: var(--s-4);
   border-radius: var(--r-lg);
-  background: var(--error-container);
-  color: var(--on-error-container);
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
 }
 
 .inline-error h2 {
-  color: var(--on-error-container);
+  margin: 0;
+  color: var(--on-surface);
+  font-size: 15px;
 }
 
 .inline-error p {
-  margin: 0 0 var(--s-4);
-  font-size: 14px;
+  margin: var(--s-1) 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.inline-error .text-button {
+  flex: 0 0 auto;
 }
 
 .snackbar.leaving {

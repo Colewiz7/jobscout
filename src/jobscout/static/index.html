@@ -8,7 +8,9 @@
   <script src="/static/theme.js"></script>
   <link rel="preload" href="/static/fonts/rubik-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/fonts/newsreader-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/icons/jobseer-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/static/icons/jobseer-16.png" type="image/png" sizes="16x16">
+  <link rel="apple-touch-icon" href="/static/icons/jobseer-192.png" sizes="192x192">
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" type="module"></script>
@@ -19,7 +21,7 @@
   <div class="app-shell">
     <nav class="nav-rail" aria-label="Primary">
       <a class="brand-mark interactive" href="/inbox" data-route aria-label="JobSeer inbox">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h12v15H6zM9 8h6m-6 4h6m-6 4h3"/></svg>
+        <img src="/static/icons/jobseer-32.png" width="32" height="32" alt="">
       </a>
 
       <div class="nav-items">
@@ -69,7 +71,6 @@
           <span>Quick-fill</span>
           <kbd>C</kbd>
         </button>
-        <p class="quiet-state"><span aria-hidden="true"></span>Quiet by default</p>
       </header>
 
       <section class="today-strip" id="today-strip" aria-label="Today" hidden></section>
