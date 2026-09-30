@@ -75,3 +75,23 @@ def test_overview_keeps_real_work_ahead_of_logistics_and_never_invents_python():
     assert any(item["kind"] == "required" and "degree" in item["text"] for item in items)
     assert any(item["kind"] == "dates" and "10-to-12-week" in item["text"] for item in items)
     assert all("Python" not in item["text"] for item in items)
+
+
+def test_overview_terms_are_short_and_reject_unsupported_model_claims():
+    sections = [
+        {"key": "responsibilities", "text": "Build reliable tooling for the platform team.\nCollaborate with engineers on service reliability."},
+        {"key": "requirements", "text": "Python and leadership skills are required."},
+    ]
+
+    def opener(request, timeout):
+        del request, timeout
+        return Response(json.dumps({"response": json.dumps({"items": [
+            {"id": 0, "terms": ["Build reliable tooling", "Rust"]},
+            {"id": 2, "terms": ["Python", "leadership", "Kubernetes"]},
+        ]})}).encode())
+
+    items = OverviewService("http://ollama.test", "test-model", opener=opener).overview(sections)
+    assert next(item for item in items if item["kind"] == "work")["terms"] == ["Build reliable tooling"]
+    assert next(item for item in items if item["kind"] == "skills")["terms"] == ["leadership", "Python"]
+    assert next(item for item in items if item["kind"] == "required")["terms"] == ["Python", "leadership"]
+    assert all("Rust" not in item["terms"] and "Kubernetes" not in item["terms"] for item in items)

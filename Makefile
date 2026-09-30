@@ -1,4 +1,4 @@
-.PHONY: test test-pg audit-phase2 audit-phase3 audit-phase4 audit-phase5 audit-phase6
+.PHONY: test test-pg audit-phase2 audit-phase3 audit-phase4 audit-phase5 audit-phase6 audit-overview
 
 PYTHON ?= .venv/bin/python
 
@@ -22,3 +22,6 @@ audit-phase5:
 
 audit-phase6:
 	JOBSCOUT_AUDIT_ELIGIBILITY=true node scripts/audit-phase2.mjs
+
+audit-overview:
+	JOBSCOUT_AUDIT_OVERVIEW=true node scripts/audit-phase2.mjs

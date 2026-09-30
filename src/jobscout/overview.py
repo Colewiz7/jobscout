@@ -20,6 +20,7 @@ _SCHEMA = {
                 "type": "object",
                 "properties": {
                     "id": {"type": "integer"},
+                    "terms": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
                 },
                 "required": ["id"],
             },
@@ -27,6 +28,60 @@ _SCHEMA = {
     },
     "required": ["items"],
 }
+
+_SKILLS = (
+    "Python", "C++", "C#", "JavaScript", "TypeScript", "Java", "Rust", "Golang",
+    "Kotlin", "Swift", "SQL", "PostgreSQL", "AWS", "Azure", "GCP", "Docker",
+    "Kubernetes", "Terraform", "Linux", "Git", "React", "Node.js", "MATLAB",
+    "Simulink", "SolidWorks", "AutoCAD", "CAD", "FPGA", "PCB", "ROS",
+    "PyTorch", "TensorFlow", "machine learning", "data analysis", "statistics",
+    "Claude", "Codex", "ChatGPT", "technical writing", "project management",
+    "leadership", "communication", "problem solving", "cross-functional",
+)
+
+
+def _exact_term(source: str, term: object) -> str | None:
+    """Keep model terms only when the exact phrase occurs in the posting excerpt."""
+    if not isinstance(term, str):
+        return None
+    term = re.sub(r"\s+", " ", term).strip(" ,.;:–—-")
+    if not 2 <= len(term) <= 48 or len(term.split()) > 6:
+        return None
+    match = re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", source, re.I)
+    return match.group() if match else None
+
+
+def _compact_fallback(source: str, kind: str) -> str:
+    if kind == "pay":
+        match = re.search(r"\$\s?\d[\d,.]*(?:\s*[-–]\s*\$?\s?\d[\d,.]*)?(?:\s*(?:/hr|per hour|hourly|per year))?", source, re.I)
+        if match:
+            return match.group()
+    if kind == "dates":
+        match = re.search(r"\b(?:\d+[ -]?(?:to|[-–])[ -]?\d+[ -]?weeks?|\d+[ -]?weeks?|(?:Spring|Summer|Fall|Winter)\s+20\d{2})\b", source, re.I)
+        if match:
+            return match.group()
+    if kind == "required":
+        match = re.search(r"\b(?:degree|major) in ([\w -]+?(?:Engineering|Science|Mathematics|Business))\b", source, re.I)
+        if match:
+            return match.group(1)
+    if kind == "location":
+        match = re.search(r"\b(?:work|based|located) in ([A-Z][\w ]{2,40})(?:[,.;]|$)", source)
+        if match:
+            return match.group(1).strip()
+    prefix = re.split(r"[,;.]|\s+\b(?:including|such as)\b", source, maxsplit=1)[0].strip()
+    if kind == "work":
+        prefix = re.split(r"\s+\b(?:for|in order to)\b", prefix, maxsplit=1)[0].strip() or prefix
+    return " ".join(prefix.split()[:8]).rstrip(" ,.;:")
+
+
+def _explicit_skills(excerpts: list[dict[str, str]]) -> list[str]:
+    text = "\n".join(item["text"] for item in excerpts)
+    found = []
+    for skill in sorted(_SKILLS, key=len, reverse=True):
+        term = _exact_term(text, skill)
+        if term and not any(term.casefold() == previous.casefold() for previous in found):
+            found.append(term)
+    return found[:12]
 
 
 def candidates(sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]]:
@@ -89,7 +144,7 @@ class OverviewService:
 
     def _cache_key(self, excerpts: list[dict[str, str]]) -> str:
         digest = hashlib.sha256(json.dumps(excerpts, sort_keys=True).encode()).hexdigest()
-        return f"v2:{self.model}:{digest}"
+        return f"v3:{self.model}:{digest}"
 
     def cached_overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]] | None:
         key = self._cache_key(candidates(sections))
@@ -117,7 +172,9 @@ class OverviewService:
                 "the person will actually do, then explicit technical skills and hard "
                 "requirements, then preferred skills, pay, work mode and dates. Never "
                 "choose headings, generic employer praise, or duplicate logistics. "
-                "Return only IDs in the JSON schema. Do not create facts.\n\n"
+                "For each selected ID, add 1-3 short terms: exact contiguous phrases of "
+                "at most six words copied from that excerpt (for example Python or "
+                "Build reliable tooling). Do not paraphrase or create facts.\n\n"
                 + numbered
             )
             payload = json.dumps({
@@ -135,17 +192,27 @@ class OverviewService:
             ranked = [item.get("id") for item in selected if isinstance(item, dict)]
             ranked = [index for index in ranked if type(index) is int and 0 <= index < len(excerpts)]
             ranked.extend(index for index in range(len(excerpts)) if index not in ranked)
+            model_terms = {
+                item["id"]: item.get("terms", [])
+                for item in selected if isinstance(item, dict) and type(item.get("id")) is int
+                and 0 <= item["id"] < len(excerpts)
+            }
             limits = {"work": 3, "required": 3, "preferred": 2, "pay": 1, "location": 2, "dates": 1}
-            groups: dict[str, list[str]] = {kind: [] for kind in limits}
+            groups: dict[str, list[dict[str, str | list[str]]]] = {kind: [] for kind in limits}
             for index in ranked:
                 source = excerpts[index]
                 kind = _excerpt_kind(source["section"], source["text"])
-                if kind and len(groups[kind]) < limits[kind] and source["text"] not in groups[kind]:
-                    groups[kind].append(source["text"])
+                if kind and len(groups[kind]) < limits[kind] and not any(item["text"] == source["text"] for item in groups[kind]):
+                    proposed = model_terms.get(index, [])
+                    terms = [_exact_term(source["text"], term) for term in proposed] if isinstance(proposed, list) else []
+                    terms = list(dict.fromkeys(term for term in terms if term))[:3]
+                    groups[kind].append({"kind": kind, "text": source["text"], "terms": terms or [_compact_fallback(source["text"], kind)]})
             items = [
-                {"kind": kind, "text": text}
-                for kind in limits for text in groups[kind]
+                item for kind in limits for item in groups[kind]
             ]
+            skills = _explicit_skills(excerpts)
+            if skills:
+                items.insert(len(groups["work"]), {"kind": "skills", "text": ", ".join(skills), "terms": skills})
             self._cache[cache_key] = items
             if len(self._cache) > 256:
                 self._cache.popitem(last=False)
