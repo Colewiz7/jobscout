@@ -15,8 +15,11 @@
     {"key": "school", "group": "Education", "label": "School", "value": "Example University", "pinned": false, "sort_order": 80},
     {"key": "degree", "group": "Education", "label": "Degree", "value": "B.S. Computing", "pinned": false, "sort_order": 90},
     {"key": "graduation", "group": "Education", "label": "Graduation", "value": "Expected 2028", "pinned": false, "sort_order": 100},
+    {"key": "gpa", "group": "Education", "label": "GPA", "value": "", "pinned": false, "sort_order": 105},
     {"key": "work_authorization", "group": "Work authorization", "label": "Work authorization", "value": "", "pinned": false, "sort_order": 110},
-    {"key": "availability", "group": "Availability", "label": "Availability", "value": "", "pinned": false, "sort_order": 120}
+    {"key": "clearance", "group": "Work authorization", "label": "Security clearance", "value": "", "pinned": false, "sort_order": 115},
+    {"key": "availability", "group": "Availability", "label": "Availability", "value": "", "pinned": false, "sort_order": 120},
+    {"key": "skills", "group": "Pinned", "label": "Skills", "value": "Python, Linux, Git", "pinned": true, "sort_order": 130}
   ],
   "documents": [
     {"id": "resume-general", "name": "General resume", "date": "2026-09-01", "url": ""}

@@ -56,22 +56,28 @@ tables early: each migration lands only with the first UI that uses it.
 
 ## Phase 6 — Eligibility and matching
 
-- A hard blocker produces one “Do not apply” verdict at the top of the reading
-  pane. Hard blockers are limited to explicit no-sponsorship language,
-  clearance requirements, and degree or graduation-date mismatches.
-- The verdict has one-click override. Every override records the job, blocker,
-  original evidence, timestamp, and override note; it never erases the finding.
-- Requirement weights identify their provenance as explicit wording, posting
-  structure, or estimate. Estimated weights can never produce a top-band match.
-- Keep the existing rule against fake percentages: show evidence and plain
-  matched/missing requirements rather than invented precision.
+- Implemented behind the production-disabled Profile flag: deterministic
+  eligibility findings compared against user-maintained Profile fields. Only
+  explicit sponsorship, clearance, degree, and graduation conflicts produce
+  the single “Do not apply” verdict.
+- Implemented: one-click override with append-only job, blocker, evidence,
+  comparison, note, and timestamp records. Changed posting evidence requires a
+  new override; queue/apply actions are blocked until active findings are
+  overridden.
+- Implemented: matched and missing skills with explicit-wording,
+  posting-structure, or estimate provenance. Estimated evidence is capped below
+  the top band, and no match percentage is generated.
+- Implemented: literal title archive/tag and company boost rules managed from
+  Profile. Automatic archives are timestamped, visibly attributed, and
+  reversible; an undo is not silently reapplied on the next scout run.
 
 ## Scout and Inbox
 
-- Detect reposts when the same company and normalized title reappear within 90
-  days. Surface one neutral “Reposted” chip.
-- At three or more appearances, add a ghost-job flag with the count and dates.
-  This is an observation, not a claim about the employer’s intent.
+- Implemented: normalized company/title repost detection inside a rolling
+  90-day window, with one neutral “Reposted” chip.
+- Implemented: three or more appearances add a warning with the count and exact
+  dates. The UI explicitly calls it an observation rather than assigning
+  employer intent.
 
 ## Phase 8 — Local-model drafts
 

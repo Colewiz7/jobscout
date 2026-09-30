@@ -287,6 +287,54 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        9,
+        "eligibility_overrides",
+        """
+        create table if not exists eligibility_overrides (
+            id           bigserial primary key,
+            dedupe_key   text not null,
+            blocker_key  text not null
+                         check (blocker_key in ('sponsorship', 'clearance', 'degree', 'graduation')),
+            evidence     text not null,
+            comparison   text not null,
+            note         text not null default '',
+            created_at   timestamptz not null default now()
+        );
+        create index if not exists eligibility_overrides_job_idx
+            on eligibility_overrides (dedupe_key, blocker_key, created_at desc);
+        """,
+    ),
+    Migration(
+        10,
+        "inbox_rules",
+        """
+        create table if not exists rules (
+            id          bigserial primary key,
+            name        text not null,
+            kind        text not null
+                        check (kind in ('archive_title', 'tag_title', 'boost_company')),
+            pattern     text not null,
+            value       text not null default '',
+            enabled     boolean not null default true,
+            created_at  timestamptz not null default now(),
+            updated_at  timestamptz not null default now()
+        );
+        create table if not exists rule_actions (
+            id              bigserial primary key,
+            rule_id         bigint not null references rules(id),
+            dedupe_key      text not null,
+            action          text not null check (action in ('archive')),
+            previous_status text not null,
+            created_at      timestamptz not null default now(),
+            undone_at       timestamptz
+        );
+        create unique index if not exists rule_actions_active_idx
+            on rule_actions (rule_id, dedupe_key, action) where undone_at is null;
+        create index if not exists rule_actions_job_idx
+            on rule_actions (dedupe_key, created_at desc) where undone_at is null;
+        """,
+    ),
 )
 
 

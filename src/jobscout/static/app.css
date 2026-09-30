@@ -1276,6 +1276,200 @@ dialog[open]::backdrop {
   font: 500 18px/1.35 var(--font-sans);
 }
 
+.eligibility-banner {
+  display: grid;
+  gap: var(--s-4);
+  margin-top: var(--s-8);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+}
+
+.eligibility-banner.is-blocked {
+  background: var(--error-container);
+  color: var(--on-error-container);
+}
+
+.eligibility-banner .eyebrow {
+  margin: 0 0 var(--s-1);
+  color: inherit;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  opacity: .75;
+}
+
+.eligibility-banner h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font: 500 18px/1.35 var(--font-sans);
+}
+
+.eligibility-banner h2 span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--r-full);
+  background: currentColor;
+  color: var(--surface-container-low);
+  font-size: 13px;
+}
+
+.eligibility-banner.is-blocked h2 span {
+  color: var(--error-container);
+}
+
+.eligibility-banner > div > p:last-child {
+  margin: var(--s-1) 0 0;
+  color: inherit;
+  font-size: 14px;
+  opacity: .8;
+}
+
+.eligibility-banner ul,
+.at-glance ul,
+.missing-skills ul,
+.requirement-evidence ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.eligibility-banner li {
+  display: flex;
+  gap: var(--s-3);
+  padding-block: var(--s-2);
+}
+
+.eligibility-banner li > span {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+
+.eligibility-banner li strong,
+.eligibility-banner li p,
+.eligibility-banner li small {
+  display: block;
+}
+
+.eligibility-banner li strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.eligibility-banner li p {
+  margin: var(--s-1) 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.eligibility-banner li small {
+  font-size: 12px;
+  opacity: .75;
+}
+
+.eligibility-banner .outlined-button {
+  justify-self: start;
+  border-color: currentColor;
+  color: inherit;
+}
+
+.at-glance li {
+  position: relative;
+  padding: var(--s-1) 0 var(--s-1) var(--s-4);
+  color: var(--on-surface-variant);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.at-glance li::before {
+  position: absolute;
+  top: .75em;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--on-surface-faint);
+  content: "";
+}
+
+.skill-match .section-heading {
+  align-items: baseline;
+  margin-bottom: var(--s-4);
+}
+
+.skill-match .section-heading h2 {
+  margin-bottom: 0;
+}
+
+.skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.skill-chips > span {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  border-radius: var(--r-full);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.missing-skills {
+  margin-top: var(--s-6);
+}
+
+.missing-skills h3 {
+  margin: 0 0 var(--s-2);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.missing-skills li {
+  display: grid;
+  gap: var(--s-1);
+  padding-block: var(--s-2);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.missing-skills li strong {
+  color: var(--on-surface);
+  font-weight: 500;
+}
+
+.requirement-evidence {
+  margin-top: var(--s-4);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.requirement-evidence summary {
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.requirement-evidence li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-2) 0;
+}
+
+.requirement-evidence small {
+  color: var(--on-surface-faint);
+}
+
 .detail-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1397,6 +1591,47 @@ dialog[open]::backdrop {
   background: var(--warning);
   color: var(--warning-container);
   font-weight: 500;
+}
+
+.repost-warning {
+  margin-top: var(--s-8);
+  margin-bottom: 0;
+}
+
+.rule-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-top: var(--s-8);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+}
+
+.rule-notice strong {
+  color: var(--on-surface);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.rule-notice p {
+  margin: var(--s-xxs) 0 0;
+  font-size: 12px;
+}
+
+.row-warning {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-right: var(--s-1);
+  border-radius: var(--r-full);
+  background: var(--warning-container);
+  color: var(--on-warning-container);
+  font-size: 11px;
 }
 
 .company-role {
@@ -2086,9 +2321,150 @@ dialog[open]::backdrop {
 
 .tracker-page,
 .companies-page,
-.company-detail {
+.company-detail,
+.profile-page {
   width: min(100%, var(--content-max));
   margin: 0 auto;
+}
+
+.profile-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-6);
+  margin-bottom: var(--s-8);
+}
+
+.profile-heading h1 {
+  margin: 0;
+  font: 400 28px/1.2 var(--font-serif);
+}
+
+.profile-heading p,
+.profile-section .section-heading p,
+.profile-empty p,
+.protected-profile p {
+  margin: var(--s-1) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 14px;
+}
+
+.profile-section + .profile-section {
+  margin-top: var(--s-12);
+}
+
+.profile-section h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.rule-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: var(--s-3);
+  margin-top: var(--s-6);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.rule-form label {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.rule-form input,
+.rule-form select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--outline);
+  border-radius: var(--r-md);
+  outline: 0;
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  font: 400 14px/1.4 var(--font-sans);
+}
+
+.rule-form input:focus,
+.rule-form select:focus {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.rule-form small {
+  color: var(--on-surface-faint);
+  font-size: 11px;
+}
+
+.rule-list {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+}
+
+.rule-card {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.rule-card h3,
+.profile-empty h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.rule-card p {
+  margin: var(--s-1) 0 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.rule-toggle {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.rule-toggle input {
+  position: absolute;
+  opacity: 0;
+}
+
+.rule-toggle > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-full);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.rule-toggle input:focus-visible + span {
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--primary);
+}
+
+.profile-empty,
+.protected-profile {
+  margin-top: var(--s-6);
+  padding: var(--s-6);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
 }
 
 .tracker-heading,
@@ -3070,6 +3446,10 @@ body.quick-fill-popout {
   .company-detail-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .rule-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 599px) {
@@ -3190,6 +3570,7 @@ body.quick-fill-popout {
   .tracker-heading,
   .companies-heading,
   .company-detail-heading,
+  .profile-heading,
   .section-heading {
     align-items: flex-start;
     flex-direction: column;
@@ -3207,6 +3588,15 @@ body.quick-fill-popout {
   #interview-form,
   #contact-form {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rule-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rule-card {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .tracker-tools,

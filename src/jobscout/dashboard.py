@@ -11,6 +11,7 @@ import mimetypes
 import os
 import pathlib
 import random
+import re
 import secrets
 import threading
 import urllib.parse
@@ -23,6 +24,7 @@ import yaml
 
 from . import db as database
 from .descriptions import ProviderDescriptionFetcher
+from .eligibility import analyze as analyze_eligibility
 from .http import Fetcher
 from .liveness import LivenessResult, PostingLivenessChecker
 
@@ -92,6 +94,56 @@ def _company_groups(jobs: list[dict]) -> list[dict]:
         grouped.values(),
         key=lambda item: (-len(item["applications"]), item["name"].casefold()),
     )
+
+
+def _repost_title_key(value: str) -> str:
+    words = database.normalise(value).split()
+    ignored = {"spring", "summer", "fall", "autumn", "winter"}
+    return " ".join(word for word in words if word not in ignored and not re.fullmatch(r"20\d{2}", word))
+
+
+def _annotate_reposts(jobs: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for job in jobs:
+        key = (database.company_key(str(job.get("company") or "")), _repost_title_key(str(job.get("title") or "")))
+        if all(key):
+            groups.setdefault(key, []).append(job)
+    for appearances in groups.values():
+        appearances.sort(key=lambda job: job.get("first_seen") or dt.datetime.min.replace(tzinfo=dt.timezone.utc))
+        for index, job in enumerate(appearances):
+            seen = job.get("first_seen")
+            if not isinstance(seen, dt.datetime):
+                continue
+            window = [
+                item for item in appearances[:index + 1]
+                if isinstance(item.get("first_seen"), dt.datetime)
+                and seen - item["first_seen"] <= dt.timedelta(days=90)
+            ]
+            if len(window) >= 2:
+                job["repost_count"] = len(window)
+                job["repost_dates"] = [item["first_seen"].date().isoformat() for item in window]
+                job["ghost_job"] = len(window) >= 3
+    return jobs
+
+
+def _annotate_rules(jobs: list[dict], rules: list[dict]) -> list[dict]:
+    active = [rule for rule in rules if rule.get("enabled")]
+    for job in jobs:
+        title = database.normalise(str(job.get("title") or ""))
+        company = database.company_key(str(job.get("company") or ""))
+        tags = []
+        boost = 0
+        for rule in active:
+            pattern = database.normalise(str(rule.get("pattern") or ""))
+            if rule.get("kind") == "tag_title" and pattern and pattern in title:
+                tag = str(rule.get("value") or "")
+                if tag and tag not in tags:
+                    tags.append(tag)
+            elif rule.get("kind") == "boost_company" and pattern and pattern in company:
+                boost += int(rule.get("value") or 0)
+        job["tags"] = tags
+        job["rule_boost"] = min(boost, 100)
+    return jobs
 
 
 def _calendar_text(interviews: list[dict]) -> str:
@@ -179,9 +231,30 @@ class PostgresStore:
             database.require_schema(conn)
             jobs = database.dashboard_postings(conn, include_closed=include_closed)
             counts = database.contact_counts(conn)
+            active_rules = database.rules(conn)
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
-        return jobs
+        return _annotate_rules(_annotate_reposts(jobs), active_rules)
+
+    def rules(self) -> list[dict]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.rules(conn)
+
+    def save_rule(self, payload: dict) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_rule(conn, payload)
+
+    def set_rule_enabled(self, rule_id: int, enabled: bool) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.set_rule_enabled(conn, rule_id, enabled)
+
+    def undo_rule_action(self, action_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.undo_rule_action(conn, action_id)
 
     def check_liveness(self, key: str, *, force: bool = False) -> LivenessResult:
         with database.connect(self.dsn) as conn:
@@ -370,6 +443,31 @@ class PostgresStore:
                 company_account=payload.get("company_account", {}),
             )
 
+    def eligibility(self, key: str) -> dict | None:
+        description = self.description(key)
+        if description is None:
+            return None
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            profile = database.profile_data(conn)
+            overrides = database.eligibility_overrides(conn, key)
+        return analyze_eligibility(
+            text=str(description.get("description_text") or ""),
+            sections=description.get("sections") or [],
+            profile=profile,
+            overrides=overrides,
+        )
+
+    def override_eligibility(self, key: str, note: str = "") -> dict | None:
+        result = self.eligibility(key)
+        if result is None:
+            return None
+        blockers = [item for item in result["blockers"] if not item.get("overridden")]
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            database.record_eligibility_overrides(conn, key, blockers, note)
+        return self.eligibility(key)
+
     def healthy(self) -> bool:
         try:
             with database.connect(self.dsn) as conn, conn.cursor() as cur:
@@ -537,6 +635,11 @@ class DemoStore:
         self._next_reminder_id = 1
         self._next_interview_id = 1
         self._next_contact_id = 1
+        self._eligibility_overrides: dict[str, list[dict]] = {}
+        self._rules: list[dict] = []
+        self._rule_action_history: set[tuple[int, str]] = set()
+        self._next_rule_id = 1
+        self._next_rule_action_id = 1
         for row in self.rows:
             if row["status"] == "applied" and row.get("applied_at"):
                 self._reminders.append({
@@ -582,7 +685,64 @@ class DemoStore:
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
             job.setdefault("next_step", "")
-        return jobs
+        return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    def rules(self) -> list[dict]:
+        return copy.deepcopy(self._rules)
+
+    def _apply_demo_rule(self, rule: dict) -> None:
+        if not rule.get("enabled") or rule.get("kind") != "archive_title":
+            return
+        pattern = database.normalise(rule["pattern"])
+        for row in self.rows:
+            if pattern not in database.normalise(row["title"]) or row["status"] != "new":
+                continue
+            history_key = (rule["id"], row["dedupe_key"])
+            if history_key in self._rule_action_history:
+                continue
+            previous = row["status"]
+            self._rule_action_history.add(history_key)
+            row.update(
+                status="archived", archived_by_rule=rule["name"],
+                rule_action_id=self._next_rule_action_id,
+                rule_previous_status=previous,
+                application_updated_at=dt.datetime.now(dt.timezone.utc),
+            )
+            self._next_rule_action_id += 1
+
+    def save_rule(self, payload: dict) -> dict:
+        clean = database.normalize_rule(payload)
+        now = dt.datetime.now(dt.timezone.utc)
+        rule = {
+            "id": self._next_rule_id, **clean, "enabled": True,
+            "created_at": now, "updated_at": now,
+        }
+        self._next_rule_id += 1
+        self._rules.append(rule)
+        self._apply_demo_rule(rule)
+        return copy.deepcopy(rule)
+
+    def set_rule_enabled(self, rule_id: int, enabled: bool) -> dict | None:
+        rule = next((item for item in self._rules if item["id"] == rule_id), None)
+        if rule is None:
+            return None
+        rule["enabled"] = bool(enabled)
+        rule["updated_at"] = dt.datetime.now(dt.timezone.utc)
+        self._apply_demo_rule(rule)
+        return copy.deepcopy(rule)
+
+    def undo_rule_action(self, action_id: int) -> dict | None:
+        row = next((item for item in self.rows if item.get("rule_action_id") == action_id), None)
+        if row is None:
+            return None
+        if row["status"] != "archived":
+            raise ValueError("the job is no longer archived by this rule")
+        row.update(
+            status=row.pop("rule_previous_status", "new"),
+            archived_by_rule=None, rule_action_id=None,
+            application_updated_at=dt.datetime.now(dt.timezone.utc),
+        )
+        return {"id": action_id, "undone_at": dt.datetime.now(dt.timezone.utc)}
 
     def save(self, key: str, status: str, notes: str) -> dict:
         if status not in database.APPLICATION_STATUSES:
@@ -605,6 +765,8 @@ class DemoStore:
                     notes=notes,
                     application_updated_at=dt.datetime.now(dt.timezone.utc),
                 )
+                if effective_status != "archived" and row.get("rule_action_id"):
+                    row.update(archived_by_rule=None, rule_action_id=None)
                 if effective_status != "queued":
                     row["queue_position"] = None
                 if effective_status == "applied" and row.get("applied_at") is None:
@@ -896,6 +1058,33 @@ class DemoStore:
         self._company_accounts[database.company_key(company)] = clean["company_account"]
         return self.profile(dedupe_key, company)
 
+    def eligibility(self, key: str) -> dict | None:
+        description = self.description(key)
+        if description is None:
+            return None
+        return analyze_eligibility(
+            text=str(description.get("description_text") or ""),
+            sections=description.get("sections") or [],
+            profile=self._profile,
+            overrides=self._eligibility_overrides.get(key, []),
+        )
+
+    def override_eligibility(self, key: str, note: str = "") -> dict | None:
+        if len(note) > 1_000:
+            raise ValueError("override note is too long")
+        result = self.eligibility(key)
+        if result is None:
+            return None
+        blockers = [item for item in result["blockers"] if not item.get("overridden")]
+        if not blockers:
+            raise ValueError("there are no active blockers to override")
+        now = dt.datetime.now(dt.timezone.utc)
+        self._eligibility_overrides.setdefault(key, []).extend({
+            "blocker_key": item["key"], "evidence": item["evidence"],
+            "comparison": item["comparison"], "note": note.strip(), "created_at": now,
+        } for item in blockers)
+        return self.eligibility(key)
+
     def healthy(self) -> bool:
         return True
 
@@ -1139,6 +1328,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/v1/saved-views":
                 self._json({"saved_views": self.app.store.saved_views()})
                 return
+            if parsed.path == "/api/v1/rules":
+                try:
+                    self._json({"rules": self.app.store.rules()})
+                except Exception:
+                    log.exception("could not load inbox rules")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load rules. Retry shortly.")
+                return
             if parsed.path == "/api/v1/profile":
                 if not self.app.quick_fill_enabled:
                     self._error(HTTPStatus.NOT_FOUND, "not found")
@@ -1152,6 +1348,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
                 return
             detail_prefix = "/api/v1/jobs/"
+            eligibility_suffix = "/eligibility"
+            if parsed.path.startswith(detail_prefix) and parsed.path.endswith(eligibility_suffix):
+                if not self.app.quick_fill_enabled:
+                    self._error(HTTPStatus.NOT_FOUND, "not found")
+                    return
+                key = urllib.parse.unquote(
+                    parsed.path[len(detail_prefix):-len(eligibility_suffix)].rstrip("/")
+                )
+                try:
+                    result = self.app.store.eligibility(key)
+                except Exception:
+                    log.exception("could not evaluate job eligibility")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't evaluate eligibility. Retry shortly.")
+                    return
+                if result is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                self._json({"eligibility": result})
+                return
             detail_suffix = "/description"
             if parsed.path.startswith(detail_prefix) and parsed.path.endswith(detail_suffix):
                 key = urllib.parse.unquote(
@@ -1209,6 +1424,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             notes = str(payload.get("notes", ""))
             if len(notes) > 20_000:
                 raise ValueError("notes are too long")
+            if self.app.quick_fill_enabled and status in {"queued", "applying"}:
+                eligibility = self.app.store.eligibility(key)
+                if eligibility and eligibility.get("verdict") == "do_not_apply":
+                    self._error(
+                        HTTPStatus.CONFLICT,
+                        "Override the eligibility verdict before applying.",
+                    )
+                    return
             result = self.app.store.save(key, status, notes)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
@@ -1230,6 +1453,64 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        rule_action_prefix = "/api/v1/rule-actions/"
+        rule_action_suffix = "/undo"
+        if parsed.path.startswith(rule_action_prefix) and parsed.path.endswith(rule_action_suffix):
+            if not self._require_write_security():
+                return
+            try:
+                action_id = int(parsed.path[len(rule_action_prefix):-len(rule_action_suffix)].rstrip("/"))
+                action = self.app.store.undo_rule_action(action_id)
+            except ValueError as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not undo rule action")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't undo the rule. Retry shortly.")
+                return
+            if action is None:
+                self._error(HTTPStatus.NOT_FOUND, "rule action not found")
+                return
+            self._json({"action": action})
+            return
+        if parsed.path == "/api/v1/rules":
+            if not self._require_write_security():
+                return
+            try:
+                rule = self.app.store.save_rule(self._read_json())
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not save inbox rule")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the rule. Retry shortly.")
+                return
+            self._json({"rule": rule}, HTTPStatus.CREATED)
+            return
+        eligibility_prefix = "/api/v1/jobs/"
+        eligibility_suffix = "/eligibility/override"
+        if parsed.path.startswith(eligibility_prefix) and parsed.path.endswith(eligibility_suffix):
+            if not self._require_quick_fill_write():
+                return
+            key = urllib.parse.unquote(
+                parsed.path[len(eligibility_prefix):-len(eligibility_suffix)].rstrip("/")
+            )
+            try:
+                result = self.app.store.override_eligibility(
+                    key, str(self._read_json().get("note") or "")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not record eligibility override")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't record the override. Retry shortly.")
+                return
+            if result is None:
+                self._error(HTTPStatus.NOT_FOUND, "job not found")
+                return
+            self._json({"eligibility": result}, HTTPStatus.CREATED)
+            return
         if parsed.path == "/api/v1/interviews":
             if not self._require_write_security():
                 return
@@ -1348,6 +1629,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        rule_prefix = "/api/v1/rules/"
+        if parsed.path.startswith(rule_prefix):
+            if not self._require_write_security():
+                return
+            try:
+                rule_id = int(parsed.path.removeprefix(rule_prefix))
+                enabled = self._read_json().get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ValueError("enabled must be true or false")
+                rule = self.app.store.set_rule_enabled(rule_id, enabled)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not update inbox rule")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the rule. Retry shortly.")
+                return
+            if rule is None:
+                self._error(HTTPStatus.NOT_FOUND, "rule not found")
+                return
+            self._json({"rule": rule})
+            return
         reminder_prefix = "/api/v1/reminders/"
         if parsed.path.startswith(reminder_prefix):
             if not self._require_write_security():
