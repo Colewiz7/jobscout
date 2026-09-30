@@ -195,6 +195,25 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 10));
     return { lines: copied.split('\\n').length, containsPostingUrl: copied.includes('https://') };
   })()`);
+  const logoScroll = await cdp.evaluate(`(async () => {
+    const viewport = document.querySelector('#job-viewport');
+    const row = [...viewport.querySelectorAll('.job-row')][6];
+    const key = row?.dataset.jobKey;
+    const logo = row?.querySelector('.job-logo');
+    const headerLogo = document.querySelector('.detail-company-logo');
+    const headerTitle = document.querySelector('.detail-heading h1');
+    const before = viewport.scrollTop;
+    viewport.scrollTop += 72;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const retained = [...viewport.querySelectorAll('.job-row')].find((item) => item.dataset.jobKey === key);
+    return {
+      sameRow: retained === row,
+      sameLogo: retained?.querySelector('.job-logo') === logo,
+      scrolled: viewport.scrollTop === before + 72,
+      headerLogoSize: headerLogo?.getBoundingClientRect().height,
+      headerTitleSize: headerTitle ? Number.parseFloat(getComputedStyle(headerTitle).fontSize) : 0,
+    };
+  })()`);
   const scrolledSelection = await cdp.evaluate(`(async () => {
     const viewport = document.querySelector('#job-viewport');
     viewport.scrollTop = 72 * 120;
@@ -501,6 +520,7 @@ try {
       horizontalOverflowAt320: compact.hasHorizontalOverflow,
     },
     scrolledSelection,
+    logoScroll,
     copiedList,
     ...(quickFill ? { quickFill } : {}),
     ...(applySession ? { applySession } : {}),
@@ -517,6 +537,8 @@ try {
   if (new Set(desktop.rowTops).size !== desktop.rowTops.length) failures.push("virtual rows overlap at the same position");
   if (desktop.selectedBefore === selectedAfter) failures.push("next-job shortcut did not update the reading pane");
   if (scrolledSelection.error || scrolledSelection.after !== scrolledSelection.before || scrolledSelection.actual !== scrolledSelection.expected || scrolledSelection.route !== scrolledSelection.key) failures.push(`scrolled row selection failed: ${JSON.stringify(scrolledSelection)}`);
+  if (!logoScroll.sameRow || !logoScroll.sameLogo || !logoScroll.scrolled) failures.push(`scroll remounted a visible company logo: ${JSON.stringify(logoScroll)}`);
+  if (logoScroll.headerLogoSize !== 80 || logoScroll.headerTitleSize !== 28) failures.push(`job header logo or title size regressed: ${JSON.stringify(logoScroll)}`);
   if (copiedList.lines !== jobCount || !copiedList.containsPostingUrl) failures.push(`copy list did not include the whole view: ${JSON.stringify(copiedList)}`);
   const observedLcp = desktop.lcp || renderReadyMs;
   if (observedLcp >= 2000) failures.push(`render-ready/LCP was ${observedLcp.toFixed(1)}ms`);

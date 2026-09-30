@@ -107,6 +107,9 @@ def test_ai_overview_is_flagged_and_auth_protected():
         def overview(self, sections):
             return [{"kind": "role", "text": sections[0]["text"]}]
 
+        def cached_overview(self, sections):
+            return self.overview(sections)
+
     server = DashboardServer(
         ("127.0.0.1", 0), DemoStore(), require_auth=True,
         authentik_user="cole", overviews=FakeOverviews(),
@@ -122,6 +125,9 @@ def test_ai_overview_is_flagged_and_auth_protected():
             response = client.get(f"/api/v1/jobs/{key}/overview")
             assert response.status_code == 200
             assert response.json()["items"][0]["text"].startswith("Build reliable systems")
+            cached = client.get(f"/api/v1/jobs/{key}/overview?cached=1")
+            assert cached.status_code == 200
+            assert cached.json()["items"] == response.json()["items"]
     finally:
         server.shutdown()
         server.server_close()
@@ -349,6 +355,22 @@ def test_job_description_is_plain_structured_data(dashboard):
     assert response.status_code == 200
     detail = response.json()["description"]
     assert detail["sections"][0]["key"] == "about"
+    assert "description_html" not in detail
+
+
+def test_manual_description_requires_csrf_and_returns_plain_sections(dashboard):
+    base, _ = dashboard
+    payload = {"text": "Responsibilities\nBuild reliable infrastructure with Python and document the tests."}
+    with httpx.Client(base_url=base, headers=AUTH, timeout=2) as client:
+        assert client.post("/api/v1/jobs/demo%3A1/description", json=payload).status_code == 403
+        token = client.get("/api/v1/session").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/jobs/demo%3A1/description", json=payload,
+            headers={"X-CSRF-Token": token},
+        )
+    assert response.status_code == 200
+    detail = response.json()["description"]
+    assert detail["sections"][0]["key"] == "responsibilities"
     assert "description_html" not in detail
 
 

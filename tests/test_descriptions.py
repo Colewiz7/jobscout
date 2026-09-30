@@ -13,6 +13,12 @@ class FakeFetcher:
         return self.payload
 
 
+class FakeHtmlFetcher(FakeFetcher):
+    def get_text(self, url):
+        self.urls.append(url)
+        return self.payload
+
+
 def test_deadline_requires_an_explicit_label_and_full_date():
     assert parse_deadline("Apply by October 18, 2026") == dt.date(2026, 10, 18)
     assert parse_deadline("Applications close 10/18/2026") == dt.date(2026, 10, 18)
@@ -71,6 +77,14 @@ def test_short_what_and_who_lines_divide_sections_but_sentences_do_not():
     assert "normal sentence" in sections[-1]["text"]
 
 
+def test_combined_qualifications_requirements_heading_starts_a_new_section():
+    sections = parse_sections(
+        "Job Description\nCoordinate testing with other teams.\n"
+        "Qualifications/Requirements\nPursuing a systems engineering degree."
+    )
+    assert [section["key"] for section in sections] == ["role", "requirements"]
+
+
 def test_greenhouse_detail_uses_public_job_endpoint_and_exact_deadline():
     client = FakeFetcher({
         "content": "<h2>Requirements</h2><p>Linux</p>",
@@ -126,3 +140,74 @@ def test_workday_is_inferred_from_a_simplify_posting_url():
         "Systems-Engineer-Co-Op_01873686"
     ]
     assert detail.text == "Workday body"
+
+
+def test_embedded_greenhouse_job_id_resolves_the_real_board():
+    client = FakeFetcher({"content": "<h2>Responsibilities</h2><p>Build safe systems.</p>"})
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://careers.withwaymo.com/jobs?gh_jid=8231711",
+    })
+    assert client.urls == ["https://boards-api.greenhouse.io/v1/boards/waymo/jobs/8231711"]
+    assert detail.sections[0]["key"] == "responsibilities"
+
+
+def test_simplify_lever_url_uses_lever_detail_api():
+    client = FakeFetcher({"description": "<p>Design hardware.</p>"})
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://jobs.lever.co/acme/00000000-0000-4000-8000-000000000001",
+    })
+    assert client.urls == ["https://api.lever.co/v0/postings/acme/00000000-0000-4000-8000-000000000001"]
+    assert detail.text == "Design hardware."
+
+
+def test_smartrecruiters_sections_are_readable():
+    client = FakeFetcher({"jobAd": {"sections": {
+        "jobDescription": {"title": "Job Description", "text": "<p>Ship useful software.</p>"},
+        "qualifications": {"title": "Qualifications", "text": "<p>Python experience.</p>"},
+    }}})
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://jobs.smartrecruiters.com/AbbVie/3743990015684476",
+    })
+    assert client.urls == ["https://api.smartrecruiters.com/v1/companies/AbbVie/postings/3743990015684476"]
+    assert [section["key"] for section in detail.sections] == ["role", "requirements"]
+    assert "Ship useful software" in detail.text
+
+
+def test_allowlisted_jobposting_jsonld_is_used_without_generic_url_fetching():
+    page = '<script type="application/ld+json">{"@type":"JobPosting","description":"' + ("Build safe systems. " * 8) + '"}</script>'
+    client = FakeHtmlFetcher(page)
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://careers.amd.com/jobs/90950?icims=1",
+    })
+    assert detail.text.startswith("Build safe systems")
+    assert client.urls == ["https://careers.amd.com/jobs/90950?icims=1"]
+    client.urls.clear()
+    assert ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://example.invalid/jobs/90950",
+    }) is None
+    assert client.urls == []
+
+
+def test_amazon_public_job_page_reads_only_the_job_content():
+    client = FakeHtmlFetcher('<nav>Not the posting</nav><div id="job-detail-body"><div class="content"><h2>Description</h2><p>' + ("Work on quantum systems. " * 6) + '</p></div></div>')
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://amazon.jobs/en/jobs/10556930/role",
+    })
+    assert detail.text.startswith("Description")
+    assert "Not the posting" not in detail.text
+
+
+def test_allowlisted_successfactors_page_uses_only_the_job_body():
+    client = FakeHtmlFetcher('<nav>Not the job</nav><div class="joblayouttoken"><h2>Responsibilities</h2><p>' + ("Build dependable devices. " * 5) + '</p></div>')
+    detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
+        "dedupe_key": "sha256:abc", "board": None,
+        "url": "https://careers.acuityinc.com/job/Example/123?ats=successfactors",
+    })
+    assert detail.sections[0]["key"] == "responsibilities"
+    assert "Not the job" not in detail.text
