@@ -93,6 +93,10 @@ def test_dashboard_serves_shell_and_history_routes(dashboard):
     assert "default-src 'self'" in shell.headers["content-security-policy"]
     assert nested.status_code == 200
     assert nested.text == shell.text
+    assert "/static/icons/jobseer-fan-32.png" in shell.text
+    icon = httpx.get(f"{base}/static/icons/jobseer-fan-32.png", timeout=2)
+    assert icon.status_code == 200
+    assert icon.headers["content-type"] == "image/png"
 
 
 def test_v1_api_requires_authentik(dashboard):
