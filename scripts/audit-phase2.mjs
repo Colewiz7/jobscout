@@ -265,6 +265,46 @@ try {
       headerTitleSize: headerTitle ? Number.parseFloat(getComputedStyle(headerTitle).fontSize) : 0,
     };
   })()`);
+  const logoFallback = await cdp.evaluate(`(async () => {
+    const make = (initials) => {
+      const host = document.createElement('span');
+      host.className = 'job-logo';
+      host.style.position = 'absolute';
+      host.style.left = '-1000px';
+      const letters = document.createElement('span');
+      letters.className = 'logo-initials';
+      letters.textContent = initials;
+      const img = document.createElement('img');
+      img.alt = '';
+      host.append(letters, img);
+      document.body.append(host);
+      return { host, letters, img };
+    };
+    const good = make('ML');
+    const bad = make('XX');
+    const pending = getComputedStyle(good.letters).visibility === 'visible'
+      && getComputedStyle(good.img).visibility === 'hidden';
+    const settled = (img) => new Promise((resolve) => {
+      img.addEventListener('load', () => resolve('load'), { once: true });
+      img.addEventListener('error', () => resolve('error'), { once: true });
+    });
+    const goodResult = settled(good.img);
+    const badResult = settled(bad.img);
+    good.img.src = '/static/company-logos/metlife.png';
+    bad.img.src = '/static/company-logos/does-not-exist.png';
+    const [loaded, failed] = await Promise.all([goodResult, badResult]);
+    const result = {
+      pending,
+      loaded: loaded === 'load' && good.host.classList.contains('has-logo')
+        && getComputedStyle(good.letters).visibility === 'hidden'
+        && getComputedStyle(good.img).visibility === 'visible',
+      failed: failed === 'error' && !bad.host.classList.contains('has-logo')
+        && getComputedStyle(bad.letters).visibility === 'visible' && bad.img.hidden,
+    };
+    good.host.remove();
+    bad.host.remove();
+    return result;
+  })()`);
   const scrolledSelection = await cdp.evaluate(`(async () => {
     const viewport = document.querySelector('#job-viewport');
     viewport.scrollTop = 72 * 120;
@@ -623,6 +663,7 @@ try {
     },
     scrolledSelection,
     logoScroll,
+    logoFallback,
     copiedList,
     ...(overview ? { overview } : {}),
     ...(quickFill ? { quickFill } : {}),
@@ -643,6 +684,7 @@ try {
   if (scrolledSelection.error || scrolledSelection.after !== scrolledSelection.before || scrolledSelection.actual !== scrolledSelection.expected || scrolledSelection.route !== scrolledSelection.key) failures.push(`scrolled row selection failed: ${JSON.stringify(scrolledSelection)}`);
   if (!logoScroll.sameRow || !logoScroll.sameLogo || !logoScroll.scrolled) failures.push(`scroll remounted a visible company logo: ${JSON.stringify(logoScroll)}`);
   if (logoScroll.headerLogoSize !== 80 || logoScroll.headerTitleSize !== 28) failures.push(`job header logo or title size regressed: ${JSON.stringify(logoScroll)}`);
+  if (!logoFallback.pending || !logoFallback.loaded || !logoFallback.failed) failures.push(`company logo fallback failed: ${JSON.stringify(logoFallback)}`);
   if (copiedList.lines !== jobCount || !copiedList.containsPostingUrl) failures.push(`copy list did not include the whole view: ${JSON.stringify(copiedList)}`);
   const observedLcp = desktop.lcp || renderReadyMs;
   if (observedLcp >= 2000) failures.push(`render-ready/LCP was ${observedLcp.toFixed(1)}ms`);
