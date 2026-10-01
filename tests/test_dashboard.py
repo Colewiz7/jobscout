@@ -106,7 +106,10 @@ def test_dashboard_serves_shell_and_history_routes(dashboard):
 def test_company_names_have_real_icons(dashboard):
     base, _ = dashboard
     manifest = httpx.get(f"{base}/static/company-logos/manifest.json", timeout=2).json()
-    for company in ("GE HealthCare", "General Electric", "MORSE Corp", "RF-SMART"):
+    for company in (
+        "GE HealthCare", "General Electric", "MORSE Corp", "RF-SMART",
+        "Dow Chemical Company", "Southwest Airlines", "MetLife",
+    ):
         icon = httpx.get(f"{base}/static/company-logos/{manifest[company]}", timeout=2)
         assert icon.status_code == 200
         assert icon.headers["content-type"] == "image/png"

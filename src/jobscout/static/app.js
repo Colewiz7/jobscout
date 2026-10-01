@@ -306,9 +306,9 @@ const lightLogoTiles = new Set([
 function companyLogoMarkup(company, className = "job-logo") {
   const key = normalizeCompany(company);
   const filename = state.companyLogos[key];
-  const tile = lightLogoTiles.has(key) ? " logo-needs-light" : "";
+  const tile = lightLogoTiles.has(key) ? " data-logo-light" : "";
   const loading = className === "company-monogram" ? "lazy" : "eager";
-  return `<span class="${className}${filename ? ` has-logo${tile}` : ""}" aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
+  return `<span class="${className}"${filename ? tile : ""} aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
 }
 
 function jobRowMarkup(entry) {
@@ -2825,6 +2825,15 @@ document.addEventListener("change", (event) => {
   else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
   else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
 });
+
+document.addEventListener("load", (event) => {
+  if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .detail-company-logo, .company-monogram")) {
+    const logo = event.target.parentElement;
+    if (!event.target.naturalWidth) return;
+    logo.classList.add("has-logo");
+    if (logo.hasAttribute("data-logo-light")) logo.classList.add("logo-needs-light");
+  }
+}, true);
 
 document.addEventListener("error", (event) => {
   if (event.target instanceof HTMLImageElement && event.target.closest(".job-logo, .detail-company-logo, .company-monogram")) {
