@@ -144,6 +144,22 @@ def test_icon_refresh_persists_only_verified_site(conn, monkeypatch, tmp_path):
     }
 
 
+def test_icon_refresh_skips_historical_company_without_postings(conn, monkeypatch, tmp_path):
+    with conn.cursor() as cur:
+        cur.execute("insert into companies (key, name) values (%s, %s)", ("orphan", "Orphan"))
+    conn.commit()
+    domains = tmp_path / "domains.json"
+    domains.write_text("{}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    monkeypatch.setattr(company_icons, "DOMAIN_PATH", domains)
+    monkeypatch.setattr(company_icons, "STATIC_MANIFEST", manifest)
+    monkeypatch.setattr(company_icons, "_read", lambda *args, **kwargs: b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"\x00\x00\x00\x20" * 2)
+    assert company_icons.refresh(conn, client=object()) == {
+        "checked": 0, "added": 0, "unverified": 0,
+    }
+
+
 def test_overview_queue_is_persistent_and_idempotent(conn):
     database.upsert_open(conn, [_p()])
     key = _p().dedupe_key
