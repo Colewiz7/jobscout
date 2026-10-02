@@ -175,7 +175,9 @@ def refresh(conn, *, client: httpx.Client | None = None, now: dt.datetime | None
         placeholder_hash = hashlib.sha256(invalid).digest()
         for company in companies:
             key, name = company["key"], company["name"]
-            if key in static:
+            # Historical company records can outlive their last posting. Do
+            # not probe a stale label that has no current source URL.
+            if key in static or key not in urls:
                 continue
             prior = checked.get(key)
             if prior and now - prior["checked_at"] < dt.timedelta(days=30 if prior["logo_data"] else 1):
