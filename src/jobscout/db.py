@@ -363,6 +363,108 @@ def company_key(value: str) -> str:
     return " ".join(parts)
 
 
+def company_icon_keys(conn: psycopg.Connection) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("select company_key from company_assets where logo_data is not null")
+        return [row["company_key"] for row in cur.fetchall()]
+
+
+def company_icon(conn: psycopg.Connection, name: str) -> dict | None:
+    key = company_key(name)
+    if not key:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "select logo_data, media_type from company_assets where company_key = %s and logo_data is not null",
+            (key,),
+        )
+        return cur.fetchone()
+
+
+def enqueue_overviews(conn: psycopg.Connection, keys: list[str], *, priority: bool = False) -> int:
+    if not keys or len(keys) > 5_000:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """insert into overview_jobs (dedupe_key, priority)
+               select distinct dedupe_key, %s from postings where dedupe_key = any(%s)
+               on conflict (dedupe_key) do update set
+                 status = 'queued', priority = overview_jobs.priority or excluded.priority,
+                 attempts = 0, error = null, available_at = now(),
+                 requested_at = now(), updated_at = now()
+               where overview_jobs.status <> 'ready'
+               returning dedupe_key""",
+            (priority, keys),
+        )
+        count = len(cur.fetchall())
+    conn.commit()
+    return count
+
+
+def overview_job(conn: psycopg.Connection, key: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """select status, priority, items, source, source_hash, attempts,
+                      error, requested_at, generated_at
+                 from overview_jobs where dedupe_key = %s""",
+            (key,),
+        )
+        return cur.fetchone()
+
+
+def claim_overview(conn: psycopg.Connection, *, priority_only: bool = False) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """select dedupe_key from overview_jobs
+                where ((status = 'queued' and available_at <= now())
+                   or (status = 'running' and started_at < now() - interval '10 minutes'))
+                  and (not %s or priority)
+                order by priority desc, requested_at
+                for update skip locked limit 1""",
+            (priority_only,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        key = row["dedupe_key"]
+        cur.execute(
+            """update overview_jobs set status = 'running', attempts = attempts + 1,
+                      started_at = now(), updated_at = now()
+                 where dedupe_key = %s""",
+            (key,),
+        )
+    conn.commit()
+    return key
+
+
+def finish_overview(
+    conn: psycopg.Connection, key: str, items: list[dict], source: str, source_hash: str
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """update overview_jobs set status = 'ready', priority = false,
+                      items = %s, source = %s, source_hash = %s, error = null,
+                      generated_at = now(), updated_at = now()
+                 where dedupe_key = %s""",
+            (Json(items), source, source_hash, key),
+        )
+    conn.commit()
+
+
+def fail_overview(conn: psycopg.Connection, key: str, reason: str, *, terminal: bool = False) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """update overview_jobs
+                  set status = case when %s or attempts >= 3 then 'failed' else 'queued' end,
+                      error = %s, available_at = now() + interval '10 minutes',
+                      updated_at = now()
+                where dedupe_key = %s""",
+            (terminal, reason[:500], key),
+        )
+    conn.commit()
+
+
 def collapse_dashboard_duplicates(rows: list[dict]) -> list[dict]:
     """Unify legacy cross-source copies without changing stored application keys.
 
@@ -942,6 +1044,8 @@ def save_description(
 ) -> None:
     """Cache one provider response without overwriting a manual deadline."""
     with conn.cursor() as cur:
+        cur.execute("select dedupe_key, description_text from postings where id = %s", (posting_id,))
+        previous = cur.fetchone()
         cur.execute(
             """
             update postings
@@ -962,6 +1066,14 @@ def save_description(
             """,
             (html, text, Json(list(sections)), error, deadline, deadline_source, posting_id),
         )
+        if previous and previous["description_text"] != text:
+            cur.execute(
+                """update overview_jobs set status = 'queued', items = null, source = null,
+                          source_hash = null, attempts = 0, error = null,
+                          available_at = now(), requested_at = now(), updated_at = now()
+                     where dedupe_key = %s and status = 'ready'""",
+                (previous["dedupe_key"],),
+            )
     conn.commit()
 
 

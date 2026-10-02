@@ -335,6 +335,49 @@ MIGRATIONS = (
             on rule_actions (dedupe_key, created_at desc) where undone_at is null;
         """,
     ),
+    Migration(
+        11,
+        "company_icons",
+        """
+        create table if not exists company_assets (
+            company_key text primary key references companies(key) on delete cascade,
+            company_name text not null,
+            domain text,
+            logo_data bytea,
+            media_type text check (media_type in ('image/png', 'image/jpeg', 'image/x-icon')),
+            source text check (source in ('curated', 'verified_site')),
+            checked_at timestamptz not null default now(),
+            constraint company_assets_logo_size check (logo_data is null or octet_length(logo_data) <= 65536),
+            constraint company_assets_logo_type check ((logo_data is null) = (media_type is null))
+        );
+        create index if not exists company_assets_checked_idx on company_assets (checked_at);
+        """,
+    ),
+    Migration(
+        12,
+        "queued_ai_overviews",
+        """
+        create table if not exists overview_jobs (
+            dedupe_key text primary key,
+            status text not null default 'queued'
+                check (status in ('queued', 'running', 'ready', 'failed')),
+            priority boolean not null default false,
+            items jsonb,
+            source text check (source in ('ai', 'posting')),
+            source_hash text,
+            attempts integer not null default 0,
+            error text,
+            requested_at timestamptz not null default now(),
+            available_at timestamptz not null default now(),
+            started_at timestamptz,
+            generated_at timestamptz,
+            updated_at timestamptz not null default now()
+        );
+        create index if not exists overview_jobs_work_idx
+            on overview_jobs (priority desc, requested_at)
+            where status in ('queued', 'running');
+        """,
+    ),
 )
 
 

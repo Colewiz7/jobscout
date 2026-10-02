@@ -390,6 +390,56 @@ def cmd_migrate(args) -> int:
     return 0
 
 
+def cmd_refresh_icons(args) -> int:
+    from . import company_icons
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        log.error("DATABASE_URL is not set")
+        return 2
+    with database.connect(dsn) as conn:
+        database.require_schema(conn)
+        counts = company_icons.refresh(conn)
+    log.info("company icons: checked %(checked)d, added %(added)d, unverified %(unverified)d", counts)
+    return 0
+
+
+def cmd_queue_overviews(args) -> int:
+    from .dashboard import PostgresStore
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        log.error("DATABASE_URL is not set")
+        return 2
+    store = PostgresStore(dsn)
+    try:
+        keys = [job["dedupe_key"] for job in store.jobs()]
+        with database.connect(dsn) as conn:
+            database.require_schema(conn)
+            queued = database.enqueue_overviews(conn, keys)
+        log.info("AI overviews: %d newly queued from %d visible jobs", queued, len(keys))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_process_overviews(args) -> int:
+    from .overview import OverviewService
+    from .overview_jobs import process
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        log.error("DATABASE_URL is not set")
+        return 2
+    service = OverviewService(
+        os.environ.get("JOBSCOUT_LLM_URL", "http://ollama.ai.svc.cluster.local:11434"),
+        os.environ.get("JOBSCOUT_LLM_MODEL", "qwen3.5:9b"),
+    )
+    counts = process(dsn, service, limit=args.limit)
+    log.info("AI overview batch: %(ready)d ready, %(retry)d retrying, %(failed)d failed", counts)
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="jobscout")
     parser.add_argument("--config", default=None, help="path to filters YAML")
@@ -408,6 +458,10 @@ def main(argv=None) -> int:
     dashboard_parser.add_argument("--profile", default=None, help="path to profile YAML")
     dashboard_parser.add_argument("--demo", action="store_true", help="serve sample jobs without Postgres")
     sub.add_parser("migrate", help="apply database migrations and exit")
+    sub.add_parser("refresh-icons", help="refresh verified company icons and exit")
+    sub.add_parser("queue-overviews", help="queue an AI overview for every visible job")
+    overview_parser = sub.add_parser("process-overviews", help="process queued AI overviews")
+    overview_parser.add_argument("--limit", type=int, default=20)
     sub.add_parser("selftest", help="import and filter smoke test")
 
     args = parser.parse_args(argv)
@@ -422,6 +476,9 @@ def main(argv=None) -> int:
         "selftest": cmd_selftest,
         "dashboard": cmd_dashboard,
         "migrate": cmd_migrate,
+        "refresh-icons": cmd_refresh_icons,
+        "queue-overviews": cmd_queue_overviews,
+        "process-overviews": cmd_process_overviews,
         "check": cmd_check,
         None: cmd_run,
     }[args.command](args)

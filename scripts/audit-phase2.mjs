@@ -139,11 +139,15 @@ try {
         const originalFetch = window.fetch.bind(window);
         window.fetch = (input, options) => {
           const url = String(typeof input === "string" ? input : input.url);
-          if (url.includes("/overview?cached=1")) return Promise.resolve(new Response(JSON.stringify({ items: [
+          if (url.includes("/overview?cached=1")) {
+            window.__audit.cachedOverviewButtonVisible = Boolean(document.querySelector('[data-generate-overview]'));
+            return new Promise((resolve) => setTimeout(() => resolve(new Response(JSON.stringify({ items: [
             { kind: "work", text: "Build tools with Claude and Codex.", terms: ["Build tools"] },
             { kind: "skills", text: "Python, leadership", terms: ["Python", "leadership"] },
+            { kind: "required", text: "U.S. citizenship and security clearance", terms: ["U.S. citizenship", "security clearance"] },
             { kind: "location", text: "Hybrid in Boston", terms: ["Hybrid", "Boston"] },
-          ] }), { headers: { "Content-Type": "application/json" } }));
+          ] }), { headers: { "Content-Type": "application/json" } })), 100));
+          }
           if (url.endsWith("/description")) return Promise.resolve(new Response(JSON.stringify({ description: {
             description_text: "Responsibilities:\\nBuild tools with Claude and Codex using Python. Hybrid in Boston.",
             sections: [
@@ -186,6 +190,8 @@ try {
         values: [...(grid?.querySelectorAll('dd') || [])].map((item) => item.textContent),
         columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 0,
         highlighted: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.textContent),
+        overviewHighlighted: [...document.querySelectorAll('.ai-overview mark')].map((item) => item.textContent),
+        cachedButtonVisible: Boolean(window.__audit.cachedOverviewButtonVisible),
         highlightCategories: [...document.querySelectorAll('.posting-sections mark')].map((item) => item.className),
         highlightKey: [...document.querySelectorAll('.highlight-key-item')].map((item) => item.textContent),
         brandSize: document.querySelector('.brand-mark img')?.getBoundingClientRect().width || 0,
@@ -242,9 +248,36 @@ try {
   const copiedList = await cdp.evaluate(`(async () => {
     let copied = '';
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { copied = value; } } });
-    document.querySelector('[data-copy-list]').click();
+    const choose = (scope) => {
+      document.querySelector('.copy-menu summary').click();
+      document.querySelector('[data-copy-scope="' + scope + '"]').click();
+    };
+    choose('all');
     await new Promise((resolve) => setTimeout(resolve, 10));
-    return { lines: copied.split('\\n').length, containsPostingUrl: copied.includes('https://') };
+    const all = { lines: copied.split('\\n').length, containsPostingUrl: copied.includes('https://') };
+    choose('new');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const newCount = Number(document.querySelector('[data-copy-scope="new"] span').textContent.replace(/,/g, ''));
+    const fresh = copied.split('\\n').length === newCount;
+    choose('single');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const single = copied.split('\\n').length === 1;
+    choose('multiple');
+    const row = (index) => document.querySelectorAll('#job-list-layer .job-row')[index];
+    row(0).click();
+    row(2).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    row(1).click();
+    const deselected = !row(1).querySelector('.selection-check');
+    const count = Number(document.querySelector('.copy-selection-bar strong').textContent);
+    document.querySelector('[data-copy-selected]').click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const multiple = count === 2 && copied.split('\\n').length === 2
+      && !document.querySelector('.copy-selection-bar');
+    row(0).dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+    row(1).dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+    row(2).click();
+    const cleared = !document.querySelector('.selection-check') && !document.querySelector('.bulk-bar');
+    return { ...all, fresh, single, multiple, deselected, cleared };
   })()`);
   const logoScroll = await cdp.evaluate(`(async () => {
     const viewport = document.querySelector('#job-viewport');
@@ -685,7 +718,7 @@ try {
   if (!logoScroll.sameRow || !logoScroll.sameLogo || !logoScroll.scrolled) failures.push(`scroll remounted a visible company logo: ${JSON.stringify(logoScroll)}`);
   if (logoScroll.headerLogoSize !== 80 || logoScroll.headerTitleSize !== 28) failures.push(`job header logo or title size regressed: ${JSON.stringify(logoScroll)}`);
   if (!logoFallback.pending || !logoFallback.loaded || !logoFallback.failed) failures.push(`company logo fallback failed: ${JSON.stringify(logoFallback)}`);
-  if (copiedList.lines !== jobCount || !copiedList.containsPostingUrl) failures.push(`copy list did not include the whole view: ${JSON.stringify(copiedList)}`);
+  if (copiedList.lines !== jobCount || !copiedList.containsPostingUrl || !copiedList.fresh || !copiedList.single || !copiedList.multiple || !copiedList.deselected || !copiedList.cleared) failures.push(`copy scopes or selection failed: ${JSON.stringify(copiedList)}`);
   const observedLcp = desktop.lcp || renderReadyMs;
   if (observedLcp >= 2000) failures.push(`render-ready/LCP was ${observedLcp.toFixed(1)}ms`);
   if (desktop.interaction >= 200) failures.push(`selection interaction was ${desktop.interaction.toFixed(1)}ms`);
@@ -695,6 +728,7 @@ try {
   if (compact.hasHorizontalOverflow) failures.push(`320px layout overflowed to ${compact.content}px`);
   if (auditOverview && (overview.columns !== 2 || !overview.labels.includes("Skills") || !overview.values.includes("Python, leadership"))) failures.push(`overview fact grid failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlighted.includes("Claude") || !overview.highlighted.includes("Codex") || overview.customField)) failures.push(`automatic highlighting failed: ${JSON.stringify(overview)}`);
+  if (auditOverview && (!overview.overviewHighlighted.includes("Python") || !overview.overviewHighlighted.includes("security clearance") || overview.cachedButtonVisible)) failures.push(`overview loading or highlighting failed: ${JSON.stringify(overview)}`);
   if (auditOverview && (!overview.highlightCategories.some((kind) => kind.includes("posting-highlight--stack")) || !overview.highlightKey.includes("Stack match") || overview.brandSize !== 48)) failures.push(`highlight colors or brand size failed: ${JSON.stringify(overview)}`);
   if (auditOverview && overview.dividers.some((width) => width !== '1px')) failures.push(`reading pane dividers missing: ${JSON.stringify(overview.dividers)}`);
   if (auditOverview && (!overview.boxedFacts || !overview.colonDivider)) failures.push(`overview boxes or colon-line divider missing: ${JSON.stringify(overview)}`);

@@ -46,3 +46,18 @@ The script restores into a temporary Postgres container, records row counts,
 runs the migration twice to prove idempotence, and verifies that application
 data counts did not change. It deletes the disposable container and network;
 it never modifies the supplied dump.
+
+## Overview and company icon jobs
+
+Migration 11 stores only small, verified company icons; the daily
+`refresh-icons` CronJob checks newly discovered companies and refreshes old
+matches. Unverified companies keep their initials rather than a guessed logo.
+
+Migration 12 persists overview work and source-checked results. Run
+`python -m jobscout queue-overviews` once after deploying to enqueue all
+currently visible jobs. This does **not** change application statuses or the
+apply Queue. The `process-overviews` CronJob runs every five minutes; ordinary
+queued work runs only from 06:00 to 10:59 America/New_York. A user's Generate
+button marks that one job as priority and wakes the dashboard's short worker
+immediately. Failed work retries with backoff; missing posting text is kept as
+an explicit failure, never fabricated into an overview.

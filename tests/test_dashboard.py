@@ -109,11 +109,27 @@ def test_company_names_have_real_icons(dashboard):
     for company in (
         "GE HealthCare", "General Electric", "MORSE Corp", "RF-SMART",
         "Dow Chemical Company", "Southwest Airlines", "MetLife",
+        "NJM Insurance Group", "Point72", "Regeneron Pharmaceuticals", "Stryten",
     ):
         icon = httpx.get(f"{base}/static/company-logos/{manifest[company]}", timeout=2)
         assert icon.status_code == 200
         assert icon.headers["content-type"] == "image/png"
         assert icon.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_dynamic_company_icons_are_authenticated_and_same_origin(dashboard):
+    base, store = dashboard
+    store.company_icon_keys = lambda: ["new brand"]
+    store.company_icon = lambda name: {"logo_data": b"icon", "media_type": "image/png"} if name == "New Brand" else None
+    assert httpx.get(f"{base}/api/v1/company-icons", timeout=2).status_code == 401
+    client, _ = authenticated_client(base)
+    assert client.get("/api/v1/company-icons").json() == {"keys": ["new brand"]}
+    image = client.get("/api/v1/company-icons/New%20Brand")
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+    assert image.headers["x-content-type-options"] == "nosniff"
+    assert image.content == b"icon"
+    assert client.get("/api/v1/company-icons/Unknown").status_code == 404
 
 
 def test_v1_api_requires_authentik(dashboard):
@@ -143,6 +159,11 @@ def test_ai_overview_is_flagged_and_auth_protected():
         with httpx.Client(base_url=base, headers=AUTH) as client:
             assert client.get("/api/v1/session").json()["features"]["ai_overview"] is True
             key = DemoStore().jobs()[0]["dedupe_key"]
+            assert client.post(f"/api/v1/jobs/{key}/overview").status_code == 403
+            token = client.get("/api/v1/session").json()["csrf_token"]
+            queued = client.post(f"/api/v1/jobs/{key}/overview", headers={"X-CSRF-Token": token})
+            assert queued.status_code == 200
+            assert queued.json()["status"] == "ready"
             response = client.get(f"/api/v1/jobs/{key}/overview")
             assert response.status_code == 200
             assert response.json()["items"][0]["text"].startswith("Build reliable systems")

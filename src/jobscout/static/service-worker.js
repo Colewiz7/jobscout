@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE = "jobseer-reads-v11";
+const CACHE = "jobseer-reads-v12";
 const SHELL = [
   "/static/index.html",
   "/static/app.css",
@@ -28,7 +28,8 @@ self.addEventListener("activate", (event) => {
 
 function isCachedRead(url) {
   if (url.pathname.startsWith("/static/")) return true;
-  if (["/api/v1/jobs", "/api/v1/saved-views", "/api/v1/tracker", "/api/v1/companies"].includes(url.pathname)) return true;
+  if (["/api/v1/jobs", "/api/v1/saved-views", "/api/v1/tracker", "/api/v1/companies", "/api/v1/company-icons"].includes(url.pathname)) return true;
+  if (url.pathname.startsWith("/api/v1/company-icons/")) return true;
   return /^\/api\/v1\/jobs\/[^/]+\/(description|overview)$/.test(url.pathname);
 }
 
@@ -36,8 +37,9 @@ async function networkFirst(request, fallback) {
   try {
     const response = await fetch(request);
     const responseUrl = new URL(response.url);
-    const expectedType = request.mode === "navigate" || !new URL(request.url).pathname.startsWith("/api/v1/")
-      ? null : "application/json";
+    const path = new URL(request.url).pathname;
+    const expectedType = request.mode === "navigate" || !path.startsWith("/api/v1/")
+      ? null : path.startsWith("/api/v1/company-icons/") ? "image/" : "application/json";
     if (response.ok && !response.redirected && response.type === "basic"
         && responseUrl.origin === self.location.origin
         && (!expectedType || response.headers.get("Content-Type")?.includes(expectedType))) {

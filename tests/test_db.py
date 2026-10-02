@@ -13,7 +13,7 @@ import os
 import pytest
 
 from jobscout import db as database
-from jobscout import migrations
+from jobscout import migrations, company_icons, overview_jobs
 from jobscout.models import Posting
 
 DSN = os.environ.get("JOBSCOUT_TEST_DSN")
@@ -24,6 +24,8 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists overview_jobs")
+        cur.execute("drop table if exists company_assets")
         cur.execute("drop table if exists rule_actions")
         cur.execute("drop table if exists rules")
         cur.execute("drop table if exists interviews")
@@ -78,6 +80,8 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 8, "name": "tracker_companies_and_followups"},
             {"version": 9, "name": "eligibility_overrides"},
             {"version": 10, "name": "inbox_rules"},
+            {"version": 11, "name": "company_icons"},
+            {"version": 12, "name": "queued_ai_overviews"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -100,6 +104,103 @@ def test_upsert_refreshes_mutable_fields(conn):
     with conn.cursor() as cur:
         cur.execute("select url from postings")
         assert cur.fetchone()["url"] == "https://new"
+
+
+def test_company_icon_cache_is_joined_to_real_companies(conn):
+    database.upsert_open(conn, [_p()])
+    with conn.cursor() as cur:
+        cur.execute(
+            """insert into company_assets
+               (company_key, company_name, domain, logo_data, media_type, source)
+               values (%s, %s, %s, %s, %s, %s)""",
+            ("acme", "Acme", "acme.com", b"icon", "image/png", "verified_site"),
+        )
+    conn.commit()
+    assert database.company_icon_keys(conn) == ["acme"]
+    assert database.company_icon(conn, "Acme, Inc.")["logo_data"] == b"icon"
+    assert database.company_icon(conn, "Other") is None
+
+
+def test_icon_refresh_persists_only_verified_site(conn, monkeypatch, tmp_path):
+    database.upsert_open(conn, [_p(
+        company="New Brand", url="https://boards.greenhouse.io/newbrand/jobs/123",
+    )])
+    domains = tmp_path / "domains.json"
+    domains.write_text("{}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    monkeypatch.setattr(company_icons, "DOMAIN_PATH", domains)
+    monkeypatch.setattr(company_icons, "STATIC_MANIFEST", manifest)
+    monkeypatch.setattr(company_icons, "_read", lambda *args: b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"\x00\x00\x00\x20" * 2)
+    monkeypatch.setattr(company_icons, "_site_html", lambda *args: "<title>New Brand</title>")
+    monkeypatch.setattr(company_icons, "_favicon", lambda *args: (b"real-icon", "image/png"))
+    now = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)
+    result = company_icons.refresh(conn, client=object(), now=now)
+    assert result == {"checked": 1, "added": 1, "unverified": 0}
+    assert database.company_icon_keys(conn) == ["new brand"]
+    assert database.company_icon(conn, "New Brand")["logo_data"] == b"real-icon"
+    assert company_icons.refresh(conn, client=object(), now=now + dt.timedelta(days=1)) == {
+        "checked": 0, "added": 0, "unverified": 0,
+    }
+
+
+def test_overview_queue_is_persistent_and_idempotent(conn):
+    database.upsert_open(conn, [_p()])
+    key = _p().dedupe_key
+    assert database.enqueue_overviews(conn, [key, key]) == 1
+    assert database.overview_job(conn, key)["status"] == "queued"
+    assert database.claim_overview(conn, priority_only=True) is None
+    assert database.claim_overview(conn) == key
+    assert database.overview_job(conn, key)["attempts"] == 1
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}], "ai", "hash")
+    assert database.overview_job(conn, key)["items"][0]["terms"] == ["Python"]
+    assert database.enqueue_overviews(conn, [key]) == 0
+    assert database.overview_job(conn, key)["status"] == "ready"
+
+
+def test_priority_overview_retry_and_failure(conn):
+    database.upsert_open(conn, [_p()])
+    key = _p().dedupe_key
+    assert database.enqueue_overviews(conn, [key], priority=True) == 1
+    assert database.claim_overview(conn, priority_only=True) == key
+    database.fail_overview(conn, key, "model unavailable")
+    assert database.overview_job(conn, key)["status"] == "queued"
+    assert database.claim_overview(conn, priority_only=True) is None  # backoff
+    database.fail_overview(conn, key, "no posting", terminal=True)
+    assert database.overview_job(conn, key)["status"] == "failed"
+    assert database.enqueue_overviews(conn, [key], priority=True) == 1
+    assert database.claim_overview(conn, priority_only=True) == key
+
+
+def test_overview_worker_reads_cached_posting_and_persists_result(conn):
+    database.upsert_open(conn, [_p()])
+    key = _p().dedupe_key
+    with conn.cursor() as cur:
+        cur.execute("select id from postings where dedupe_key = %s", (key,))
+        posting_id = cur.fetchone()["id"]
+    description = "Responsibilities\nBuild reliable Python deployment tooling for internal teams."
+    database.save_description(conn, posting_id, html=None, text=description)
+    database.enqueue_overviews(conn, [key], priority=True)
+
+    class FakeService:
+        def overview(self, sections):
+            assert "Python" in str(sections)
+            return [{"kind": "skills", "terms": ["Python"], "text": "Python"}]
+
+        def is_fallback(self, sections):
+            return False
+
+        def fingerprint(self, sections):
+            return "source-v1"
+
+    assert overview_jobs.process(DSN, FakeService(), limit=1, priority_only=True) == {
+        "ready": 1, "retry": 0, "failed": 0,
+    }
+    row = database.overview_job(conn, key)
+    assert row["status"] == "ready"
+    assert row["source_hash"] == "source-v1"
+    database.save_description(conn, posting_id, html=None, text=description + " Now with Go.")
+    assert database.overview_job(conn, key)["status"] == "queued"
 
 
 def test_pending_returns_unnotified_then_stops_after_marking(conn):

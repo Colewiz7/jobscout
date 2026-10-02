@@ -225,6 +225,9 @@ class OverviewService:
         digest = hashlib.sha256(json.dumps(excerpts, sort_keys=True).encode()).hexdigest()
         return f"v5:{self.model}:{digest}"
 
+    def fingerprint(self, sections: list[dict] | tuple[dict, ...]) -> str:
+        return self._cache_key(candidates(sections))
+
     def cached_overview(self, sections: list[dict] | tuple[dict, ...]) -> list[dict[str, str]] | None:
         key = self._cache_key(candidates(sections))
         with self._lock:
