@@ -76,11 +76,11 @@ const commands = [
 const state = {
   jobs: [], loaded: false, loading: false, error: "", csrf: "", refreshedAt: null,
   query: "", status: "new", sort: "score", source: "", remote: false, focus: false,
-  selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, scrollTop: 0,
+  selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, copySelectionMode: false, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
-  aiOverviewEnabled: false, overviews: new Map(), overviewCacheAttempted: new Set(),
+  aiOverviewEnabled: false, overviews: new Map(), overviewCacheAttempted: new Set(), overviewPollTimers: new Map(),
   eligibility: new Map(),
   quickFillEnabled: false, quickFillOpen: false, quickFillProfile: null,
   quickFillError: "", quickFillQuery: "", quickFillItems: [], atsOrdering: {},
@@ -98,7 +98,7 @@ const state = {
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
-  companyLogos: {},
+  companyLogos: {}, companyIconKeys: new Set(),
 };
 
 let commandSelection = 0;
@@ -306,9 +306,11 @@ const lightLogoTiles = new Set([
 function companyLogoMarkup(company, className = "job-logo") {
   const key = normalizeCompany(company);
   const filename = state.companyLogos[key];
+  const source = filename ? `/static/company-logos/${encodeURIComponent(filename)}`
+    : state.companyIconKeys.has(key) ? `/api/v1/company-icons/${encodeURIComponent(company)}` : "";
   const tile = lightLogoTiles.has(key) ? " data-logo-light" : "";
   const loading = className === "company-monogram" ? "lazy" : "eager";
-  return `<span class="${className}"${filename ? tile : ""} aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${filename ? `<img src="/static/company-logos/${encodeURIComponent(filename)}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
+  return `<span class="${className}"${source ? tile : ""} aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${source ? `<img src="${source}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
 }
 
 function jobRowMarkup(entry) {
@@ -371,17 +373,36 @@ function emptyListMarkup() {
   return `<div class="list-empty"><h2>${filtered ? "No roles match this view." : "Your inbox is clear."}</h2><p>${filtered ? "Change or clear the active filters." : "New roles will appear here when the scout finds them."}</p>${filtered ? '<button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button>' : ""}</div>`;
 }
 
-async function copyInboxList() {
-  const jobs = filteredJobs();
+async function copyInboxJobs(jobs, { finishSelection = false } = {}) {
   if (!jobs.length) return;
   const contents = jobs.map((job) => [job.company, job.title, job.location, job.url]
     .filter(Boolean).map((value) => String(value).replace(/\s+/g, " ").trim()).join(" — ")).join("\n");
   try {
     await navigator.clipboard.writeText(contents);
-    showSnackbar(`Copied ${new Intl.NumberFormat().format(jobs.length)} jobs in this view.`);
+    if (finishSelection) {
+      state.copySelectionMode = false;
+      state.selectedKeys.clear();
+      renderInbox();
+    }
+    showSnackbar(`Copied ${new Intl.NumberFormat().format(jobs.length)} ${jobs.length === 1 ? "job" : "jobs"}.`);
   } catch {
     showSnackbar("Couldn't copy the list. Check clipboard permission and retry.");
   }
+}
+
+function copyInboxScope(scope) {
+  const jobs = filteredJobs();
+  if (scope === "multiple") {
+    state.copySelectionMode = true;
+    state.rangeAnchor = -1;
+    renderInbox();
+    document.querySelector("#job-viewport")?.focus({ preventScroll: true });
+    return;
+  }
+  const targets = scope === "new" ? jobs.filter((job) => job.status === "new")
+    : scope === "single" ? jobs.filter((job) => job.dedupe_key === state.selectedKey)
+      : jobs;
+  copyInboxJobs(targets);
 }
 
 function factItem(label, value) {
@@ -436,22 +457,26 @@ function descriptionMarkup(job, { compact = false } = {}) {
 function overviewMarkup(job) {
   if (!state.aiOverviewEnabled) return "";
   const entry = state.overviews.get(job.dedupe_key);
-  if (!entry) return `<section class="detail-section ai-overview"><div class="overview-heading"><h2>AI overview</h2><span>Selected from the posting</span></div><button class="tonal-button interactive" type="button" data-generate-overview>Generate overview</button></section>`;
-  if (entry.loading) return `<section class="detail-section ai-overview" aria-live="polite"><h2>AI overview</h2><p class="overview-pending">Generating from the posting…</p></section>`;
+  if (!entry) return `<section class="detail-section ai-overview overview-resolved"><div class="overview-heading"><h2>AI overview</h2><span>Selected from the posting</span></div><button class="tonal-button interactive" type="button" data-generate-overview>Generate overview</button></section>`;
+  if (entry.checking) return `<section class="detail-section ai-overview overview-checking" aria-label="Checking for a saved AI overview"><div class="overview-heading"><h2>AI overview</h2><span>Checking saved overview</span></div><div class="overview-placeholder${entry.showSkeleton ? " skeleton" : ""}" aria-hidden="true"></div></section>`;
+  if (entry.loading || entry.status === "queued" || entry.status === "running") return `<section class="detail-section ai-overview overview-checking" aria-live="polite"><div class="overview-heading"><h2>AI overview</h2><span>${entry.status === "queued" ? "Queued for the next run" : "Reading the posting"}</span></div><div class="overview-placeholder skeleton" aria-hidden="true"></div></section>`;
   if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   if (!entry.items?.length) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>There isn't enough readable posting detail for an overview. Open the original posting or paste its description, then retry.</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   const labels = { work: "Responsibilities", skills: "Skills", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
+  const usedHighlights = new Set();
   const groups = Object.entries(labels).map(([kind, label]) => {
     const items = entry.items.filter((item) => item.kind === kind);
     const terms = [...new Set(items.flatMap((item) => Array.isArray(item.terms) && item.terms.length ? item.terms : [item.text]).filter(Boolean))];
     const listed = ["work", "required", "preferred", "dates"].includes(kind) && terms.length > 1;
+    const highlighted = (term) => highlightPostingText(term, new Set(), usedHighlights);
     const value = listed
-      ? `<ul class="overview-terms">${terms.map((term) => `<li>${escapeHtml(term)}</li>`).join("")}</ul>`
-      : terms.map(escapeHtml).join(", ");
+      ? `<ul class="overview-terms">${terms.map((term) => `<li>${highlighted(term)}</li>`).join("")}</ul>`
+      : terms.map(highlighted).join(", ");
     return terms.length ? `<div class="overview-cell" data-overview-kind="${kind}"><dt>${label}</dt><dd>${value}</dd></div>` : "";
   }).join("");
   const fallback = entry.source === "posting";
-  return `<section class="detail-section ai-overview" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">${fallback ? "Posting overview" : "AI overview"}</h2><span>${fallback ? "Model response incomplete; showing source-checked facts" : "Only facts stated in the posting"}</span></div><dl class="overview-grid">${groups}</dl></section>`;
+  const legend = [...usedHighlights].map((kind) => `<span class="highlight-key-item highlight-key-item--${kind}">${escapeHtml(HIGHLIGHT_LABELS[kind])}</span>`).join("");
+  return `<section class="detail-section ai-overview overview-resolved" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">${fallback ? "Posting overview" : "AI overview"}</h2><span>${fallback ? "Model response incomplete; showing source-checked facts" : "Only facts stated in the posting"}</span></div>${legend ? `<div class="highlight-key overview-highlight-key" aria-label="Highlight key">${legend}</div>` : ""}<dl class="overview-grid">${groups}</dl></section>`;
 }
 
 function atGlanceMarkup(job) {
@@ -550,8 +575,15 @@ function detailMarkup(job) {
 
 function bulkBarMarkup() {
   const count = state.selectedKeys.size;
+  if (state.copySelectionMode) return `<div class="bulk-bar copy-selection-bar" aria-label="Copy selection"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected · Click jobs, or Shift-click for a range</span><button class="tonal-button interactive" type="button" data-copy-selected ${count ? "" : "disabled"}>Copy selected</button><button class="text-button interactive" type="button" data-cancel-copy-selection>Cancel</button></div>`;
   if (!count) return "";
   return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span><button class="text-button interactive" type="button" data-bulk-action="saved">Save</button><button class="text-button interactive" type="button" data-bulk-action="queued">Queue</button><button class="text-button interactive" type="button" data-bulk-action="archived">Dismiss</button><button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+}
+
+function copyMenuMarkup(jobs) {
+  const newCount = jobs.filter((job) => job.status === "new").length;
+  const single = jobs.some((job) => job.dedupe_key === state.selectedKey);
+  return `<details class="copy-menu"><summary class="icon-button interactive" aria-label="Copy jobs" title="Copy jobs">${icons.copy}<span class="copy-menu-caret" aria-hidden="true">⌄</span></summary><div class="copy-menu-panel" aria-label="Copy options"><button type="button" data-copy-scope="all">All in view <span>${new Intl.NumberFormat().format(jobs.length)}</span></button><button type="button" data-copy-scope="new" ${newCount ? "" : "disabled"}>New in view <span>${new Intl.NumberFormat().format(newCount)}</span></button><button type="button" data-copy-scope="single" ${single ? "" : "disabled"}>Current job</button><button type="button" data-copy-scope="multiple">Select multiple…</button></div></details>`;
 }
 
 function inboxMarkup() {
@@ -561,8 +593,8 @@ function inboxMarkup() {
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();
   return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}" aria-label="Inbox">
-    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button><button class="icon-button interactive" type="button" data-copy-list aria-label="Copy jobs in this view" title="Copy jobs in this view" ${jobs.length ? "" : "disabled"}>${icons.copy}</button><label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
-      <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true">${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
+    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup(jobs)}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
+      <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true" ${state.copySelectionMode ? 'tabindex="-1"' : ""}>${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
     <main class="reading-pane" id="inbox-reading-pane">${detailMarkup(selectedJob)}</main>
   </section>`;
 }
@@ -612,37 +644,92 @@ async function loadDescription(key, { force = false } = {}) {
 }
 
 async function loadOverview(key, { force = false } = {}) {
-  if (!state.aiOverviewEnabled || !key || (!force && state.overviews.has(key))) return;
-  state.overviews.set(key, { loading: true, items: [], error: "" });
+  if (!state.aiOverviewEnabled || !key || (!force && state.overviews.get(key)?.items?.length)) return;
+  state.overviews.set(key, { loading: true, status: "running", items: [], error: "" });
+  updateOverviewUI(key);
   try {
     const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview`, {
-      credentials: "same-origin", headers: { Accept: "application/json" },
+      method: "POST", credentials: "same-origin",
+      headers: { Accept: "application/json", "X-CSRF-Token": state.csrf },
     });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The overview could not be generated.");
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The overview could not be queued.");
     const payload = await response.json();
-    state.overviews.set(key, { loading: false, items: payload.items || [], source: payload.source || "ai", error: "" });
+    applyOverviewPayload(key, payload);
   } catch (error) {
-    state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be generated." });
+    state.overviews.set(key, { loading: false, items: [], error: error instanceof Error ? error.message : "The overview could not be queued." });
   }
-  if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
-  if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
+  updateOverviewUI(key);
+}
+
+function updateOverviewUI(key) {
+  if (state.selectedKey !== key) return;
+  if (routeRoot() === "inbox") renderSelectedJob();
+  if (window.location.pathname.startsWith("/queue/session/")) renderApplySession();
+}
+
+function scheduleOverviewPoll(key) {
+  if (state.overviewPollTimers.has(key)) return;
+  const timer = setTimeout(async () => {
+    state.overviewPollTimers.delete(key);
+    if (state.selectedKey !== key) return;
+    try {
+      const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview?cached=1`, {
+        credentials: "same-origin", headers: { Accept: "application/json" },
+      });
+      if (response.ok) applyOverviewPayload(key, await response.json());
+    } catch { /* Keep the previous state; a later view can retry. */ }
+    updateOverviewUI(key);
+  }, 5000);
+  state.overviewPollTimers.set(key, timer);
+}
+
+function applyOverviewPayload(key, payload) {
+  if (payload?.items?.length) {
+    state.overviews.set(key, { loading: false, items: payload.items, source: payload.source || "ai", error: "" });
+    const timer = state.overviewPollTimers.get(key);
+    if (timer) clearTimeout(timer);
+    state.overviewPollTimers.delete(key);
+  } else if (["queued", "running"].includes(payload?.status)) {
+    state.overviews.set(key, { loading: false, status: payload.status, items: [], error: "" });
+    scheduleOverviewPoll(key);
+  } else if (payload?.status === "failed") {
+    state.overviews.set(key, { loading: false, items: [], error: payload.error || "This overview could not be completed." });
+  } else {
+    state.overviews.delete(key);
+  }
 }
 
 async function showCachedOverview(key) {
   if (!state.aiOverviewEnabled || state.overviews.has(key) || state.overviewCacheAttempted.has(key)) return;
   state.overviewCacheAttempted.add(key);
+  const checking = { checking: true, showSkeleton: false, skeletonAt: 0 };
+  state.overviews.set(key, checking);
+  const update = () => {
+    if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+    if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
+  };
+  update();
+  const indicator = setTimeout(() => {
+    if (state.overviews.get(key) !== checking) return;
+    checking.showSkeleton = true;
+    checking.skeletonAt = performance.now();
+    update();
+  }, 300);
   try {
     const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/overview?cached=1`, {
       credentials: "same-origin", headers: { Accept: "application/json" },
     });
-    if (!response.ok) return;
-    const payload = await response.json();
-    const items = payload.items || [];
-    if (!items.length || state.overviews.has(key)) return;
-    state.overviews.set(key, { loading: false, items, source: payload.source || "ai", error: "" });
-    if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
-    if (window.location.pathname.startsWith("/queue/session/") && state.selectedKey === key) renderApplySession();
-  } catch { /* Cached overview is optional; manual Generate remains available. */ }
+    const payload = response.ok ? await response.json() : null;
+    const hold = checking.skeletonAt ? Math.max(0, 500 - (performance.now() - checking.skeletonAt)) : 0;
+    if (hold) await new Promise((resolve) => setTimeout(resolve, hold));
+    if (state.overviews.get(key) !== checking) return;
+    applyOverviewPayload(key, payload);
+  } catch {
+    if (state.overviews.get(key) === checking) state.overviews.delete(key);
+  } finally {
+    clearTimeout(indicator);
+    update();
+  }
 }
 
 async function saveManualDescription() {
@@ -663,6 +750,8 @@ async function saveManualDescription() {
     const value = (await response.json()).description || {};
     state.descriptions.set(key, { loading: false, showLoader: false, value, error: "" });
     state.manualDescriptionDrafts.delete(key);
+    state.overviews.delete(key);
+    state.overviewCacheAttempted.delete(key);
     showCachedOverview(key);
     if (state.selectedKey === key && routeRoot() === "inbox") renderSelectedJob();
     showSnackbar("Description saved from the original posting.");
@@ -734,6 +823,23 @@ function renderInbox({ focus = false } = {}) {
   if (focus) document.querySelector("#job-title, .inbox-list h1")?.focus({ preventScroll: true });
 }
 
+function syncVisibleJobSelection() {
+  for (const row of document.querySelectorAll("#job-list-layer .job-row")) {
+    const selected = row.dataset.jobKey === state.selectedKey;
+    const bulkSelected = state.selectedKeys.has(row.dataset.jobKey);
+    row.setAttribute("aria-selected", String(selected || bulkSelected));
+    row.tabIndex = selected ? 0 : -1;
+    const check = row.querySelector(".selection-check");
+    if (bulkSelected && !check) row.insertAdjacentHTML("beforeend", '<span class="selection-check" aria-label="Selected">✓</span>');
+    if (!bulkSelected) check?.remove();
+  }
+  const list = document.querySelector(".inbox-list");
+  const oldBar = list?.querySelector(".bulk-bar");
+  const nextBar = bulkBarMarkup();
+  if (oldBar) oldBar.outerHTML = nextBar;
+  else if (nextBar) list?.insertAdjacentHTML("beforeend", nextBar);
+}
+
 function renderSelectedJob() {
   const pane = document.querySelector("#inbox-reading-pane");
   if (!pane) { renderInbox(); return; }
@@ -754,11 +860,7 @@ function renderSelectedJob() {
     replacement?.focus({ preventScroll: true });
     replacement?.setSelectionRange(noteStart, noteEnd);
   }
-  for (const row of document.querySelectorAll("#job-list-layer .job-row")) {
-    const selected = row.dataset.jobKey === state.selectedKey;
-    row.setAttribute("aria-selected", String(selected || state.selectedKeys.has(row.dataset.jobKey)));
-    row.tabIndex = selected ? 0 : -1;
-  }
+  syncVisibleJobSelection();
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
   if (state.loaded && state.selectedKey) showCachedOverview(state.selectedKey);
   if (state.quickFillEnabled && (state.quickFillOpen || state.quickFillPopout)) renderQuickFill();
@@ -1720,16 +1822,19 @@ async function loadInbox() {
     quickFillSheet.hidden = !state.quickFillEnabled;
     if (state.quickFillEnabled && !state.quickFillProfile && !state.quickFillError) loadQuickFillData();
     if (!state.quickFillEnabled) closeQuickFill({ restoreFocus: false });
-    const [jobsResponse, viewsResponse, logosResponse] = await Promise.all([
+    const [jobsResponse, viewsResponse, logosResponse, iconKeysResponse] = await Promise.all([
       fetch("/api/v1/jobs", { credentials: "same-origin", headers: { Accept: "application/json" } }),
       fetch("/api/v1/saved-views", { credentials: "same-origin", headers: { Accept: "application/json" } }),
       fetch("/static/company-logos/manifest.json", { credentials: "same-origin", headers: { Accept: "application/json" } }),
+      fetch("/api/v1/company-icons", { credentials: "same-origin", headers: { Accept: "application/json" } }),
     ]);
     if (!jobsResponse.ok) throw new Error((await jobsResponse.json().catch(() => ({}))).error || "The job list did not respond.");
     if (!viewsResponse.ok) throw new Error((await viewsResponse.json().catch(() => ({}))).error || "Saved views did not respond.");
     const [payload, viewsPayload] = await Promise.all([jobsResponse.json(), viewsResponse.json()]);
     const logos = logosResponse.ok ? await logosResponse.json().catch(() => ({})) : {};
+    const iconKeys = iconKeysResponse.ok ? await iconKeysResponse.json().catch(() => ({})) : {};
     state.companyLogos = Object.fromEntries(Object.entries(logos).map(([name, filename]) => [normalizeCompany(name), filename]));
+    state.companyIconKeys = new Set(Array.isArray(iconKeys.keys) ? iconKeys.keys : []);
     const wait = state.skeletonAt ? Math.max(0, 500 - (performance.now() - state.skeletonAt)) : 0;
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
@@ -2420,11 +2525,11 @@ function handleRowSelection(row, event) {
     for (let cursor = start; cursor <= end; cursor += 1) state.selectedKeys.add(jobs[cursor].dedupe_key);
     state.selectedKey = key; syncInboxUrl(); renderInbox(); return;
   }
-  if (event.ctrlKey || event.metaKey) {
+  if (state.copySelectionMode || event.ctrlKey || event.metaKey) {
     if (state.selectedKeys.has(key)) state.selectedKeys.delete(key); else state.selectedKeys.add(key);
     state.rangeAnchor = index; state.selectedKey = key; syncInboxUrl(); renderInbox(); return;
   }
-  state.selectedKeys.clear(); state.rangeAnchor = index; selectJob(key);
+  state.selectedKeys.clear(); state.rangeAnchor = index; syncVisibleJobSelection(); selectJob(key);
 }
 
 async function patchJob(job, status, notes = job.notes || "") {
@@ -2515,7 +2620,7 @@ function moveSelection(delta) {
   if (!jobs.length) return;
   const current = jobs.findIndex((job) => job.dedupe_key === state.selectedKey);
   const next = Math.min(jobs.length - 1, Math.max(0, (current < 0 ? 0 : current) + delta));
-  state.selectedKeys.clear(); selectJob(jobs[next].dedupe_key);
+  state.selectedKeys.clear(); syncVisibleJobSelection(); selectJob(jobs[next].dedupe_key);
   document.querySelector(`[data-job-index="${next}"]`)?.scrollIntoView({ block: "nearest" });
 }
 
@@ -2600,6 +2705,15 @@ function shortcutScopeAllows(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.target instanceof Element && event.target.closest(".copy-menu")) {
+    if (event.key === "Escape") {
+      const menu = event.target.closest(".copy-menu");
+      menu.open = false;
+      menu.querySelector("summary")?.focus();
+      event.preventDefault();
+    }
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && routeRoot() === "inbox" && shortcutScopeAllows(event)) { event.preventDefault(); undoLastDecision(); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -2648,11 +2762,19 @@ function handleGlobalKeydown(event) {
 }
 
 document.addEventListener("click", (event) => {
+  if (!event.target.closest(".copy-menu")) document.querySelector(".copy-menu[open]")?.removeAttribute("open");
   if (event.target.closest("[data-refresh-quick-fill-access]")) {
     loadInbox().then(() => showSnackbar(state.quickFillEnabled ? "Quick-fill is ready." : state.error || "Quick-fill is not enabled for this session."));
     return;
   }
-  if (event.target.closest("[data-copy-list]")) { copyInboxList(); return; }
+  const copyScope = event.target.closest("[data-copy-scope]");
+  if (copyScope) { copyInboxScope(copyScope.dataset.copyScope); return; }
+  if (event.target.closest("[data-copy-selected]")) {
+    copyInboxJobs(filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)), { finishSelection: true }); return;
+  }
+  if (event.target.closest("[data-cancel-copy-selection]")) {
+    state.copySelectionMode = false; state.selectedKeys.clear(); renderInbox(); return;
+  }
   if (event.target.closest("[data-open-capture]")) { openCapture(); return; }
   if (event.target.closest("[data-close-capture]")) { captureDialog.close(); return; }
   const route = event.target.closest("[data-route]");

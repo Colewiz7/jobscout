@@ -862,9 +862,78 @@ dialog[open]::backdrop {
   grid-row: 2;
 }
 
-.list-tools > [data-copy-list] {
+.list-tools > .copy-menu {
   grid-column: 3;
   grid-row: 2;
+}
+
+.copy-menu {
+  position: relative;
+  z-index: 20;
+}
+
+.copy-menu summary {
+  position: relative;
+  display: grid;
+  place-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.copy-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.copy-menu-caret {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.copy-menu-panel {
+  position: absolute;
+  top: calc(100% + var(--s-2));
+  right: 0;
+  z-index: 30;
+  width: 210px;
+  padding: var(--s-1);
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  box-shadow: var(--shadow-float);
+}
+
+.copy-menu-panel button {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--on-surface);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.copy-menu-panel button:hover,
+.copy-menu-panel button:focus-visible {
+  background: var(--surface-container-highest);
+}
+
+.copy-menu-panel button:disabled {
+  color: var(--on-surface-faint);
+  cursor: default;
+}
+
+.copy-menu-panel button span {
+  color: var(--on-surface-variant);
+  font-variant-numeric: tabular-nums;
 }
 
 .status-tab {
@@ -1204,6 +1273,16 @@ dialog[open]::backdrop {
   background: var(--surface-container-high);
   color: var(--on-surface);
   box-shadow: var(--shadow-float);
+}
+
+.copy-selection-bar {
+  flex-wrap: wrap;
+  overflow-x: hidden;
+}
+
+.copy-selection-bar > span {
+  min-width: 0;
+  flex: 1 1 100%;
 }
 
 .bulk-bar > span {
@@ -3686,6 +3765,31 @@ body.quick-fill-popout {
 
 .ai-overview > .tonal-button {
   margin-top: var(--s-1);
+}
+
+.overview-placeholder {
+  height: 96px;
+  margin-top: var(--s-6);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+}
+
+.overview-resolved {
+  animation: overview-reveal var(--d-short3) var(--ease-standard-dec) both;
+}
+
+@keyframes overview-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.overview-highlight-key {
+  margin-top: var(--s-4);
+  margin-bottom: 0;
+}
+
+.overview-highlight-key + .overview-grid {
+  margin-top: var(--s-4);
 }
 
 .capture-trigger {

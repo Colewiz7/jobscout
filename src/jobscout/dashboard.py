@@ -261,6 +261,29 @@ class PostgresStore:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
 
+    def company_icon_keys(self) -> list[str]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.company_icon_keys(conn)
+
+    def company_icon(self, name: str) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.company_icon(conn, name)
+
+    def overview_job(self, key: str) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.overview_job(conn, key)
+
+    def enqueue_overview(self, key: str) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            if not database.description_target(conn, key):
+                return False
+            database.enqueue_overviews(conn, [key], priority=True)
+        return True
+
     def capture(self, payload: dict) -> dict:
         captured = self._capture.capture(payload)
         posting = captured.posting
@@ -760,6 +783,12 @@ class DemoStore:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
             job.setdefault("next_step", "")
         return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    def company_icon_keys(self) -> list[str]:
+        return []
+
+    def company_icon(self, name: str) -> dict | None:
+        return None
 
     def capture(self, payload: dict) -> dict:
         from .capture import clean_url
@@ -1273,6 +1302,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _image(self, body: bytes, content_type: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self._security_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _auth_user(self) -> str | None:
         if not self.app.require_auth:
             return "demo"
@@ -1404,6 +1442,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._json({"jobs": jobs, "refreshed_at": dt.datetime.now(dt.timezone.utc)})
                 return
+            if parsed.path == "/api/v1/company-icons":
+                try:
+                    self._json({"keys": self.app.store.company_icon_keys()})
+                except Exception:
+                    log.exception("could not load company icons")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load company icons. Retry shortly.")
+                return
+            icon_prefix = "/api/v1/company-icons/"
+            if parsed.path.startswith(icon_prefix):
+                name = urllib.parse.unquote(parsed.path[len(icon_prefix):])
+                if not name or len(name) > 500 or "/" in name:
+                    self._error(HTTPStatus.NOT_FOUND, "not found")
+                    return
+                try:
+                    icon = self.app.store.company_icon(name)
+                except Exception:
+                    log.exception("could not load company icon")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load company icon. Retry shortly.")
+                    return
+                if icon is None:
+                    self._error(HTTPStatus.NOT_FOUND, "not found")
+                else:
+                    self._image(bytes(icon["logo_data"]), icon["media_type"])
+                return
             if parsed.path == "/api/v1/tracker":
                 try:
                     self._json(self.app.store.tracker())
@@ -1471,6 +1533,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     parsed.path[len(detail_prefix):-len(overview_suffix)].rstrip("/")
                 )
                 try:
+                    if isinstance(self.app.store, PostgresStore):
+                        if not any(job["dedupe_key"] == key for job in self.app.store.jobs()):
+                            self._error(HTTPStatus.NOT_FOUND, "job not found")
+                            return
+                        row = self.app.store.overview_job(key)
+                        self._json({
+                            "status": row["status"] if row else "missing",
+                            "items": row["items"] or [] if row else [],
+                            "source": row["source"] if row else None,
+                            "error": row["error"] if row and row["status"] == "failed" else None,
+                        })
+                        return
                     detail = self.app.store.description(key)
                     if detail is None:
                         self._error(HTTPStatus.NOT_FOUND, "job not found")
@@ -1597,6 +1671,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         description_prefix = "/api/v1/jobs/"
+        overview_suffix = "/overview"
+        if parsed.path.startswith(description_prefix) and parsed.path.endswith(overview_suffix):
+            if not self._require_write_security():
+                return
+            if self.app.overviews is None:
+                self._error(HTTPStatus.NOT_FOUND, "not found")
+                return
+            key = urllib.parse.unquote(parsed.path[len(description_prefix):-len(overview_suffix)].rstrip("/"))
+            try:
+                if isinstance(self.app.store, PostgresStore):
+                    if not self.app.store.enqueue_overview(key):
+                        self._error(HTTPStatus.NOT_FOUND, "job not found")
+                        return
+                    row = self.app.store.overview_job(key)
+                    self.app.trigger_overview()
+                    self._json({"status": row["status"], "items": row["items"] or [], "source": row["source"]}, HTTPStatus.ACCEPTED)
+                    return
+                detail = self.app.store.description(key)
+                if detail is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                sections = detail.get("sections") or []
+                items = self.app.overviews.overview(sections)
+                fallback = getattr(self.app.overviews, "is_fallback", lambda _: False)(sections)
+                self._json({"status": "ready", "items": items, "source": "posting" if fallback else "ai"})
+            except Exception:
+                log.exception("could not queue posting overview")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't queue the overview. Retry shortly.")
+            return
         description_suffix = "/description"
         if parsed.path.startswith(description_prefix) and parsed.path.endswith(description_suffix):
             if not self._require_write_security():
@@ -1992,6 +2095,28 @@ class DashboardServer(ThreadingHTTPServer):
         self.quick_fill_enabled = quick_fill_enabled
         self.overviews = overviews
         self.csrf_token = secrets.token_urlsafe(32)
+        self._overview_lock = threading.Lock()
+        self._overview_running = False
+
+    def trigger_overview(self) -> None:
+        if not isinstance(self.store, PostgresStore) or self.overviews is None:
+            return
+        with self._overview_lock:
+            if self._overview_running:
+                return
+            self._overview_running = True
+
+        def work() -> None:
+            try:
+                from .overview_jobs import process
+                process(self.store.dsn, self.overviews, limit=5, priority_only=True)
+            except Exception:
+                log.exception("priority overview worker failed")
+            finally:
+                with self._overview_lock:
+                    self._overview_running = False
+
+        threading.Thread(target=work, name="jobseer-priority-overview", daemon=True).start()
 
 
 def serve(
