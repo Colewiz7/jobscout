@@ -1,4 +1,4 @@
-.PHONY: test test-pg audit-phase2 audit-phase3 audit-quick-fill-empty audit-phase4 audit-queue-prod audit-phase5 audit-phase6 audit-overview
+.PHONY: test test-pg audit-phase2 audit-phase3 audit-quick-fill-empty audit-phase4 audit-queue-prod audit-phase5 audit-phase6 audit-overview audit-responsive
 
 PYTHON ?= .venv/bin/python
 
@@ -32,3 +32,6 @@ audit-phase6:
 
 audit-overview:
 	JOBSCOUT_AUDIT_OVERVIEW=true node scripts/audit-phase2.mjs
+
+audit-responsive:
+	JOBSCOUT_AUDIT_RESPONSIVE=true node scripts/audit-phase2.mjs

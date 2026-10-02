@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -18,6 +18,7 @@ const auditSessionNoProfile = process.env.JOBSCOUT_AUDIT_SESSION_NO_PROFILE === 
 const auditTracker = process.env.JOBSCOUT_AUDIT_TRACKER === "true";
 const auditEligibility = process.env.JOBSCOUT_AUDIT_ELIGIBILITY === "true";
 const auditOverview = process.env.JOBSCOUT_AUDIT_OVERVIEW === "true";
+const auditResponsive = process.env.JOBSCOUT_AUDIT_RESPONSIVE === "true";
 
 async function freePort() {
   const server = createServer();
@@ -91,7 +92,7 @@ const dashboard = spawn(
       ...process.env,
       JOBSCOUT_DEMO_COUNT: String(fixture.count),
       JOBSCOUT_DEMO_SEED: String(fixture.seed),
-      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditEmptyQuickFill || (auditApplySession && !auditSessionNoProfile) || auditEligibility ? "true" : "false",
+      JOBSCOUT_QUICK_FILL_ENABLED: auditQuickFill || auditEmptyQuickFill || (auditApplySession && !auditSessionNoProfile) || auditEligibility || auditResponsive ? "true" : "false",
       JOBSCOUT_AI_OVERVIEW_ENABLED: auditOverview ? "true" : "false",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -677,6 +678,82 @@ try {
     const overflow = await cdp.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth");
     phase6 = { reading, rules, overflow };
   }
+  let responsive = null;
+  let responsiveNavigation = null;
+  let responsivePages = null;
+  if (auditResponsive) {
+    await cdp.call("Page.navigate", { url: `${base}/inbox/fixture%3A0000?status=all` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('#job-title'))")) break;
+      if (attempt === 99) throw new Error("Responsive inbox did not render");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    responsive = [];
+    for (const width of [320, 390, 600, 768, 840, 960, 1056, 1250, 1440, 1920]) {
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 600 });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 60));
+      const measured = await cdp.evaluate(`(() => {
+        document.querySelector('#job-title').textContent = 'Data Engineer / Data Platform Engineer Intern — Spring 2027';
+        document.querySelector('.detail-heading > a').textContent = 'Dow Chemical Company';
+        document.querySelector('.detail-location').textContent = 'Champaign, Illinois';
+        const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+        const header = box('.global-header');
+        const children = [...document.querySelector('.global-header').children].filter((item) => !item.hidden).map((item) => item.getBoundingClientRect());
+        const title = box('#job-title');
+        const actions = box('.detail-actions');
+        const h1 = document.querySelector('#job-title');
+        const lineHeight = parseFloat(getComputedStyle(h1).lineHeight);
+        return {
+          cssWidth: innerWidth,
+          paneWidth: box('.reading-pane')?.width || 0,
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          headerOverflow: children.some((item) => item.left < header.left - 1 || item.right > header.right + 1 || item.top < header.top - 1 || item.bottom > header.bottom + 1),
+          headerHeight: header.height,
+          titleLines: Math.round(title.height / lineHeight),
+          titleActionsOverlap: title.left < actions.right && title.right > actions.left && title.top < actions.bottom && title.bottom > actions.top,
+          backVisible: getComputedStyle(document.querySelector('.detail-back')).display !== 'none',
+          paneVisible: Boolean(box('.reading-pane')?.width),
+          quickFillWidth: box('#quick-fill-trigger')?.width || 0,
+        };
+      })()`);
+      responsive.push({ width, ...measured });
+      if (width === Number(process.env.JOBSCOUT_AUDIT_SCREENSHOT_WIDTH || 1056) && process.env.JOBSCOUT_AUDIT_SCREENSHOT) {
+        const shot = await cdp.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        await writeFile(process.env.JOBSCOUT_AUDIT_SCREENSHOT, Buffer.from(shot.data, "base64"));
+      }
+    }
+    await cdp.call("Emulation.setDeviceMetricsOverride", { width: 960, height: 900, deviceScaleFactor: 1, mobile: false });
+    await cdp.evaluate("document.querySelector('[data-back-to-list]').click()");
+    const returnedToList = await cdp.evaluate("Boolean(document.querySelector('.inbox-list')?.getBoundingClientRect().width && !document.querySelector('.reading-pane')?.getBoundingClientRect().width)");
+    await cdp.evaluate("document.querySelector('.job-row')?.click()");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const reopenedDetail = await cdp.evaluate("Boolean(document.querySelector('.reading-pane')?.getBoundingClientRect().width && !document.querySelector('.inbox-list')?.getBoundingClientRect().width)");
+    responsiveNavigation = { returnedToList, reopenedDetail };
+    responsivePages = [];
+    for (const route of ["queue", "tracker", "companies", "profile"]) {
+      await cdp.call("Page.navigate", { url: `${base}/${route}` });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (await cdp.evaluate(`Boolean(document.querySelector('${route === "queue" ? ".queue-page" : route === "tracker" ? ".tracker-page" : route === "companies" ? ".companies-page" : ".profile-page"}'))`)) break;
+        if (attempt === 99) throw new Error(`${route} did not render for responsive audit`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+      for (const width of [320, 600, 840, 1056, 1440]) {
+        await cdp.call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 600 });
+        await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+        const measured = await cdp.evaluate(`(() => {
+          const header = document.querySelector('.global-header').getBoundingClientRect();
+          const children = [...document.querySelector('.global-header').children].filter((item) => !item.hidden).map((item) => item.getBoundingClientRect());
+          const main = document.querySelector('#route-view');
+          return {
+            horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+            mainOverflow: main.scrollWidth > main.clientWidth + 1,
+            headerOverflow: children.some((item) => item.left < header.left - 1 || item.right > header.right + 1 || item.top < header.top - 1 || item.bottom > header.bottom + 1),
+          };
+        })()`);
+        responsivePages.push({ route, width, ...measured });
+      }
+    }
+  }
   const report = {
     fixture,
     metrics: {
@@ -704,6 +781,9 @@ try {
     ...(applySession ? { applySession } : {}),
     ...(tracker ? { tracker } : {}),
     ...(phase6 ? { phase6 } : {}),
+    ...(responsive ? { responsive } : {}),
+    ...(responsiveNavigation ? { responsiveNavigation } : {}),
+    ...(responsivePages ? { responsivePages } : {}),
   };
   console.log(JSON.stringify(report, null, 2));
 
@@ -773,6 +853,13 @@ try {
   if (auditEligibility && phase6?.rules.tagged < 1) failures.push("tag rule did not apply");
   if (auditEligibility && phase6?.rules.unnamedControls) failures.push("unnamed Profile controls found");
   if (auditEligibility && phase6?.overflow) failures.push("compact Profile overflowed horizontally");
+  if (responsive?.some((item) => item.horizontalOverflow || item.headerOverflow || item.titleActionsOverlap || !item.paneVisible || item.headerHeight > 65)) failures.push(`responsive layout overflowed: ${JSON.stringify(responsive)}`);
+  if (responsive?.some((item) => item.width <= 999 && !item.backVisible)) failures.push("single-pane inbox has no visible route back to the list");
+  if (responsive?.some((item) => item.width > 999 && item.backVisible)) failures.push("desktop inbox shows an unnecessary back button");
+  if (responsive?.find((item) => item.width === 1056)?.titleLines > 4) failures.push("job title is cramped at screenshot width");
+  if (responsive?.some((item) => item.width > 1250 && item.quickFillWidth > 160)) failures.push("desktop Quick-fill trigger stretched out of proportion");
+  if (responsiveNavigation && (!responsiveNavigation.returnedToList || !responsiveNavigation.reopenedDetail)) failures.push(`single-pane navigation failed: ${JSON.stringify(responsiveNavigation)}`);
+  if (responsivePages?.some((item) => item.horizontalOverflow || item.mainOverflow || item.headerOverflow)) failures.push(`other pages overflow at intermediate widths: ${JSON.stringify(responsivePages)}`);
   if (failures.length) throw new Error(failures.join("; "));
 } finally {
   cdp?.close();

@@ -44,7 +44,8 @@ def _public_host(host: str) -> bool:
     )
 
 
-def _read(client: httpx.Client, url: str, limit: int) -> bytes | None:
+def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool = False,
+          favicon_placeholder: bool = False) -> bytes | None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in {None, 443}:
         return None
@@ -52,7 +53,16 @@ def _read(client: httpx.Client, url: str, limit: int) -> bytes | None:
         return None
     try:
         with client.stream("GET", url, follow_redirects=False) as response:
-            if response.status_code != 200:
+            if favicon_redirect and response.status_code in {301, 302, 307, 308}:
+                target = urllib.parse.urljoin(url, response.headers.get("location", ""))
+                redirected = urllib.parse.urlsplit(target)
+                if (redirected.scheme == "https" and re.fullmatch(r"t[0-3]\.gstatic\.com", redirected.hostname or "")
+                        and redirected.path == "/faviconV2"):
+                    return _read(client, target, limit, favicon_placeholder=True)
+                return None
+            generic_image = (favicon_placeholder and response.status_code == 404
+                             and response.headers.get("content-type", "").startswith("image/png"))
+            if response.status_code != 200 and not generic_image:
                 return None
             data = bytearray()
             for part in response.iter_bytes():
@@ -130,7 +140,7 @@ def _candidate_domains(name: str, urls: list[str]) -> list[str]:
 
 def _favicon(client: httpx.Client, domain: str, placeholder_hash: bytes) -> tuple[bytes, str] | None:
     url = "https://www.google.com/s2/favicons?" + urllib.parse.urlencode({"domain": domain, "sz": "64"})
-    data = _read(client, url, MAX_ICON)
+    data = _read(client, url, MAX_ICON, favicon_redirect=True)
     media_type = _icon_type(data or b"")
     if not media_type or hashlib.sha256(data).digest() == placeholder_hash:
         return None
@@ -155,7 +165,10 @@ def refresh(conn, *, client: httpx.Client | None = None, now: dt.datetime | None
     own_client = client is None
     client = client or httpx.Client(timeout=5, follow_redirects=False, headers={"User-Agent": "JobSeer company icon refresh"})
     try:
-        invalid = _read(client, "https://www.google.com/s2/favicons?domain=jobseer-no-such-company.invalid&sz=64", MAX_ICON)
+        invalid = _read(
+            client, "https://www.google.com/s2/favicons?domain=jobseer-no-such-company.invalid&sz=64",
+            MAX_ICON, favicon_redirect=True,
+        )
         if not invalid or not _icon_type(invalid):
             log.warning("generic favicon reference unavailable; leaving unknown companies as initials")
             return counts
