@@ -131,7 +131,7 @@ def test_icon_refresh_persists_only_verified_site(conn, monkeypatch, tmp_path):
     manifest.write_text("{}")
     monkeypatch.setattr(company_icons, "DOMAIN_PATH", domains)
     monkeypatch.setattr(company_icons, "STATIC_MANIFEST", manifest)
-    monkeypatch.setattr(company_icons, "_read", lambda *args: b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"\x00\x00\x00\x20" * 2)
+    monkeypatch.setattr(company_icons, "_read", lambda *args, **kwargs: b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"\x00\x00\x00\x20" * 2)
     monkeypatch.setattr(company_icons, "_site_html", lambda *args: "<title>New Brand</title>")
     monkeypatch.setattr(company_icons, "_favicon", lambda *args: (b"real-icon", "image/png"))
     now = dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc)

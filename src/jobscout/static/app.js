@@ -553,7 +553,7 @@ function detailMarkup(job) {
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>This link came from a non-public Workday site. ${job.public_apply_url ? "Apply opens the verified public RTX posting." : "No exact public posting was verified. Find it on the employer’s public careers site before applying."}</p>` : "";
   return `<article class="job-detail" aria-labelledby="job-title">
-    <header class="job-detail-header"><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
+    <header class="job-detail-header"><button class="detail-back text-button interactive" type="button" data-back-to-list>← Inbox</button><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
       <dl class="fact-strip">${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
       <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
@@ -852,6 +852,7 @@ function renderSelectedJob() {
   const previousScroll = pane.scrollTop;
   const job = state.jobs.find((item) => item.dedupe_key === state.selectedKey);
   pane.innerHTML = detailMarkup(job);
+  document.querySelector(".inbox-page")?.classList.toggle("has-route-selection", Boolean(selectedKeyFromPath()));
   pane.dataset.jobKey = state.selectedKey;
   pane.scrollTop = sameJob ? previousScroll : 0;
   if (noteDraft !== null) pane.querySelector("#job-notes").value = noteDraft;
@@ -2861,6 +2862,7 @@ document.addEventListener("click", (event) => {
   const deleteView = event.target.closest("[data-delete-saved-view]");
   if (deleteView) { deleteSavedView(Number(deleteView.dataset.deleteSavedView)); return; }
   if (event.target.closest("[data-exit-focus]")) { state.focus = false; syncInboxUrl(); renderInbox({ focus: true }); return; }
+  if (event.target.closest("[data-back-to-list]")) { state.focus = false; navigate(inboxUrl("")); return; }
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
   if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey, { force: true }); renderSelectedJob(); return; }
   if (event.target.closest("[data-save-manual-description]")) { saveManualDescription(); return; }

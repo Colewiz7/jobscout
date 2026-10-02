@@ -1,6 +1,8 @@
 """Company icons require a verified public site, never an ATS logo guess."""
 import socket
 
+import httpx
+
 from jobscout import company_icons
 
 
@@ -34,3 +36,39 @@ def test_private_dns_is_rejected(monkeypatch):
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
     ])
     assert not company_icons._public_host("internal.example.com")
+
+
+def test_only_google_favicon_redirect_is_followed(monkeypatch):
+    monkeypatch.setattr(company_icons, "_public_host", lambda host: True)
+    seen = []
+
+    def respond(request):
+        seen.append(str(request.url))
+        if request.url.host == "www.google.com":
+            return httpx.Response(301, headers={"location": "https://t3.gstatic.com/faviconV2?size=64"})
+        return httpx.Response(200, content=b"icon")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert company_icons._read(client, "https://www.google.com/s2/favicons", 100,
+                                   favicon_redirect=True) == b"icon"
+    assert len(seen) == 2
+
+    seen.clear()
+
+    def unsafe(request):
+        seen.append(str(request.url))
+        return httpx.Response(301, headers={"location": "http://127.0.0.1/private"})
+
+    with httpx.Client(transport=httpx.MockTransport(unsafe)) as client:
+        assert company_icons._read(client, "https://www.google.com/s2/favicons", 100,
+                                   favicon_redirect=True) is None
+    assert len(seen) == 1
+
+    def placeholder(request):
+        if request.url.host == "www.google.com":
+            return httpx.Response(301, headers={"location": "https://t0.gstatic.com/faviconV2?size=64"})
+        return httpx.Response(404, headers={"content-type": "image/png"}, content=b"placeholder")
+
+    with httpx.Client(transport=httpx.MockTransport(placeholder)) as client:
+        assert company_icons._read(client, "https://www.google.com/s2/favicons", 100,
+                                   favicon_redirect=True) == b"placeholder"
