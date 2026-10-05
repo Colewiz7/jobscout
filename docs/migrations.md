@@ -49,9 +49,13 @@ it never modifies the supplied dump.
 
 ## Overview and company icon jobs
 
-Migration 11 stores only small, verified company icons; the daily
-`refresh-icons` CronJob checks newly discovered companies and refreshes old
-matches. Unverified companies keep their initials rather than a guessed logo.
+Migration 11 stores only small, verified company icons. The hourly
+`refresh-icons` CronJob checks newly discovered companies, retries unknowns
+after four hours, and refreshes successful icons after 30 days. It accepts a
+public homepage whose title matches the company, or a domain explicitly
+verified in `config/company-domains.json`; it rejects generic favicons.
+Unverified companies keep their initials rather than a guessed logo. The
+dashboard reloads the icon index when an idle tab is revisited after 15 minutes.
 
 Migration 12 persists overview work and source-checked results. Run
 `python -m jobscout queue-overviews` once after deploying to enqueue all

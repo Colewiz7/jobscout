@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOMAIN_PATH = ROOT / "config/company-domains.json"
 STATIC_MANIFEST = pathlib.Path(__file__).with_name("static") / "company-logos" / "manifest.json"
 MAX_ICON = 65_536
-MAX_HTML = 131_072
+MAX_HTML = 262_144
 ATS_HOSTS = {"boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com"}
 BOARD_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 WORKDAY_HOST = re.compile(r"^[a-z0-9-]+\.wd\d+\.myworkdayjobs\.com$")
@@ -44,8 +44,21 @@ def _public_host(host: str) -> bool:
     )
 
 
+def _same_site_redirect(original: str, target: str) -> bool:
+    original = original.removeprefix("www.")
+    target = target.removeprefix("www.")
+    if original == target or target.endswith(f".{original}"):
+        return True
+    # Official sites sometimes move from .com to .org without changing their
+    # distinctive registered name (for example navyfederal.com -> .org).
+    left, _, left_tld = original.rpartition(".")
+    right, _, right_tld = target.rpartition(".")
+    return bool(left_tld and right_tld and left == right and len(left) >= 4)
+
+
 def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool = False,
-          favicon_placeholder: bool = False) -> bytes | None:
+          favicon_placeholder: bool = False, html_origin: str = "",
+          redirects_left: int = 2) -> bytes | None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in {None, 443}:
         return None
@@ -60,6 +73,14 @@ def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool 
                         and redirected.path == "/faviconV2"):
                     return _read(client, target, limit, favicon_placeholder=True)
                 return None
+            if html_origin and response.status_code in {301, 302, 307, 308}:
+                target = urllib.parse.urljoin(url, response.headers.get("location", ""))
+                redirected = urllib.parse.urlsplit(target)
+                if (redirects_left > 0 and redirected.scheme == "https"
+                        and _same_site_redirect(html_origin, redirected.hostname or "")):
+                    return _read(client, target, limit, html_origin=html_origin,
+                                 redirects_left=redirects_left - 1)
+                return None
             generic_image = (favicon_placeholder and response.status_code == 404
                              and response.headers.get("content-type", "").startswith("image/png"))
             if response.status_code != 200 and not generic_image:
@@ -68,17 +89,17 @@ def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool 
             for part in response.iter_bytes():
                 data.extend(part)
                 if len(data) > limit:
-                    return None
+                    return bytes(data[:limit]) if html_origin else None
             return bytes(data)
     except httpx.HTTPError:
         return None
 
 
 def _site_html(client: httpx.Client, domain: str) -> str:
-    # Many official sites only answer one of these hostnames. Redirects stay
-    # disabled: a posting-controlled URL must never pivot into private egress.
+    # The final URL is still checked for HTTPS and public DNS, and HTML follows
+    # only same-company host redirects; a source URL cannot pivot to private egress.
     for host in (domain, f"www.{domain}"):
-        body = _read(client, f"https://{host}/", MAX_HTML)
+        body = _read(client, f"https://{host}/", MAX_HTML, html_origin=domain)
         if body:
             return body.decode("utf-8", "replace")
     return ""
@@ -148,7 +169,7 @@ def _favicon(client: httpx.Client, domain: str, placeholder_hash: bytes) -> tupl
 
 
 def refresh(conn, *, client: httpx.Client | None = None, now: dt.datetime | None = None) -> dict[str, int]:
-    """Refresh missing icons daily and successful icons monthly."""
+    """Retry missing icons every four hours and successful icons monthly."""
     now = now or dt.datetime.now(dt.timezone.utc)
     domains = {db.company_key(name): domain for name, domain in json.loads(DOMAIN_PATH.read_text()).items()}
     static = {db.company_key(name) for name in json.loads(STATIC_MANIFEST.read_text())}
@@ -180,17 +201,23 @@ def refresh(conn, *, client: httpx.Client | None = None, now: dt.datetime | None
             if key in static or key not in urls:
                 continue
             prior = checked.get(key)
-            if prior and now - prior["checked_at"] < dt.timedelta(days=30 if prior["logo_data"] else 1):
+            interval = dt.timedelta(days=30) if prior and prior["logo_data"] else dt.timedelta(hours=4)
+            if prior and now - prior["checked_at"] < interval:
                 continue
             counts["checked"] += 1
-            options = [domains[key]] if key in domains else _candidate_domains(name, urls.get(key, []))
+            curated = key in domains
+            options = [domains[key]] if curated else _candidate_domains(name, urls.get(key, []))
             found = None
             for domain in options:
                 if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{2,250}", domain):
                     continue
-                site = _site_html(client, domain)
-                if not site or not _site_matches(name, domain, site):
-                    continue
+                # Explicitly curated domains have already been verified by a
+                # person. Many real companies block robots on their homepage;
+                # requiring a second homepage scrape made those entries inert.
+                if not curated:
+                    site = _site_html(client, domain)
+                    if not site or not _site_matches(name, domain, site):
+                        continue
                 icon = _favicon(client, domain, placeholder_hash)
                 if icon:
                     found = (domain, *icon, "curated" if key in domains else "verified_site")

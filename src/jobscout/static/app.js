@@ -115,6 +115,7 @@ let sessionCheckPromise = null;
 let inboxRetryTimer = null;
 let sessionRetryTimer = null;
 let lastNetworkNoticeAt = 0;
+let inboxLoadedAt = 0;
 
 function authRecovery() {
   if (!navigator.onLine) return;
@@ -1945,6 +1946,7 @@ async function loadInbox() {
     state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
+    inboxLoadedAt = Date.now();
     clearTimeout(inboxRetryTimer);
     inboxRetryTimer = null;
     updateTodayStrip();
@@ -3150,7 +3152,7 @@ async function resumeFromIdle() {
     await refreshSession();
     clearTimeout(sessionRetryTimer);
     sessionRetryTimer = null;
-    if (state.error || !state.loaded) await loadInbox();
+    if (state.error || !state.loaded || Date.now() - inboxLoadedAt > 15 * 60 * 1000) await loadInbox();
     if (routeRoot() === "tracker" && state.trackerError) await loadTrackerData({ background: true });
   } catch (error) {
     if (!sessionRetryTimer) {

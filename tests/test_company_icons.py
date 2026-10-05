@@ -72,3 +72,32 @@ def test_only_google_favicon_redirect_is_followed(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(placeholder)) as client:
         assert company_icons._read(client, "https://www.google.com/s2/favicons", 100,
                                    favicon_redirect=True) == b"placeholder"
+
+
+def test_large_homepage_keeps_a_bounded_prefix_without_accepting_large_icons(monkeypatch):
+    monkeypatch.setattr(company_icons, "_public_host", lambda host: True)
+    body = b"<title>Saab | Keeping people safe</title>" + b"x" * 300_000
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))) as client:
+        html = company_icons._site_html(client, "saab.com")
+        assert len(html) == company_icons.MAX_HTML
+        assert company_icons._site_matches("Saab", "saab.com", html)
+        assert company_icons._read(client, "https://saab.com/favicon.ico", company_icons.MAX_ICON) is None
+
+
+def test_homepage_follows_only_public_same_company_https_redirects(monkeypatch):
+    monkeypatch.setattr(company_icons, "_public_host", lambda host: True)
+    seen = []
+
+    def respond(request):
+        seen.append(str(request.url))
+        if request.url.host == "navyfederal.com":
+            return httpx.Response(301, headers={"location": "https://www.navyfederal.org/"})
+        if request.url.host == "www.navyfederal.com":
+            return httpx.Response(301, headers={"location": "https://unrelated.example/"})
+        return httpx.Response(200, text="<title>Navy Federal Credit Union</title>")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        html = company_icons._site_html(client, "navyfederal.com")
+    assert company_icons._site_matches("Navy Federal", "navyfederal.com", html)
+    assert "https://unrelated.example/" not in seen
+    assert not company_icons._same_site_redirect("navyfederal.com", "internal.example.com")
