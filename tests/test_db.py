@@ -160,6 +160,24 @@ def test_icon_refresh_skips_historical_company_without_postings(conn, monkeypatc
     }
 
 
+def test_icon_refresh_uses_curated_domain_when_homepage_blocks_robots(conn, monkeypatch, tmp_path):
+    database.upsert_open(conn, [_p(
+        company="Gartner", url="https://jobs.gartner.com/jobs/123",
+    )])
+    domains = tmp_path / "domains.json"
+    domains.write_text('{"Gartner": "gartner.com"}')
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    monkeypatch.setattr(company_icons, "DOMAIN_PATH", domains)
+    monkeypatch.setattr(company_icons, "STATIC_MANIFEST", manifest)
+    marker = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + b"\x00\x00\x00\x20" * 2
+    monkeypatch.setattr(company_icons, "_read", lambda *args, **kwargs: marker)
+    monkeypatch.setattr(company_icons, "_site_html", lambda *args: "")
+    monkeypatch.setattr(company_icons, "_favicon", lambda *args: (b"verified-icon", "image/png"))
+    assert company_icons.refresh(conn, client=object())["added"] == 1
+    assert database.company_icon(conn, "Gartner")["logo_data"] == b"verified-icon"
+
+
 def test_overview_queue_is_persistent_and_idempotent(conn):
     database.upsert_open(conn, [_p()])
     key = _p().dedupe_key
