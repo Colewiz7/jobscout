@@ -90,7 +90,7 @@ const state = {
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
-  queueSaving: false, queueDraggedKey: "", sessionStarting: false,
+  queueSaving: false, queueDraggedKey: "", sessionStarting: false, statusSaving: new Set(),
   applySession: null, sessionTimer: null,
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
@@ -110,6 +110,68 @@ let snackbarTimer = null;
 let snackbarDeadline = 0;
 let snackbarRemaining = 0;
 let jobViewTransition = null;
+let sessionCheckedAt = 0;
+let sessionCheckPromise = null;
+let inboxRetryTimer = null;
+let lastNetworkNoticeAt = 0;
+
+function authRecovery() {
+  if (!navigator.onLine) return;
+  // A full navigation lets the Authentik proxy renew its browser session.
+  // Throttle it so a misconfigured proxy cannot trap the user in a reload loop.
+  const key = "jobseer.lastAuthRecovery";
+  const last = Number(sessionStorage.getItem(key) || 0);
+  if (Date.now() - last < 30000) return;
+  sessionStorage.setItem(key, String(Date.now()));
+  window.location.reload();
+}
+
+async function refreshSession({ force = false } = {}) {
+  if (!navigator.onLine) return null;
+  if (!force && Date.now() - sessionCheckedAt < 60000) return null;
+  if (sessionCheckPromise) return sessionCheckPromise;
+  sessionCheckPromise = (async () => {
+    let response;
+    try {
+      response = await fetch("/api/v1/session", {
+        credentials: "same-origin", cache: "no-store", redirect: "manual",
+        headers: { Accept: "application/json" },
+      });
+    } catch {
+      throw new Error("Connection interrupted. Retrying shortly…");
+    }
+    if (response.type === "opaqueredirect" || response.status === 401 || response.status === 403
+        || !response.headers.get("Content-Type")?.includes("application/json")) {
+      authRecovery();
+      throw new Error("Session expired. Reconnecting through Authentik…");
+    }
+    if (!response.ok) throw new Error("The server is temporarily unavailable. Retrying…");
+    const session = await response.json();
+    state.csrf = session.csrf_token || "";
+    sessionCheckedAt = Date.now();
+    return session;
+  })().finally(() => { sessionCheckPromise = null; });
+  return sessionCheckPromise;
+}
+
+async function secureWrite(url, init) {
+  await refreshSession();
+  const send = () => fetch(url, {
+    ...init,
+    credentials: "same-origin",
+    headers: { ...init.headers, "X-CSRF-Token": state.csrf },
+  });
+  let response = await send();
+  if (response.status === 403) {
+    const error = (await response.clone().json().catch(() => ({}))).error || "";
+    if (/security token|expired/i.test(error)) {
+      await refreshSession({ force: true });
+      response = await send();
+    }
+  }
+  if (response.redirected || response.type === "opaqueredirect") authRecovery();
+  return response;
+}
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -552,10 +614,15 @@ function detailMarkup(job) {
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>This link came from a non-public Workday site. ${job.public_apply_url ? "Apply opens the verified public RTX posting." : "No exact public posting was verified. Find it on the employer’s public careers site before applying."}</p>` : "";
+  const applyingActions = job.status === "applying"
+    ? `<button class="filled-button interactive" type="button" data-mark-applied="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Mark applied</button><button class="tonal-button interactive" type="button" data-move-to-queue="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Back to queue</button>`
+    : "";
+  const normalActions = job.status === "applying" ? applyingActions
+    : `<button class="filled-button interactive" type="button" ${job.status === "applied" ? `data-move-to-queue="${escapeHtml(job.dedupe_key)}"` : 'data-status-action="queued"'} ${pending || eligibilityBlocked || job.status === "queued" ? 'aria-disabled="true"' : ""}>${job.status === "queued" ? "Queued" : job.status === "applied" ? "Back to queue" : "Queue"}</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending || job.status === "saved" ? 'aria-disabled="true"' : ""}>${job.status === "saved" ? "Saved" : "Save"}</button><button class="outlined-button interactive" type="button" ${job.status === "applied" ? 'data-open-posting' : 'data-apply-now'} ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>${job.status === "applied" ? "Open posting" : "Apply now"}</button>`;
   return `<article class="job-detail" aria-labelledby="job-title">
     <header class="job-detail-header"><button class="detail-back text-button interactive" type="button" data-back-to-list>← Inbox</button><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
       <dl class="fact-strip">${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}${factItem("Posted", formatDate(job.first_seen))}${factItem("Source", sourceText)}</dl>
-      <div class="detail-actions" aria-label="Job actions"><button class="filled-button interactive" type="button" data-status-action="queued" ${pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Queue</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending ? 'aria-disabled="true"' : ""}>Save</button><button class="outlined-button interactive" type="button" data-apply-now ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>Apply now</button>${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
+      <div class="detail-actions" aria-label="Job actions">${normalActions}${state.focus ? '<button class="text-button interactive" type="button" data-exit-focus>Show list</button>' : ""}</div>
     </header>
     <div class="job-detail-body">
       ${eligibilityMarkup(job)}
@@ -567,7 +634,7 @@ function detailMarkup(job) {
       ${skillMatchMarkup(job)}
       ${descriptionMarkup(job)}
       <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
-      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
+      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><div class="activity-status-control"><span>Correct status</span>${statusSelectMarkup(job, "data-job-status-select")}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
   </article>`;
@@ -931,6 +998,11 @@ function statusMarkup(status) {
   return `<span class="status-word status-${escapeHtml(status)}"><span aria-hidden="true">${symbols[status] || "•"}</span>${escapeHtml(statusLabel(status))}</span>`;
 }
 
+function statusSelectMarkup(job, attribute) {
+  const options = ["new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"];
+  return `<label class="status-editor"><span class="visually-hidden">Change status for ${escapeHtml(job.title)}</span><select ${attribute}="${escapeHtml(job.dedupe_key)}" aria-label="Change status for ${escapeHtml(job.title)}" ${state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>${options.map((status) => `<option value="${status}" ${status === job.status ? "selected" : ""}>${escapeHtml(statusLabel(status))}</option>`).join("")}</select></label>`;
+}
+
 function parseTrackerUrl() {
   const params = new URLSearchParams(window.location.search);
   state.trackerView = params.get("view") === "board" ? "board" : params.get("view") === "calibration" ? "calibration" : "table";
@@ -1007,14 +1079,14 @@ function interviewsMarkup(applications) {
 
 function trackerTableMarkup(applications) {
   if (!applications.length) return '<div class="empty-state"><h2>No applications match.</h2><p>Change the Tracker filters or apply to a role from Queue.</p><a class="tonal-button interactive" href="/queue" data-route>Open queue</a></div>';
-  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th></tr></thead><tbody>${applications.map((job) => `<tr><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "None")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "None")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "None")}</td><td>${escapeHtml(sourceList(job).join(", ") || "None")}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th></tr></thead><tbody>${applications.map((job) => `<tr><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td><div class="tracker-status-cell">${statusMarkup(job.status)}${statusSelectMarkup(job, "data-tracker-status-select")}</div></td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "")}</td><td>${escapeHtml(sourceList(job).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function trackerBoardMarkup(applications) {
   const statuses = ["applying", "applied", "interviewing", "offer", "rejected"];
   return `<div class="tracker-board" aria-label="Applications by status">${statuses.map((status) => {
     const jobs = applications.filter((job) => job.status === status);
-    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}<label><span class="visually-hidden">Move ${escapeHtml(job.title)} to status</span><select data-board-status-select="${escapeHtml(job.dedupe_key)}">${statuses.map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${escapeHtml(statusLabel(option))}</option>`).join("")}</select></label></article>`).join("")}</div></section>`;
+    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}</article>`).join("")}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1055,10 +1127,19 @@ async function loadTrackerData({ background = false } = {}) {
   if (!background) timer = setTimeout(() => { state.trackerShowLoader = true; if (routeRoot() === "tracker") renderTracker(); }, 300);
   try {
     const response = await fetch("/api/v1/tracker", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (response.redirected || !response.headers.get("Content-Type")?.includes("application/json")) {
+      authRecovery();
+      throw new Error("Session expired. Reconnecting through Authentik…");
+    }
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The tracker did not respond.");
     state.trackerData = await response.json();
   } catch (error) {
-    state.trackerError = error instanceof Error ? error.message : "The tracker did not respond.";
+    const message = error instanceof Error ? error.message : "The tracker did not respond.";
+    if (!state.trackerData) state.trackerError = message;
+    else if (Date.now() - lastNetworkNoticeAt > 60000) {
+      showSnackbar(`${message} Keeping the last loaded tracker; retrying shortly.`);
+      lastNetworkNoticeAt = Date.now();
+    }
   } finally {
     clearTimeout(timer); state.trackerLoading = false; state.trackerShowLoader = false;
     updateTodayStrip();
@@ -1330,26 +1411,47 @@ async function saveTrackerNextStep(key, value, input) {
   } finally { input?.removeAttribute("aria-busy"); }
 }
 
-async function setTrackerStatus(key, status) {
+async function setTrackerStatus(key, status, { offerUndo = true } = {}) {
   const tracked = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
   const job = state.jobs.find((item) => item.dedupe_key === key) || tracked;
-  if (!job || job.status === status) return;
+  if (!job || job.status === status || state.statusSaving.has(key)) return;
   const previous = job.status;
-  job.status = status; if (tracked) tracked.status = status; renderTracker();
+  state.statusSaving.add(key);
+  job.status = status;
+  if (tracked) tracked.status = status;
+  if (routeRoot() === "tracker") renderTracker();
+  if (routeRoot() === "inbox") renderSelectedJob();
   try {
     if (status === "applied") {
-      const response = await fetch(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      const response = await secureWrite(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ document_id: null }),
       });
       if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The status could not be saved.");
-    } else await patchJob(job, status);
+      const snapshot = (await response.json()).snapshot;
+      Object.assign(job, { applied_at: snapshot.captured_at, resume_document_id: snapshot.resume_document_id, resume_name: snapshot.resume_name, queue_position: null });
+    } else {
+      const result = await patchJob(job, status);
+      job.status = result.status;
+      if (tracked) tracked.status = result.status;
+      if (result.liveness) Object.assign(job, { liveness_status: result.liveness.status, liveness_evidence: result.liveness.evidence });
+    }
     await loadTrackerData({ background: true });
-    showSnackbar(`Moved to ${statusLabel(status)}.`);
+    if (routeRoot() === "inbox") renderSelectedJob();
+    showSnackbar(job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}.`, offerUndo ? {
+      action: "Undo", duration: 6000,
+      onAction: () => setTrackerStatus(key, previous, { offerUndo: false }),
+    } : {});
   } catch (error) {
-    job.status = previous; if (tracked) tracked.status = previous; renderTracker();
+    job.status = previous; if (tracked) tracked.status = previous;
+    if (routeRoot() === "tracker") renderTracker();
+    if (routeRoot() === "inbox") renderSelectedJob();
     showSnackbar(`${error.message} Status restored.`);
+  } finally {
+    state.statusSaving.delete(key);
+    if (routeRoot() === "tracker") renderTracker();
+    if (routeRoot() === "inbox") renderSelectedJob();
   }
 }
 
@@ -1737,9 +1839,9 @@ async function markSessionApplied() {
   const key = session.keys[session.index];
   const documentId = document.querySelector("#session-resume")?.value || null;
   try {
-    const response = await fetch(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+    const response = await secureWrite(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ document_id: documentId }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The application could not be saved.");
@@ -1798,6 +1900,7 @@ function renderRoute({ focus = false } = {}) {
 }
 
 async function loadInbox() {
+  if (state.loading) return;
   state.loading = true;
   state.error = "";
   state.skeletonAt = 0;
@@ -1808,14 +1911,7 @@ async function loadInbox() {
     else if (routeRoot() === "queue") renderRoute();
   }, 300);
   try {
-    let session;
-    if (navigator.onLine) {
-      const sessionResponse = await fetch("/api/v1/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
-      if (!sessionResponse.ok) throw new Error((await sessionResponse.json().catch(() => ({}))).error || "The session could not be verified.");
-      session = await sessionResponse.json();
-    } else {
-      session = { csrf_token: "", features: {} };
-    }
+    const session = navigator.onLine ? await refreshSession({ force: true }) : { csrf_token: "", features: {} };
     state.csrf = session.csrf_token || "";
     state.quickFillEnabled = Boolean(session.features?.quick_fill);
     state.aiOverviewEnabled = Boolean(session.features?.ai_overview);
@@ -1829,6 +1925,12 @@ async function loadInbox() {
       fetch("/static/company-logos/manifest.json", { credentials: "same-origin", headers: { Accept: "application/json" } }),
       fetch("/api/v1/company-icons", { credentials: "same-origin", headers: { Accept: "application/json" } }),
     ]);
+    if (jobsResponse.redirected || viewsResponse.redirected
+        || !jobsResponse.headers.get("Content-Type")?.includes("application/json")
+        || !viewsResponse.headers.get("Content-Type")?.includes("application/json")) {
+      authRecovery();
+      throw new Error("Session expired. Reconnecting through Authentik…");
+    }
     if (!jobsResponse.ok) throw new Error((await jobsResponse.json().catch(() => ({}))).error || "The job list did not respond.");
     if (!viewsResponse.ok) throw new Error((await viewsResponse.json().catch(() => ({}))).error || "Saved views did not respond.");
     const [payload, viewsPayload] = await Promise.all([jobsResponse.json(), viewsResponse.json()]);
@@ -1842,11 +1944,21 @@ async function loadInbox() {
     state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
+    clearTimeout(inboxRetryTimer);
+    inboxRetryTimer = null;
     updateTodayStrip();
     if (!state.trackerData && !state.trackerLoading) loadTrackerData({ background: true });
     try { localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString()); } catch { /* Storage is optional. */ }
   } catch (error) {
-    state.error = error instanceof Error ? error.message : "The job list did not respond.";
+    const message = error instanceof Error ? error.message : "The job list did not respond.";
+    if (!state.loaded) state.error = message;
+    else if (Date.now() - lastNetworkNoticeAt > 60000) {
+      showSnackbar(`${message} Keeping the last loaded jobs; retrying shortly.`);
+      lastNetworkNoticeAt = Date.now();
+    }
+    if (navigator.onLine && !inboxRetryTimer) {
+      inboxRetryTimer = setTimeout(() => { inboxRetryTimer = null; loadInbox(); }, 15000);
+    }
   } finally {
     clearTimeout(loadingTimer);
     state.loading = false;
@@ -2534,9 +2646,9 @@ function handleRowSelection(row, event) {
 }
 
 async function patchJob(job, status, notes = job.notes || "") {
-  const response = await fetch(`/api/v1/jobs/${encodeURIComponent(job.dedupe_key)}`, {
-    method: "PATCH", credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+  const response = await secureWrite(`/api/v1/jobs/${encodeURIComponent(job.dedupe_key)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ status, notes }),
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The change could not be saved.");
@@ -2829,6 +2941,15 @@ document.addEventListener("click", (event) => {
   const companyRole = event.target.closest(".company-role[data-job-key]");
   if (companyRole) { selectJob(companyRole.dataset.jobKey); return; }
   if (event.target.closest("[data-override-eligibility]")) { overrideEligibility(); return; }
+  const markApplied = event.target.closest("[data-mark-applied]");
+  if (markApplied) { setTrackerStatus(markApplied.dataset.markApplied, "applied"); return; }
+  const moveToQueue = event.target.closest("[data-move-to-queue]");
+  if (moveToQueue) { setTrackerStatus(moveToQueue.dataset.moveToQueue, "queued"); return; }
+  if (event.target.closest("[data-open-posting]")) {
+    const job = currentJob();
+    if (job && applicationUrl(job)) window.open(applicationUrl(job), "_blank", "noopener");
+    return;
+  }
   const statusAction = event.target.closest("[data-status-action]");
   if (statusAction && statusAction.getAttribute("aria-disabled") !== "true") { performDecision(statusAction.dataset.statusAction, statusAction.dataset.statusAction === "saved" ? "Saved" : "Queued"); return; }
   const apply = event.target.closest("[data-apply-now]");
@@ -2946,6 +3067,8 @@ document.addEventListener("change", (event) => {
   if (event.target.id === "job-sort") { state.sort = event.target.value; state.scrollTop = 0; syncInboxUrl(); renderInbox(); }
   else if (event.target.id === "tracker-status") { state.trackerStatus = event.target.value; syncTrackerUrl(); renderTracker(); }
   else if (event.target.matches("[data-board-status-select]")) setTrackerStatus(event.target.dataset.boardStatusSelect, event.target.value);
+  else if (event.target.matches("[data-tracker-status-select]")) setTrackerStatus(event.target.dataset.trackerStatusSelect, event.target.value);
+  else if (event.target.matches("[data-job-status-select]")) setTrackerStatus(event.target.dataset.jobStatusSelect, event.target.value);
   else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
   else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
 });
@@ -3020,7 +3143,22 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) showSubmissionPrompt();
 });
 window.addEventListener("focus", showSubmissionPrompt);
-window.addEventListener("online", () => { updateOfflineState(); if (state.loaded) loadInbox(); });
+async function resumeFromIdle() {
+  if (document.hidden || !navigator.onLine) return;
+  try {
+    await refreshSession();
+    if (state.error || !state.loaded) await loadInbox();
+    if (routeRoot() === "tracker" && state.trackerError) await loadTrackerData({ background: true });
+  } catch (error) {
+    if (Date.now() - lastNetworkNoticeAt > 60000) {
+      showSnackbar(error instanceof Error ? error.message : "Connection interrupted. Retrying shortly…");
+      lastNetworkNoticeAt = Date.now();
+    }
+  }
+}
+document.addEventListener("visibilitychange", resumeFromIdle);
+window.addEventListener("focus", resumeFromIdle);
+window.addEventListener("online", () => { updateOfflineState(); loadInbox(); });
 window.addEventListener("offline", updateOfflineState);
 
 history.scrollRestoration = "manual";

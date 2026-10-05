@@ -582,6 +582,7 @@ try {
       columns: document.querySelectorAll('.board-column').length,
       cards: document.querySelectorAll('.board-card').length,
       alternatives: document.querySelectorAll('[data-board-status-select]').length,
+      canRequeue: [...document.querySelectorAll('[data-board-status-select]')].every((select) => [...select.options].some((option) => option.value === 'queued')),
     }))()`);
     await cdp.evaluate("document.querySelector('[data-tracker-view=\"calibration\"]').click()");
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
@@ -629,7 +630,36 @@ try {
         unnamedControls: controls.filter((element) => !(element.getAttribute('aria-label') || element.textContent.trim() || element.closest('label'))).length,
       };
     })()`);
-    tracker = { table, board, calibration, trackerOverflow, companyCount, company };
+    const applyingKey = await cdp.evaluate(`fetch('/api/v1/jobs').then((response) => response.json()).then((data) => data.jobs.find((job) => job.status === 'queued' && job.url)?.dedupe_key || '')`);
+    if (!applyingKey) throw new Error("The fixture has no Queued job for status correction");
+    await cdp.call("Page.navigate", { url: `${base}/inbox/${encodeURIComponent(applyingKey)}?status=all` });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await cdp.evaluate("Boolean(document.querySelector('[data-job-status-select]'))")) break;
+      if (attempt === 99) throw new Error("Job status controls did not render");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    const statusFlow = await cdp.evaluate(`(async () => {
+      const waitFor = async (expected) => {
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const jobs = await fetch('/api/v1/jobs').then((response) => response.json()).then((data) => data.jobs);
+          if (jobs.find((job) => job.dedupe_key === ${JSON.stringify(applyingKey)})?.status === expected) return true;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return false;
+      };
+      let select = document.querySelector('[data-job-status-select]');
+      select.value = 'applying'; select.dispatchEvent(new Event('change', { bubbles: true }));
+      const firstApplying = await waitFor('applying');
+      document.querySelector('[data-move-to-queue]')?.click();
+      const queued = await waitFor('queued');
+      select = document.querySelector('[data-job-status-select]');
+      if (select) { select.value = 'applying'; select.dispatchEvent(new Event('change', { bubbles: true })); }
+      const applying = await waitFor('applying');
+      document.querySelector('[data-mark-applied]')?.click();
+      const applied = await waitFor('applied');
+      return { firstApplying, queued, applying, applied, undoVisible: Boolean(document.querySelector('[data-snackbar-action]')) };
+    })()`);
+    tracker = { table, board, calibration, trackerOverflow, companyCount, company, statusFlow };
   }
   let phase6 = null;
   if (auditEligibility) {
@@ -836,9 +866,11 @@ try {
   if (auditApplySession && !applySession?.summary.includes("applied to 1 role")) failures.push("session summary did not record the application");
   if (auditTracker && tracker?.table.applications < 1) failures.push("tracker table has no applications");
   if (auditTracker && tracker?.table.insights !== 4) failures.push("tracker insights are incomplete");
-  if (auditTracker && tracker?.table.columns.length !== 8) failures.push("tracker table columns are incomplete");
+  if (auditTracker && (tracker?.table.columns.length !== 8 || tracker?.table.columns[2] !== "Status")) failures.push("tracker table status controls are incomplete");
   if (auditTracker && tracker?.board.columns !== 5) failures.push("tracker board columns are incomplete");
   if (auditTracker && tracker?.board.cards !== tracker?.board.alternatives) failures.push("board drag cards lack keyboard alternatives");
+  if (auditTracker && !tracker?.board.canRequeue) failures.push("board cards cannot return to the queue");
+  if (auditTracker && (!tracker?.statusFlow.firstApplying || !tracker?.statusFlow.queued || !tracker?.statusFlow.applying || !tracker?.statusFlow.applied || !tracker?.statusFlow.undoVisible)) failures.push(`status correction flow failed: ${JSON.stringify(tracker?.statusFlow)}`);
   if (auditTracker && (!tracker?.calibration.present || !tracker?.calibration.guardrail || tracker?.calibration.bands !== 3)) failures.push("score calibration view is incomplete");
   if (auditTracker && tracker?.trackerOverflow) failures.push("compact tracker overflowed horizontally");
   if (auditTracker && tracker?.companyCount !== 50) failures.push(`expected 50 companies, got ${tracker?.companyCount}`);
