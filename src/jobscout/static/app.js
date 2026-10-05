@@ -113,6 +113,7 @@ let jobViewTransition = null;
 let sessionCheckedAt = 0;
 let sessionCheckPromise = null;
 let inboxRetryTimer = null;
+let sessionRetryTimer = null;
 let lastNetworkNoticeAt = 0;
 
 function authRecovery() {
@@ -3147,9 +3148,14 @@ async function resumeFromIdle() {
   if (document.hidden || !navigator.onLine) return;
   try {
     await refreshSession();
+    clearTimeout(sessionRetryTimer);
+    sessionRetryTimer = null;
     if (state.error || !state.loaded) await loadInbox();
     if (routeRoot() === "tracker" && state.trackerError) await loadTrackerData({ background: true });
   } catch (error) {
+    if (!sessionRetryTimer) {
+      sessionRetryTimer = setTimeout(() => { sessionRetryTimer = null; resumeFromIdle(); }, 15000);
+    }
     if (Date.now() - lastNetworkNoticeAt > 60000) {
       showSnackbar(error instanceof Error ? error.message : "Connection interrupted. Retrying shortly…");
       lastNetworkNoticeAt = Date.now();
