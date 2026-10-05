@@ -2693,6 +2693,7 @@ dialog[open]::backdrop {
   margin: 0 auto;
 }
 
+
 .profile-heading {
   display: flex;
   align-items: flex-end;
@@ -3187,6 +3188,36 @@ dialog[open]::backdrop {
 
 .status-rejected {
   color: var(--on-surface-faint);
+}
+
+.activity-status-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: var(--s-4) 0;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.status-editor select {
+  max-width: 100%;
+  min-height: 40px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-sm);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  font: inherit;
+}
+
+.tracker-table .status-editor select {
+  width: 110px;
+}
+
+.tracker-status-cell {
+  display: grid;
+  gap: var(--s-1);
 }
 
 .activity-timeline,

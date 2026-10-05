@@ -435,6 +435,30 @@ def test_application_state_round_trips_with_csrf(dashboard):
     assert changed["notes"] == "Submitted on Friday"
 
 
+def test_application_can_be_corrected_and_requeued_without_losing_snapshot(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        applying = client.patch("/api/v1/jobs/demo%3A2", headers=headers,
+                                json={"status": "applying", "notes": ""})
+        applied = client.post("/api/v1/applications/demo%3A2/applied", headers=headers,
+                              json={"document_id": None})
+        requeued = client.patch("/api/v1/jobs/demo%3A2", headers=headers,
+                                json={"status": "queued", "notes": ""})
+        tracker = client.get("/api/v1/tracker").json()
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+    finally:
+        client.close()
+
+    corrected = next(job for job in jobs if job["dedupe_key"] == "demo:2")
+    assert applying.status_code == applied.status_code == requeued.status_code == 200
+    assert applied.json()["snapshot"]["dedupe_key"] == "demo:2"
+    assert requeued.json()["status"] == "queued"
+    assert corrected["status"] == "queued"
+    assert all(job["dedupe_key"] != "demo:2" for job in tracker["applications"])
+
+
 def test_application_state_rejects_missing_csrf(dashboard):
     base, _ = dashboard
     response = httpx.patch(
