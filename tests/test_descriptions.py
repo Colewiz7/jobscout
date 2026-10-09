@@ -29,6 +29,7 @@ def test_deadline_requires_an_explicit_label_and_full_date():
 def test_pay_extraction_uses_only_stated_compensation():
     assert extract_pay("For New York: The hourly range for this position is $28.00-$30.00.") == "$28–$30/hr"
     assert extract_pay("Pay Range\nLevel I - Minimum $18.00, Maximum $20.00 per hour") == "$18–$20/hr"
+    assert extract_pay("Compensation Range(s):\nLevel I - Minimum $18.00 - Maximum $20.00") == "$18–$20"
     assert extract_pay("The annual salary range is $65,000 to $75,000.") == "$65,000–$75,000/yr"
     assert extract_pay("This internship pays $25/hr plus a $2,000 relocation stipend.") == "$25/hr"
     assert extract_pay("Housing stipend of $2,000 and 401(k) match.") is None
