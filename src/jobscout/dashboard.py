@@ -260,7 +260,9 @@ class PostgresStore:
         jobs = [job for job in jobs if _visible_scoped_job(job, self._filter_config)]
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
-            job["pay"] = extract_pay(queue_texts.get(job["dedupe_key"]))
+            description = queue_texts.get(job["dedupe_key"])
+            job["pay"] = extract_pay(description)
+            job["pay_checked"] = description is not None
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
 
     def company_icon_keys(self) -> list[str]:

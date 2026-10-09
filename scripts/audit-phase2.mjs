@@ -487,8 +487,13 @@ try {
     const queue = await cdp.evaluate(`(() => {
       const cards = [...document.querySelectorAll('.queue-card')];
       const before = cards.slice(0, 3).map((card) => card.dataset.queueKey);
+      const payFacts = cards.slice(0, 3).map((card) => {
+        const fact = card.querySelector('.queue-pay-fact');
+        return fact?.querySelector('dt')?.textContent.trim() === 'Pay'
+          && Boolean(fact.querySelector('dd')?.textContent.trim());
+      });
       cards[0].querySelector('[data-queue-move="down"]')?.click();
-      return { count: cards.length, before };
+      return { count: cards.length, before, payFacts };
     })()`);
     await new Promise((resolveWait) => setTimeout(resolveWait, 300));
     queue.after = await cdp.evaluate("[...document.querySelectorAll('.queue-card')].slice(0, 3).map((card) => card.dataset.queueKey)");
@@ -511,6 +516,7 @@ try {
       postingReview: Boolean(document.querySelector('.session-review h2')),
       reviewWidth: Math.round(document.querySelector('.session-review')?.getBoundingClientRect().width || 0),
       previewItems: document.querySelectorAll('.session-requirements li').length,
+      payFact: [...document.querySelectorAll('.session-facts dt')].some((item) => item.textContent.trim() === 'Pay'),
       expandedPostingSections: document.querySelectorAll('.session-review .parsed-section[open]').length,
       overviewWorkSpans: (() => { const cell = document.querySelector('.session-review .overview-cell[data-overview-kind="work"]'); return cell ? getComputedStyle(cell).gridColumnEnd === '-1' : false; })(),
       filledActions: document.querySelectorAll('.apply-session .filled-button').length,
@@ -859,6 +865,8 @@ try {
   if (auditQuickFill && !quickFill?.copyShortcutsSafe) failures.push("Ctrl+C or Command+C toggled Quick-fill");
   if (auditQuickFill && quickFill?.unnamedControls) failures.push("unnamed Quick-fill controls found");
   if (auditApplySession && applySession?.queue.before[0] === applySession?.queue.after[0]) failures.push("queue reorder did not persist in the UI");
+  if (auditApplySession && !applySession?.queue.payFacts.every(Boolean)) failures.push("queue cards omitted pay status");
+  if (auditApplySession && !applySession?.session.payFact) failures.push("application session omitted pay status");
   if (auditApplySession && !applySession?.session.navHidden) failures.push("application session did not hide app chrome");
   if (auditApplySession && (applySession?.session.routeHeight < 600 || !applySession?.session.jobVisible || applySession?.session.horizontalOverflow)) failures.push(`application session content is clipped: ${JSON.stringify(applySession?.session)}`);
   if (auditApplySession && !auditSessionNoProfile && !applySession?.session.quickFillEmbedded) failures.push("Quick-fill was not embedded in the session");
