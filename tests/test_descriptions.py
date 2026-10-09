@@ -1,6 +1,6 @@
 import datetime as dt
 
-from jobscout.descriptions import ProviderDescriptionFetcher, parse_deadline, parse_sections
+from jobscout.descriptions import ProviderDescriptionFetcher, extract_pay, parse_deadline, parse_sections
 
 
 class FakeFetcher:
@@ -24,6 +24,17 @@ def test_deadline_requires_an_explicit_label_and_full_date():
     assert parse_deadline("Applications close 10/18/2026") == dt.date(2026, 10, 18)
     assert parse_deadline("Start date October 18, 2026") is None
     assert parse_deadline("Apply by October 18") is None
+
+
+def test_pay_extraction_uses_only_stated_compensation():
+    assert extract_pay("For New York: The hourly range for this position is $28.00-$30.00.") == "$28–$30/hr"
+    assert extract_pay("Pay Range\nLevel I - Minimum $18.00, Maximum $20.00 per hour") == "$18–$20/hr"
+    assert extract_pay("The annual salary range is $65,000 to $75,000.") == "$65,000–$75,000/yr"
+    assert extract_pay("This internship pays $25/hr plus a $2,000 relocation stipend.") == "$25/hr"
+    assert extract_pay("Housing stipend of $2,000 and 401(k) match.") is None
+    assert extract_pay("Pay Range\nRelocation assistance up to $2,000.") is None
+    assert extract_pay("Competitive compensation and paid time off.") is None
+    assert extract_pay("Pay Range\nCompensation may vary based on experience.") is None
 
 
 def test_sections_follow_deterministic_headings():

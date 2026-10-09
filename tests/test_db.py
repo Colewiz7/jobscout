@@ -489,6 +489,23 @@ def test_quick_fill_job_context_is_server_backed(conn):
     assert profile["company_account"]["account_exists"] is True
 
 
+def test_queued_description_texts_only_returns_cached_queued_roles(conn):
+    queued = _p(url="https://acme.example/queued")
+    saved = _p(title="Saved Intern", url="https://acme.example/saved")
+    database.upsert_open(conn, [queued, saved])
+    database.save_application_state(conn, queued.dedupe_key, "queued", "")
+    database.save_application_state(conn, saved.dedupe_key, "saved", "")
+    for posting in (queued, saved):
+        target = database.description_target(conn, posting.dedupe_key)
+        database.save_description(
+            conn, target["id"], html=None,
+            text="Pay range: $28-$30 per hour.",
+        )
+    assert database.queued_description_texts(conn) == {
+        queued.dedupe_key: "Pay range: $28-$30 per hour.",
+    }
+
+
 def test_queue_order_liveness_and_application_snapshot(conn):
     first = _p(url="https://acme.example/one")
     second = _p(title="Systems Intern", url="https://acme.example/two")
