@@ -59,6 +59,10 @@ _PAY_CONTEXT = re.compile(
     re.I,
 )
 _PAY_RANGE_JOIN = re.compile(r"^\s*(?:-|–|—|to\b|through\b|,?\s*(?:maximum|max)\b)", re.I)
+_PAY_HEADING = re.compile(
+    r"(?:pay|salary|wages?|compensation|hourly)(?:\s+(?:range(?:\(s\))?|rate|information))?\s*:?\s*",
+    re.I,
+)
 _NON_BASE_PAY = r"(?:housing|relocation|meal|wellness|equipment|signing|sign-on|tuition|commuter)\s+(?:stipend|bonus|assistance|allowance|reimbursement)"
 
 
@@ -81,7 +85,7 @@ def extract_pay(text: str | None) -> str | None:
             previous = line
             continue
         for index, amount in enumerate(amounts):
-            heading = previous if re.fullmatch(r"(?:pay|pay range|salary|salary range|compensation|hourly rate|wages?)\s*:?\s*", previous, re.I) else ""
+            heading = previous if _PAY_HEADING.fullmatch(previous) else ""
             nearby = f"{heading} {line[max(0, amount.start() - 100):amount.end() + 100]}"
             before = line[max(0, amount.start() - 45):amount.start()]
             after = line[amount.end():amount.end() + 30]
