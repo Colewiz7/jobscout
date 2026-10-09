@@ -53,6 +53,66 @@ _DEADLINE_LABEL = re.compile(
     re.I,
 )
 
+_PAY_AMOUNT = re.compile(r"\$(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?[kK]?(?!\w)")
+_PAY_CONTEXT = re.compile(
+    r"\b(?:pay|salary|wage|compensation|hourly|stipend|per hour|per week|per year|annually)\b|/\s*(?:hr|hour|week|year)\b",
+    re.I,
+)
+_PAY_RANGE_JOIN = re.compile(r"^\s*(?:-|–|—|to\b|through\b|,?\s*(?:maximum|max)\b)", re.I)
+_NON_BASE_PAY = r"(?:housing|relocation|meal|wellness|equipment|signing|sign-on|tuition|commuter)\s+(?:stipend|bonus|assistance|allowance|reimbursement)"
+
+
+def extract_pay(text: str | None) -> str | None:
+    """Return only compensation explicitly stated in the posting, never an estimate.
+
+    A missing unit stays missing: a dollar range alone does not establish an
+    hourly or annual rate. Benefit stipends are not presented as base pay.
+    """
+    if not text:
+        return None
+    candidates: list[tuple[int, int, str]] = []
+    previous = ""
+    for line in text.splitlines():
+        line = " ".join(line.split())
+        if not line:
+            continue
+        amounts = list(_PAY_AMOUNT.finditer(line))
+        if not amounts:
+            previous = line
+            continue
+        for index, amount in enumerate(amounts):
+            heading = previous if re.fullmatch(r"(?:pay|pay range|salary|salary range|compensation|hourly rate|wages?)\s*:?\s*", previous, re.I) else ""
+            nearby = f"{heading} {line[max(0, amount.start() - 100):amount.end() + 100]}"
+            before = line[max(0, amount.start() - 45):amount.start()]
+            after = line[amount.end():amount.end() + 30]
+            is_benefit = bool(
+                re.search(_NON_BASE_PAY + r"(?:\s+(?:of|up to))?\s*$", before, re.I)
+                or re.match(r"^\s*(?:for\s+)?" + _NON_BASE_PAY + r"\b", after, re.I)
+            )
+            if not _PAY_CONTEXT.search(nearby) or is_benefit:
+                continue
+            following = amounts[index + 1] if index + 1 < len(amounts) else None
+            is_range = bool(
+                following and following.start() - amount.end() <= 45
+                and _PAY_RANGE_JOIN.search(line[amount.end():following.start()])
+            )
+            value = amount.group().replace(".00", "")
+            if is_range:
+                value += "–" + following.group().replace(".00", "")
+            unit_context = line[max(0, amount.start() - 60):
+                                (following.end() if is_range else amount.end()) + 100]
+            if re.search(r"\b(?:per hour|hourly)\b|/\s*(?:hr|hour)\b", unit_context, re.I):
+                suffix, priority = "/hr", 4
+            elif re.search(r"\bper week\b|/\s*week\b", unit_context, re.I):
+                suffix, priority = "/week", 3
+            elif re.search(r"\b(?:per year|annually|annual)\b|/\s*year\b", unit_context, re.I):
+                suffix, priority = "/yr", 2
+            else:
+                suffix, priority = "", 1
+            candidates.append((priority, -len(candidates), value + suffix))
+        previous = line
+    return max(candidates)[2] if candidates else None
+
 
 def _plain_text(raw_html: str) -> str:
     # Greenhouse commonly returns entity-escaped markup; unescape before

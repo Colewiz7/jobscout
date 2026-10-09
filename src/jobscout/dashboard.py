@@ -27,7 +27,7 @@ from .config import Config
 from .filters import keep as keep_posting
 from .models import Posting
 from .capture import PostingCapture, manual_capture
-from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, parse_description, parse_sections
+from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, extract_pay, parse_description, parse_sections
 from .overview import OverviewService
 from .eligibility import analyze as analyze_eligibility
 from .http import Fetcher
@@ -252,6 +252,7 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             jobs = database.dashboard_postings(conn, include_closed=include_closed)
+            queue_texts = database.queued_description_texts(conn)
             counts = database.contact_counts(conn)
             active_rules = database.rules(conn)
         # Old rows are retained for audit/history, but a changed scout filter
@@ -259,6 +260,7 @@ class PostgresStore:
         jobs = [job for job in jobs if _visible_scoped_job(job, self._filter_config)]
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
+            job["pay"] = extract_pay(queue_texts.get(job["dedupe_key"]))
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
 
     def company_icon_keys(self) -> list[str]:
@@ -1595,6 +1597,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 # Raw provider HTML is cached for reparsing, not trusted as UI
                 # markup. The browser receives deterministic plain text only.
+                detail["pay"] = extract_pay(detail.get("description_text"))
                 detail.pop("description_html", None)
                 self._json({"description": detail})
                 return
@@ -1719,6 +1722,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if detail is None:
                 self._error(HTTPStatus.NOT_FOUND, "job not found")
                 return
+            detail["pay"] = extract_pay(detail.get("description_text"))
             detail.pop("description_html", None)
             self._json({"description": detail})
             return

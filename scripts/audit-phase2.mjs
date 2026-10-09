@@ -498,6 +498,13 @@ try {
       if (attempt === 99) throw new Error("Apply session did not start");
       await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
+    if (auditSessionNoProfile) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (await cdp.evaluate("Boolean(document.querySelector('[data-session-see-requirements]'))")) break;
+        if (attempt === 99) throw new Error("Session requirements did not finish loading");
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+    }
     const session = await cdp.evaluate(`(() => ({
       navHidden: getComputedStyle(document.querySelector('.nav-rail')).display === 'none',
       quickFillEmbedded: Boolean(document.querySelector('#session-quick-fill .copy-row')),

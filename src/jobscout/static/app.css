@@ -1390,11 +1390,23 @@ dialog[open]::backdrop {
   text-underline-offset: 3px;
 }
 
-.detail-location {
-  margin: var(--s-1) 0 0;
+.detail-place-pay {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-4);
+  margin-top: var(--s-1);
+}
+
+.detail-location,
+.detail-pay {
+  margin: 0;
   color: var(--on-surface-variant);
   font-size: 14px;
   line-height: 1.5;
+}
+
+.detail-pay {
+  color: var(--on-surface);
 }
 
 .fact-strip {

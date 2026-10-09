@@ -622,6 +622,21 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
         return collapse_dashboard_duplicates(cur.fetchall())
 
 
+def queued_description_texts(conn: psycopg.Connection) -> dict[str, str]:
+    """One cached posting text per queued role for compact pay facts."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select distinct on (p.dedupe_key) p.dedupe_key, p.description_text
+              from postings p
+              join application_states s on s.dedupe_key = p.dedupe_key
+             where s.status = 'queued' and p.description_text is not null
+             order by p.dedupe_key, p.description_fetched_at desc nulls last
+            """
+        )
+        return {row["dedupe_key"]: row["description_text"] for row in cur.fetchall()}
+
+
 def saved_views(conn: psycopg.Connection) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(

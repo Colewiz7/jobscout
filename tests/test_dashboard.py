@@ -402,7 +402,7 @@ def test_job_description_is_plain_structured_data(dashboard):
 
 def test_manual_description_requires_csrf_and_returns_plain_sections(dashboard):
     base, _ = dashboard
-    payload = {"text": "Responsibilities\nBuild reliable infrastructure with Python and document the tests."}
+    payload = {"text": "Responsibilities\nBuild reliable infrastructure with Python and document the tests.\nPay range: $28-$30 per hour."}
     with httpx.Client(base_url=base, headers=AUTH, timeout=2) as client:
         assert client.post("/api/v1/jobs/demo%3A1/description", json=payload).status_code == 403
         token = client.get("/api/v1/session").json()["csrf_token"]
@@ -413,6 +413,7 @@ def test_manual_description_requires_csrf_and_returns_plain_sections(dashboard):
     assert response.status_code == 200
     detail = response.json()["description"]
     assert detail["sections"][0]["key"] == "responsibilities"
+    assert detail["pay"] == "$28–$30/hr"
     assert "description_html" not in detail
 
 
