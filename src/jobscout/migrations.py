@@ -378,6 +378,22 @@ MIGRATIONS = (
             where status in ('queued', 'running');
         """,
     ),
+    Migration(
+        13,
+        "posting_taglines",
+        """
+        create table if not exists posting_taglines (
+            dedupe_key text primary key,
+            tagline text,
+            prompt_hash text not null,
+            attempts integer not null default 0,
+            error text,
+            available_at timestamptz not null default now(),
+            generated_at timestamptz,
+            updated_at timestamptz not null default now()
+        );
+        """,
+    ),
 )
 
 

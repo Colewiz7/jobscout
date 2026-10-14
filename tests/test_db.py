@@ -82,6 +82,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 10, "name": "inbox_rules"},
             {"version": 11, "name": "company_icons"},
             {"version": 12, "name": "queued_ai_overviews"},
+            {"version": 13, "name": "posting_taglines"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -665,3 +666,34 @@ def test_quickfill_merge_adds_only_missing_rows(conn):
     assert {row["name"]: row["body"] for row in profile["answer_templates"]} == {
         "Summary": "keep me", "Area of interest": "DevOps",
     }
+
+
+def test_tagline_queue_orders_retries_and_regenerates_on_prompt_change(conn):
+    keys = ["a", "b", "c"]
+    assert database.pending_taglines(conn, keys, "p1", 10) == keys
+    assert database.pending_taglines(conn, keys, "p1", 2) == ["a", "b"]
+
+    database.save_tagline(conn, "a", "🟢 High · x · y", "p1")
+    database.fail_tagline(conn, "b", "boom", "p1")
+    # b backs off for ten minutes, a is done, c is still waiting.
+    assert database.pending_taglines(conn, keys, "p1", 10) == ["c"]
+    assert database.posting_taglines(conn) == {"a": "🟢 High · x · y"}
+
+    # A new prompt regenerates the finished tagline and gives b a fresh start.
+    assert database.pending_taglines(conn, keys, "p2", 10) == keys
+
+
+def test_tagline_failures_stop_after_three_attempts(conn):
+    for _ in range(3):
+        database.fail_tagline(conn, "a", "boom", "p1")
+        with conn.cursor() as cur:
+            cur.execute("update posting_taglines set available_at = now() - interval '1 minute'")
+        conn.commit()
+    assert database.pending_taglines(conn, ["a"], "p1", 10) == []
+
+
+def test_failed_regeneration_drops_the_stale_tagline_so_backoff_applies(conn):
+    database.save_tagline(conn, "a", "🟢 High · old · line", "p1")
+    database.fail_tagline(conn, "a", "boom", "p2")
+    assert database.posting_taglines(conn) == {}
+    assert database.pending_taglines(conn, ["a"], "p2", 10) == []

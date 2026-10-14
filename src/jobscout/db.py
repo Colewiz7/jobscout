@@ -465,6 +465,66 @@ def fail_overview(conn: psycopg.Connection, key: str, reason: str, *, terminal: 
     conn.commit()
 
 
+def posting_taglines(conn: psycopg.Connection) -> dict[str, str]:
+    """Generated one-line taglines, keyed by deduplicated job."""
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key, tagline from posting_taglines where tagline is not null")
+        return {row["dedupe_key"]: row["tagline"] for row in cur.fetchall()}
+
+
+def pending_taglines(conn: psycopg.Connection, keys: list[str], prompt_hash: str, limit: int) -> list[str]:
+    """Keys that still need a tagline, in the order given.
+
+    A changed prompt regenerates everything, so tuning the prompt is an edit and
+    a rerun. Failures back off for ten minutes and stop after three attempts.
+    """
+    if not keys:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """select k.key
+                 from unnest(%s::text[]) with ordinality as k(key, position)
+                 left join posting_taglines t on t.dedupe_key = k.key
+                where t.dedupe_key is null
+                   or t.prompt_hash <> %s
+                   or (t.tagline is null and t.attempts < 3 and t.available_at <= now())
+                order by k.position
+                limit %s""",
+            (keys, prompt_hash, limit),
+        )
+        return [row["key"] for row in cur.fetchall()]
+
+
+def save_tagline(conn: psycopg.Connection, key: str, tagline: str, prompt_hash: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """insert into posting_taglines (dedupe_key, tagline, prompt_hash, generated_at)
+               values (%s, %s, %s, now())
+               on conflict (dedupe_key) do update set
+                 tagline = excluded.tagline, prompt_hash = excluded.prompt_hash,
+                 attempts = 0, error = null, generated_at = now(), updated_at = now()""",
+            (key, tagline, prompt_hash),
+        )
+    conn.commit()
+
+
+def fail_tagline(conn: psycopg.Connection, key: str, reason: str, prompt_hash: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """insert into posting_taglines (dedupe_key, prompt_hash, attempts, error, available_at)
+               values (%s, %s, 1, %s, now() + interval '10 minutes')
+               on conflict (dedupe_key) do update set
+                 attempts = case when posting_taglines.prompt_hash = excluded.prompt_hash
+                                 then posting_taglines.attempts + 1 else 1 end,
+                 tagline = case when posting_taglines.prompt_hash = excluded.prompt_hash
+                                then posting_taglines.tagline else null end,
+                 prompt_hash = excluded.prompt_hash, error = excluded.error,
+                 available_at = excluded.available_at, updated_at = now()""",
+            (key, prompt_hash, reason[:500]),
+        )
+    conn.commit()
+
+
 def collapse_dashboard_duplicates(rows: list[dict]) -> list[dict]:
     """Unify legacy cross-source copies without changing stored application keys.
 

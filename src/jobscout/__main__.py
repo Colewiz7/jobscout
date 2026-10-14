@@ -437,6 +437,27 @@ def cmd_process_overviews(args) -> int:
     )
     counts = process(dsn, service, limit=args.limit)
     log.info("AI overview batch: %(ready)d ready, %(retry)d retrying, %(failed)d failed", counts)
+    return cmd_process_taglines(args)
+
+
+def cmd_process_taglines(args) -> int:
+    from . import tagline
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        log.error("DATABASE_URL is not set")
+        return 2
+    template = tagline.load_prompt(os.environ.get("JOBSCOUT_TAGLINE_PROMPT_FILE"))
+    if template is None:
+        log.info("taglines: no prompt file configured, skipping")
+        return 0
+    service = tagline.TaglineService(
+        os.environ.get("JOBSCOUT_LLM_URL", "http://ollama.ai.svc.cluster.local:11434"),
+        os.environ.get("JOBSCOUT_LLM_MODEL", "qwen3.5:9b"),
+        template,
+    )
+    counts = tagline.process(dsn, service, limit=args.limit, force=getattr(args, "now", False))
+    log.info("taglines: %(ready)d ready, %(retry)d retrying", counts)
     return 0
 
 
@@ -462,6 +483,9 @@ def main(argv=None) -> int:
     sub.add_parser("queue-overviews", help="queue an AI overview for every visible job")
     overview_parser = sub.add_parser("process-overviews", help="process queued AI overviews")
     overview_parser.add_argument("--limit", type=int, default=20)
+    tagline_parser = sub.add_parser("process-taglines", help="write one-line posting taglines")
+    tagline_parser.add_argument("--limit", type=int, default=20)
+    tagline_parser.add_argument("--now", action="store_true", help="run outside the quiet morning window")
     sub.add_parser("selftest", help="import and filter smoke test")
 
     args = parser.parse_args(argv)
@@ -479,6 +503,7 @@ def main(argv=None) -> int:
         "refresh-icons": cmd_refresh_icons,
         "queue-overviews": cmd_queue_overviews,
         "process-overviews": cmd_process_overviews,
+        "process-taglines": cmd_process_taglines,
         "check": cmd_check,
         None: cmd_run,
     }[args.command](args)

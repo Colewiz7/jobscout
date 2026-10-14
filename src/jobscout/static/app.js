@@ -1,5 +1,6 @@
 "use strict";
 
+import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 
 const routeView = document.querySelector("#route-view");
@@ -440,8 +441,7 @@ function emptyListMarkup() {
 
 async function copyInboxJobs(jobs, { finishSelection = false } = {}) {
   if (!jobs.length) return;
-  const contents = jobs.map((job) => [job.company, job.title, job.location, job.url]
-    .filter(Boolean).map((value) => String(value).replace(/\s+/g, " ").trim()).join(" — ")).join("\n");
+  const contents = inboxCopyText(jobs);
   try {
     await navigator.clipboard.writeText(contents);
     if (finishSelection) {
