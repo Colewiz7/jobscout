@@ -20,7 +20,7 @@ from .overview_jobs import in_batch_window
 log = logging.getLogger("jobscout.tagline")
 
 # Bump when the output format or the checks change, so every tagline is rewritten.
-FORMAT_VERSION = "v2"
+FORMAT_VERSION = "v3"
 UNCLEAR = "unclear, read posting"
 TERM_UNCLEAR = "term unclear"
 _THIN_DESCRIPTION = 150
@@ -138,6 +138,8 @@ _REJECT = {
     "clearance_active": re.compile(
         r"obtain|eligib|ability to|able to|willing|capable|sponsor|apply for|can get|be granted|process", re.I),
     "grad_only": re.compile(r"bachelor|undergrad|\bb\.?s\.?\b|junior|sophomore|senior\b", re.I),
+    # Graduation windows and degree dates describe the student, not the internship.
+    "term_outside": re.compile(r"graduat|expected completion|degree (?:date|completion)|class of", re.I),
 }
 
 
@@ -167,7 +169,7 @@ def check_flags(raw: object, description: str) -> list[dict]:
         if kind in HARD_KINDS and _PREFERRED.search(haystack[max(0, position - 250): position]):
             continue
         if kind in _REJECT and not (kind == "clearance_active" and _ACTIVE.search(needle)) \
-                and _REJECT[kind].search(context if kind != "grad_only" else needle):
+                and _REJECT[kind].search(context if kind not in ("grad_only", "term_outside") else needle):
             continue
         text = " ".join(text.replace("⚠", "").split()).strip(" .,;:")
         if not text:

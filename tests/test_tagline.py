@@ -192,3 +192,10 @@ def test_load_prompt_tolerates_missing_or_empty_files(tmp_path):
     real = tmp_path / "prompt.md"
     real.write_text("  hello \n")
     assert load_prompt(str(real)) == "hello"
+
+
+def test_graduation_windows_are_not_a_term_flag():
+    window = "Candidates must have an expected graduation date between December 2027 and August 2028."
+    assert check_flags([flag("term_outside", "expected graduation date between December 2027 and August 2028")], window) == []
+    dates = "This internship runs from September through December during the Fall 2027 term."
+    assert [item["kind"] for item in check_flags([flag("term_outside", "runs from September through December during the Fall 2027 term")], dates)] == ["term_outside"]
