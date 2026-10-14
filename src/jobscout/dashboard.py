@@ -255,6 +255,7 @@ class PostgresStore:
             queue_texts = database.queued_description_texts(conn)
             counts = database.contact_counts(conn)
             active_rules = database.rules(conn)
+            taglines = database.posting_taglines(conn)
         # Old rows are retained for audit/history, but a changed scout filter
         # must remove newly discovered out-of-scope rows from today's Inbox.
         jobs = [job for job in jobs if _visible_scoped_job(job, self._filter_config)]
@@ -263,6 +264,7 @@ class PostgresStore:
             description = queue_texts.get(job["dedupe_key"])
             job["pay"] = extract_pay(description)
             job["pay_checked"] = description is not None
+            job["tagline"] = taglines.get(job["dedupe_key"], "")
         return _annotate_rules(_annotate_reposts(jobs), active_rules)
 
     def company_icon_keys(self) -> list[str]:

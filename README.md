@@ -256,6 +256,27 @@ procedure.
 existing match as new. Seeding records them and pushes nothing, so the first
 real notification is a genuinely new posting.
 
+## Taglines
+
+Each job gets a one-line tagline (fit, what the work is, any blocker, term, pay,
+place) written by the local model from the posting description. Copy all puts it
+on the line under each job.
+
+The prompt describes the candidate, so it is never committed. Point
+`JOBSCOUT_TAGLINE_PROMPT_FILE` at a private file; `config/tagline-prompt.example.md`
+shows the shape. Without the variable the step is skipped. In the cluster the
+file comes from the hand-created `jobscout-tagline-prompt` secret (see
+`POST-DEPLOY.md`).
+
+```bash
+python -m jobscout process-taglines --now --limit 20
+```
+
+`process-overviews` runs the same step, inside the 06:00 to 11:00 ET window.
+Editing the prompt or changing the model regenerates every tagline. A posting
+with a thin description gets `unclear, read posting` without a model call, and a
+reply that is not one line in the expected format is retried, up to three times.
+
 ## Layout
 
 ```

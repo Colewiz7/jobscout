@@ -22,3 +22,19 @@ between the two costs a repeated parse rather than a lost posting. A message
 that parses to nothing is moved to `careerconnect/failed/` instead: the three
 Google forwarding confirmations already in the bucket are that case, real mail
 that is not a job alert.
+
+## Tagline prompt secret
+
+The tagline prompt describes the candidate and the repository is public, so the
+prompt lives only in the cluster. Create it by hand, as with `db-backup-r2`, from
+a local file that is never committed:
+
+```bash
+kubectl -n jobscout create secret generic jobscout-tagline-prompt \
+  --from-file=prompt.md=./tagline-prompt.md
+```
+
+The `jobseer-overviews` CronJob mounts it at `/etc/jobscout/prompt.md` and the
+step is skipped when the secret is absent. Edit the secret and the next run
+regenerates every tagline. Backfill outside the morning window with a one-off
+Job that runs `process-taglines --now --limit 100`.
