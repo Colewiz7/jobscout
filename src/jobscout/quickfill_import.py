@@ -111,11 +111,11 @@ def merge_missing(conn, profile: dict) -> tuple[int, int]:
     ids and orphans saved per-job answer overrides.
     """
     with conn.cursor() as cur:
-        cur.execute("select key, label, coalesce(max(sort_order) over (), 0) from profile_fields")
+        cur.execute("select key, label, max(sort_order) over () as top from profile_fields")
         rows = cur.fetchall()
-        known_keys = {row[0] for row in rows}
-        known_labels = {row[1] for row in rows}
-        order = rows[0][2] if rows else 0
+        known_keys = {row["key"] for row in rows}
+        known_labels = {row["label"] for row in rows}
+        order = rows[0]["top"] if rows else 0
         added_fields = 0
         for field in profile["fields"]:
             if field["key"] in known_keys or field["label"] in known_labels:
@@ -126,10 +126,10 @@ def merge_missing(conn, profile: dict) -> tuple[int, int]:
                 (field["key"], field["group"], field["label"], field["value"], False, order),
             )
             added_fields += 1
-        cur.execute("select lower(name), coalesce(max(sort_order) over (), 0) from answer_templates")
+        cur.execute("select lower(name) as name, max(sort_order) over () as top from answer_templates")
         rows = cur.fetchall()
-        known_names = {row[0] for row in rows}
-        order = rows[0][1] if rows else 0
+        known_names = {row["name"] for row in rows}
+        order = rows[0]["top"] if rows else 0
         added_templates = 0
         for template in profile["answer_templates"]:
             if template["name"].lower() in known_names:
