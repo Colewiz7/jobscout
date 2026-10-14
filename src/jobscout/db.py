@@ -477,6 +477,7 @@ def pending_taglines(conn: psycopg.Connection, keys: list[str], prompt_hash: str
 
     A changed prompt regenerates everything, so tuning the prompt is an edit and
     a rerun. Failures back off for ten minutes and stop after three attempts.
+    Postings whose description has not been fetched yet are left for later.
     """
     if not keys:
         return []
@@ -485,9 +486,11 @@ def pending_taglines(conn: psycopg.Connection, keys: list[str], prompt_hash: str
             """select k.key
                  from unnest(%s::text[]) with ordinality as k(key, position)
                  left join posting_taglines t on t.dedupe_key = k.key
-                where t.dedupe_key is null
-                   or t.prompt_hash <> %s
-                   or (t.tagline is null and t.attempts < 3 and t.available_at <= now())
+                where exists (select 1 from postings p
+                               where p.dedupe_key = k.key and p.description_fetched_at is not null)
+                  and (t.dedupe_key is null
+                       or t.prompt_hash <> %s
+                       or (t.tagline is null and t.attempts < 3 and t.available_at <= now()))
                 order by k.position
                 limit %s""",
             (keys, prompt_hash, limit),

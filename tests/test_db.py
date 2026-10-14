@@ -25,6 +25,7 @@ def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
         cur.execute("drop table if exists overview_jobs")
+        cur.execute("drop table if exists posting_taglines")
         cur.execute("drop table if exists company_assets")
         cur.execute("drop table if exists rule_actions")
         cur.execute("drop table if exists rules")
@@ -668,8 +669,30 @@ def test_quickfill_merge_adds_only_missing_rows(conn):
     }
 
 
+def _fetched(conn, **kw):
+    """An open posting whose description has been cached, as the overview worker leaves it."""
+    posting = _p(**{k: v for k, v in kw.items() if k in {"title", "url"}})
+    database.upsert_open(conn, [posting])
+    with conn.cursor() as cur:
+        cur.execute("select id from postings where dedupe_key = %s", (posting.dedupe_key,))
+        posting_id = cur.fetchone()["id"]
+    database.save_description(
+        conn, posting_id, html=None, text=kw.get("text"), error=kw.get("error"),
+        sections=({"key": "about", "text": kw["text"]},) if kw.get("text") else (),
+    )
+    return posting.dedupe_key
+
+
 def test_tagline_queue_orders_retries_and_regenerates_on_prompt_change(conn):
     keys = ["a", "b", "c"]
+    for key in keys:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into postings (source, source_id, company, title, location, url, dedupe_key, fallback_key, description_fetched_at)"
+                " values ('t', %s, 'Acme', %s, 'Austin, TX', %s, %s, %s, now())",
+                (key, f"Intern {key}", f"https://acme.example/{key}", key, f"fb-{key}"),
+            )
+    conn.commit()
     assert database.pending_taglines(conn, keys, "p1", 10) == keys
     assert database.pending_taglines(conn, keys, "p1", 2) == ["a", "b"]
 
@@ -697,3 +720,73 @@ def test_failed_regeneration_drops_the_stale_tagline_so_backoff_applies(conn):
     database.fail_tagline(conn, "a", "boom", "p2")
     assert database.posting_taglines(conn) == {}
     assert database.pending_taglines(conn, ["a"], "p2", 10) == []
+
+
+def test_tagline_queue_waits_for_a_fetched_description(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "insert into postings (source, source_id, company, title, location, url, dedupe_key, fallback_key)"
+            " values ('t', 'x', 'Acme', 'Intern', 'Austin, TX', 'https://acme.example/x', 'x', 'fb-x')"
+        )
+    conn.commit()
+    assert database.pending_taglines(conn, ["x"], "p1", 10) == []
+    with conn.cursor() as cur:
+        cur.execute("update postings set description_fetched_at = now() where dedupe_key = 'x'")
+    conn.commit()
+    assert database.pending_taglines(conn, ["x"], "p1", 10) == ["x"]
+
+
+class _FakeTagger:
+    hash = "h1"
+
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, job, text):
+        self.calls.append(job["dedupe_key"])
+        return "🟢 High · platform work · Summer 2027 · Austin, onsite"
+
+
+def _tag(dsn, tagger, **kw):
+    from jobscout import tagline
+
+    return tagline.process(dsn, tagger, force=True, pause=0, sleep=lambda _s: None, **kw)
+
+
+def test_tagline_batch_marks_empty_descriptions_unclear_and_skips_unfetched(conn):
+    good = _fetched(conn, title="Platform Intern", url="https://acme.example/good", text="Run platform tooling. " * 20)
+    empty = _fetched(conn, title="Cloud Intern", url="https://acme.example/empty", error="This provider did not return a readable description.")
+    unfetched = _p(title="DevOps Intern", url="https://acme.example/unfetched")
+    database.upsert_open(conn, [unfetched])
+    tagger = _FakeTagger()
+
+    counts = _tag(DSN, tagger)
+
+    assert (counts["ready"], counts["unclear"], counts["retry"]) == (1, 1, 0)
+    assert tagger.calls == [good]
+    taglines = database.posting_taglines(conn)
+    assert taglines[empty] == "unclear, read posting" and unfetched.dedupe_key not in taglines
+    # Nothing left to retry forever.
+    assert _tag(DSN, _FakeTagger())["ready"] == 0
+
+
+def test_tagline_batch_stops_when_the_node_is_busy_or_the_budget_is_spent(conn):
+    _fetched(conn, title="Platform Intern", url="https://acme.example/one", text="Run platform tooling. " * 20)
+    _fetched(conn, title="Cloud Intern", url="https://acme.example/two", text="Run cloud tooling. " * 20)
+    tagger = _FakeTagger()
+
+    busy = _tag(DSN, tagger, loadavg=lambda: (50.0, 40.0, 30.0))
+    assert busy["stopped"] == 2 and busy["ready"] == 0 and tagger.calls == []
+
+    ticks = iter(range(0, 1000, 100))
+    spent = _tag(DSN, tagger, max_seconds=150, clock=lambda: next(ticks))
+    assert spent["ready"] >= 1 and spent["stopped"] >= 1 and len(tagger.calls) == spent["ready"]
+
+
+def test_tagline_batch_does_nothing_outside_the_morning_window(conn):
+    from jobscout import tagline
+
+    _fetched(conn, title="Platform Intern", url="https://acme.example/one", text="Run platform tooling. " * 20)
+    afternoon = dt.datetime(2026, 10, 2, 20, 0, tzinfo=dt.timezone.utc)
+    tagger = _FakeTagger()
+    assert tagline.process(DSN, tagger, now=afternoon, pause=0)["ready"] == 0 and tagger.calls == []

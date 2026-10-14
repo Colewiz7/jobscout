@@ -259,23 +259,42 @@ real notification is a genuinely new posting.
 ## Taglines
 
 Each job gets a one-line tagline (fit, what the work is, any blocker, term, pay,
-place) written by the local model from the posting description. Copy all puts it
-on the line under each job.
+place) for the Copy all button, which puts it on the line under each job.
+
+The local model reads the description and returns structured facts; the line is
+built in code (`tagline.py`), so the separators and the fields are always right.
+The fit colour is settled in code too:
+
+- **Hard flags force Low:** a majors list that leaves out IT with no "or related
+  field" wording, an active clearance at the start (being able to obtain one is
+  not a flag), PhD or Master's only, a term outside Spring or Summer 2027, a
+  non-U.S. location.
+- **Soft flags cap at Med:** a coding-interview-heavy role.
+- **Every flag needs a quote.** The model must quote the posting for each flag.
+  A quote that is not in the description, that sits under a "preferred" or "how
+  you can stand out" heading, or that is contradicted by wording around it is
+  dropped. This is what stops invented blockers.
+- A missing term is written as `term unclear`. A posting with no readable
+  description gets `unclear, read posting` with no model call.
 
 The prompt describes the candidate, so it is never committed. Point
 `JOBSCOUT_TAGLINE_PROMPT_FILE` at a private file; `config/tagline-prompt.example.md`
-shows the shape. Without the variable the step is skipped. In the cluster the
-file comes from the hand-created `jobscout-tagline-prompt` secret (see
-the post-deploy checklist).
+shows the shape. Its `CANDIDATE`, `RULES` and `EXAMPLES` are used; the output
+format belongs to the code. Without the variable the step is skipped. In the
+cluster the file comes from the hand-created `jobscout-tagline-prompt` secret
+(see the post-deploy checklist).
 
 ```bash
-python -m jobscout process-taglines --now --limit 20
+python -m jobscout process-taglines --now --limit 10
 ```
 
 `process-overviews` runs the same step, inside the 06:00 to 11:00 ET window.
-Editing the prompt or changing the model regenerates every tagline. A posting
-with a thin description gets `unclear, read posting` without a model call, and a
-reply that is not one line in the expected format is retried, up to three times.
+The step is deliberately gentle. It handles one posting at a time with a pause
+between calls, reads only descriptions the overview worker already cached (it
+never fetches), stops after 150 seconds, and stops early when the node's load
+average passes `JOBSCOUT_TAGLINE_MAX_LOAD` (default 6). Editing the prompt,
+changing the model, or bumping `FORMAT_VERSION` rewrites every tagline. A reply
+that is not valid JSON is retried, up to three times.
 
 ## Layout
 

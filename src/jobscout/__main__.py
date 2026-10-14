@@ -437,7 +437,7 @@ def cmd_process_overviews(args) -> int:
     )
     counts = process(dsn, service, limit=args.limit)
     log.info("AI overview batch: %(ready)d ready, %(retry)d retrying, %(failed)d failed", counts)
-    return cmd_process_taglines(args)
+    return cmd_process_taglines(argparse.Namespace(limit=10, now=False))
 
 
 def cmd_process_taglines(args) -> int:
@@ -456,8 +456,12 @@ def cmd_process_taglines(args) -> int:
         os.environ.get("JOBSCOUT_LLM_MODEL", "qwen3.5:9b"),
         template,
     )
-    counts = tagline.process(dsn, service, limit=args.limit, force=getattr(args, "now", False))
-    log.info("taglines: %(ready)d ready, %(retry)d retrying", counts)
+    counts = tagline.process(
+        dsn, service, limit=args.limit, force=getattr(args, "now", False),
+        pause=float(os.environ.get("JOBSCOUT_TAGLINE_PAUSE", "3")),
+        max_load=float(os.environ.get("JOBSCOUT_TAGLINE_MAX_LOAD", "6")),
+    )
+    log.info("taglines: %(ready)d ready, %(unclear)d unclear, %(retry)d retrying, %(stopped)d held back", counts)
     return 0
 
 
@@ -484,7 +488,7 @@ def main(argv=None) -> int:
     overview_parser = sub.add_parser("process-overviews", help="process queued AI overviews")
     overview_parser.add_argument("--limit", type=int, default=20)
     tagline_parser = sub.add_parser("process-taglines", help="write one-line posting taglines")
-    tagline_parser.add_argument("--limit", type=int, default=20)
+    tagline_parser.add_argument("--limit", type=int, default=10)
     tagline_parser.add_argument("--now", action="store_true", help="run outside the quiet morning window")
     sub.add_parser("selftest", help="import and filter smoke test")
 
