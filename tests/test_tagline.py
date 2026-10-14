@@ -5,7 +5,7 @@ import pytest
 
 from jobscout import tagline
 from jobscout.tagline import (
-    TERM_UNCLEAR, UNCLEAR, TaglineService, build_prompt, build_tagline, check_flags,
+    TERM_UNCLEAR, UNCLEAR, TaglineService, build_prompt, build_tagline, check_flags, grounded_term,
     load_prompt, process, prompt_hash, settle_fit,
 )
 
@@ -52,7 +52,7 @@ def flag(kind, evidence, text="a problem"):
 
 
 def test_line_is_built_in_code_in_the_documented_order():
-    assert build_tagline(facts(), DESCRIPTION) == (
+    assert build_tagline(facts(), DESCRIPTION, "Spring 2027") == (
         "🟢 High · Kubernetes and Argo CD SRE work · Spring 2027, Jan to May · $33/hr + housing · El Segundo, onsite"
     )
 
@@ -199,3 +199,15 @@ def test_graduation_windows_are_not_a_term_flag():
     assert check_flags([flag("term_outside", "expected graduation date between December 2027 and August 2028")], window) == []
     dates = "This internship runs from September through December during the Fall 2027 term."
     assert [item["kind"] for item in check_flags([flag("term_outside", "runs from September through December during the Fall 2027 term")], dates)] == ["term_outside"]
+
+
+def test_a_term_the_model_worked_out_is_not_written_as_fact():
+    posting = "Applicants graduate between December 2027 and August 2028. Work on vehicle systems."
+    # Neither "Summer" nor the title mentions it, so this is a guess from the dates.
+    assert grounded_term("Summer 2027 (implied by graduation window)", posting) == ""
+    assert grounded_term("Summer 2027", posting) == ""
+    assert grounded_term("Summer 2027", posting + " 2027 Summer Intern") == "Summer 2027"
+    assert grounded_term("Spring 2027 (Jan-Mar)", "Internship runs Spring 2027 from January to March.") == "Spring 2027 (Jan-Mar)"
+    line = build_tagline(facts(term="Summer 2027 (implied by graduation window)"), posting)
+    assert f" · {TERM_UNCLEAR} · " in line
+    assert "Summer 2027" in build_tagline(facts(term="Summer 2027"), posting, "", "2027 Summer Intern")

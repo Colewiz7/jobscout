@@ -20,7 +20,7 @@ from .overview_jobs import in_batch_window
 log = logging.getLogger("jobscout.tagline")
 
 # Bump when the output format or the checks change, so every tagline is rewritten.
-FORMAT_VERSION = "v3"
+FORMAT_VERSION = "v4"
 UNCLEAR = "unclear, read posting"
 TERM_UNCLEAR = "term unclear"
 _THIN_DESCRIPTION = 150
@@ -200,7 +200,22 @@ def _short_location(location: str) -> str:
     return f"{places[0]}, {places[1]} +{len(places) - 2} more"
 
 
-def build_tagline(facts: dict, description: str, listed_term: str = "") -> str:
+_INFERRED = re.compile(r"\([^)]*\b(?:implied|inferred|likely|assumed|presumably|approx\w*|estimated)\b[^)]*\)", re.I)
+_TERM_WORDS = re.compile(r"\b(?:spring|summer|fall|winter|autumn|20\d\d)\b", re.I)
+
+
+def grounded_term(term: str, source: str) -> str:
+    """Keep a term only when every season and year in it appears in the posting.
+
+    A model will happily work out "Summer 2027" from a graduation window. That is
+    a guess, not what the posting says.
+    """
+    term = _clean(_INFERRED.sub("", term))
+    words = {word.casefold() for word in _TERM_WORDS.findall(term)}
+    return term if words and words <= set(_norm(source).split()) else ""
+
+
+def build_tagline(facts: dict, description: str, listed_term: str = "", title: str = "") -> str:
     fit = facts.get("fit")
     if fit == "Unclear":
         return UNCLEAR
@@ -210,7 +225,7 @@ def build_tagline(facts: dict, description: str, listed_term: str = "") -> str:
     if not work:
         raise ValueError("The model returned no description of the work")
     flags = check_flags(facts.get("flags"), description)
-    term = _clean(facts.get("term"))
+    term = grounded_term(_clean(facts.get("term")), f"{description} {listed_term} {title}")
     if not term or _NO_VALUE.fullmatch(term):
         term = _clean(listed_term)
     pay = _clean(facts.get("pay"))
@@ -252,7 +267,7 @@ class TaglineService:
             raise ValueError("The model did not return valid JSON") from error
         if not isinstance(facts, dict):
             raise ValueError("The model did not return a JSON object")
-        return build_tagline(facts, description, str(job.get("terms") or ""))
+        return build_tagline(facts, description, str(job.get("terms") or ""), str(job.get("title") or ""))
 
 
 def process(dsn: str, service: TaglineService, *, limit: int = 10, force: bool = False,
