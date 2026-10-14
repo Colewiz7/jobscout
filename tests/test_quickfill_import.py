@@ -42,3 +42,21 @@ def test_ats_ordering_shows_every_imported_group():
         if ats.startswith("_"):
             continue
         assert GROUPS.keys() <= set(groups)
+
+
+def test_new_availability_pay_and_essay_labels_are_mapped():
+    profile, skipped = parse_snippets("""
+Start date (Spring) :: 01/04/2027
+Salary (hourly, big city) :: 35
+Co-op or internship :: Co-op through school
+CPT / F-1 visa :: No
+Exceptional ability 1 :: Standardized device imaging.
+Interview availability :: TODO weekday windows
+""")
+    groups = {row["label"]: row["group"] for row in profile["fields"]}
+    assert groups == {
+        "Start date (Spring)": "Availability", "Salary (hourly, big city)": "Compensation",
+        "Co-op or internship": "Education", "CPT / F-1 visa": "Work authorization",
+    }
+    assert [row["name"] for row in profile["answer_templates"]] == ["Exceptional ability 1"]
+    assert skipped == ["Interview availability"]
