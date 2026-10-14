@@ -2537,21 +2537,35 @@ function closeQuickFill({ restoreFocus = true } = {}) {
   if (restoreFocus && !quickFillTrigger.hidden) quickFillTrigger.focus();
 }
 
+// The async Clipboard API refuses without a secure context or a focused
+// document. execCommand("copy") on a selected textarea still works from a click.
+function copyTextFallback(text) {
+  const area = document.createElement("textarea");
+  area.className = "clipboard-fallback";
+  area.value = text;
+  area.setAttribute("readonly", "");
+  document.body.append(area);
+  area.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch { /* Fall through to manual copy. */ }
+  if (!copied) return area;
+  area.remove();
+  return null;
+}
+
 async function copyQuickFillItem(index) {
   const item = state.quickFillItems[index];
   if (!item) return;
   try {
     await navigator.clipboard.writeText(item.value);
   } catch {
-    const fallback = document.createElement("textarea");
-    fallback.className = "clipboard-fallback";
-    fallback.value = item.value;
-    fallback.setAttribute("aria-label", `${item.label}; press Control C to copy`);
-    document.body.append(fallback);
-    fallback.select();
-    showSnackbar("Couldn't copy. Text selected.");
-    setTimeout(() => fallback.remove(), 6000);
-    return;
+    const manual = copyTextFallback(item.value);
+    if (manual) {
+      manual.setAttribute("aria-label", `${item.label}; press Control C to copy`);
+      showSnackbar("Couldn't copy. Text selected.");
+      setTimeout(() => manual.remove(), 6000);
+      return;
+    }
   }
   const jobKey = currentJob()?.dedupe_key || "none";
   if (!state.copiedByJob.has(jobKey)) state.copiedByJob.set(jobKey, new Set());
