@@ -36,5 +36,6 @@ kubectl -n jobscout create secret generic jobscout-tagline-prompt \
 
 The `jobseer-overviews` CronJob mounts it at `/etc/jobscout/prompt.md` and the
 step is skipped when the secret is absent. Edit the secret and the next run
-regenerates every tagline. Backfill outside the morning window with a one-off
-Job that runs `process-taglines --now --limit 100`.
+regenerates every tagline, a few at a time. Do not backfill with one large job:
+an unthrottled run of 400 pushed the k3s VM to a load average of 260. Let the
+morning window do it, or run `process-taglines --now --limit 10` by hand.
