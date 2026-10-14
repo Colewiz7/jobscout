@@ -645,3 +645,23 @@ def test_archive_rule_is_logged_and_reversibly_applied(conn):
     assert paused["enabled"] is False
     database.set_rule_enabled(conn, rule["id"], True)
     assert database.dashboard_postings(conn)[0]["status"] == "new"
+
+
+def test_quickfill_merge_adds_only_missing_rows(conn):
+    from jobscout.quickfill_import import merge_missing, parse_snippets
+
+    database.replace_profile_data(conn, {
+        "fields": [{"key": "email", "group": "Contact", "label": "Email", "value": "keep@example.invalid", "sort_order": 10}],
+        "answer_templates": [{"name": "Summary", "body": "keep me", "sort_order": 10}],
+    })
+    incoming, _ = parse_snippets("Email :: other\nStart date (Spring) :: 01/04/2027\nSummary :: other\nArea of interest :: DevOps")
+
+    assert merge_missing(conn, incoming) == (1, 1)
+    assert merge_missing(conn, incoming) == (0, 0)
+    profile = database.profile_data(conn)
+    assert {row["label"]: row["value"] for row in profile["fields"]} == {
+        "Email": "keep@example.invalid", "Start date (Spring)": "01/04/2027",
+    }
+    assert {row["name"]: row["body"] for row in profile["answer_templates"]} == {
+        "Summary": "keep me", "Area of interest": "DevOps",
+    }
