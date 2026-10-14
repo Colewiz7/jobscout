@@ -2059,6 +2059,27 @@ function safeHttpsUrl(value) {
   } catch { return ""; }
 }
 
+const quickFillWords = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// Every typed word has to match, in any order. Punctuation is ignored ("co-op",
+// "coop", "co op"). Long answers are matched by name only, so a short query is
+// not drowned in essay text.
+function quickFillMatches(item, query) {
+  const own = quickFillWords(`${item.label} ${item.group} ${item.detail || ""}`);
+  const value = String(item.value).length <= 300 ? quickFillWords(item.value) : "";
+  const haystack = `${own} ${value}`;
+  const compact = haystack.replace(/ /g, "");
+  return quickFillWords(query).split(" ").every((word) => word && (haystack.includes(word) || compact.includes(word)));
+}
+
+// Name matches come before value-only matches.
+function quickFillRank(item, query) {
+  const label = quickFillWords(item.label);
+  const words = quickFillWords(query).split(" ");
+  if (words.every((word) => label.split(" ").some((part) => part.startsWith(word)))) return 0;
+  return words.every((word) => label.includes(word)) ? 1 : 2;
+}
+
 function quickFillGroups() {
   const profile = state.quickFillProfile || {};
   const query = state.quickFillQuery.trim().toLowerCase();
@@ -2106,7 +2127,7 @@ function quickFillGroups() {
     ...order.filter((name) => name !== "Pinned").map((name) => [name, all.filter((item) => item.group === name && !item.pinned)]),
   ];
   for (const [name, items] of candidates) {
-    const visible = items.filter((item) => !query || `${item.label} ${item.value}`.toLowerCase().includes(query));
+    const visible = query ? items.filter((item) => quickFillMatches(item, query)).sort((a, b) => quickFillRank(a, query) - quickFillRank(b, query)) : items;
     if (visible.length) groups.push({ name, items: visible });
   }
   state.quickFillItems = groups.flatMap((group) => group.items);
@@ -2166,7 +2187,7 @@ function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
   const emptySetup = `<div class="quick-fill-setup"><h3>Set up your copy fields.</h3><p>Start with blank labels for contact, links, education, and availability. No personal details are prefilled.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button></div>`;
   const body = state.quickFillEdit
     ? quickFillEditorMarkup()
-    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || (!state.quickFillProfile ? '<p class="quick-fill-empty">Loading fields…</p>' : state.quickFillProfile.fields?.length ? '<p class="quick-fill-empty">No filled fields match this search. Use Edit to add a value.</p>' : emptySetup)}</div>`;
+    : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : embedded ? "session" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : embedded ? "session" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || (!state.quickFillProfile ? '<p class="quick-fill-empty">Loading fields…</p>' : state.quickFillProfile.fields?.length ? '<p class="quick-fill-empty">No filled fields match this search. Use Edit to add a value.</p>' : emptySetup)}</div>`;
   return `<div class="quick-fill-header"><div><h2>Quick-fill</h2><p>${state.quickFillEdit ? `<span class="quick-fill-save-state">${escapeHtml(state.quickFillSaveState || "Changes save automatically")}</span>` : escapeHtml(status)}</p></div><button class="text-button interactive quick-fill-edit-toggle" type="button" data-quick-fill-edit>${state.quickFillEdit ? "Done" : "Edit"}</button><button class="icon-button interactive" type="button" data-quick-fill-popout aria-label="Pop out Quick-fill" ${popout ? "hidden" : ""}>${icons.external}</button><button class="icon-button interactive" type="button" data-quick-fill-close aria-label="Close Quick-fill" ${embedded ? "hidden" : ""}>${icons.close}</button></div>${body}`;
 }
 
@@ -2197,10 +2218,12 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
       return;
     }
     if (!event.target.matches("[id^='quick-fill-search-']")) return;
+    if (event.isComposing) return;
     state.quickFillQuery = event.target.value;
-    renderQuickFill();
-    const search = (popout ? state.quickFillPopout?.document : document)?.querySelector(`#${event.target.id}`);
-    search?.focus(); search?.setSelectionRange(state.quickFillQuery.length, state.quickFillQuery.length);
+    const { id, selectionStart, selectionEnd } = event.target;
+    if (id === "quick-fill-search-session") renderSessionQuickFill(); else renderQuickFill();
+    const search = (popout ? state.quickFillPopout?.document : document)?.querySelector(`#${id}`);
+    search?.focus(); search?.setSelectionRange(selectionStart, selectionEnd);
   });
   root.addEventListener("change", (event) => {
     if (event.target.matches("select[data-context-kind]")) { updateQuickFillContext(event.target); return; }
