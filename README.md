@@ -7,7 +7,7 @@ Finds DevOps, SRE, platform and infrastructure internships and co-ops, then push
   <img src="screenshots/ranking.webp" alt="Open postings ranked by score with the signals behind each score" width="560">
 </p>
 
-It exists because the general internship lists are software engineering lists. Filtering one for infrastructure work returns almost nothing, not because the roles are rare but because they are posted somewhere else, under titles that share vocabulary with the sales org.
+The general internship lists are software engineering lists, and filtering one for infrastructure work returns almost nothing. Those roles are posted elsewhere, under titles that share vocabulary with the sales org.
 
 ## How it runs
 
@@ -27,7 +27,7 @@ Nothing in the pod holds state. Notifications go to their own ntfy topic, separa
 
 ## Providers
 
-A provider takes a fetcher, a board identifier and a display name, and returns postings or `None`. `None` means the board did not answer, which matters: an empty list means nothing is open and old postings may be closed, while a failed board must never retire jobs that are still live.
+A provider takes a fetcher, a board identifier and a display name, and returns postings or `None`. `None` means the board did not answer. An empty list means nothing is open, so old postings may be closed, but a failed board must never retire jobs that are still live.
 
 | provider | board identifier | shape |
 |---|---|---|
@@ -57,7 +57,7 @@ The score and its breakdown are stored for every candidate, not just the ones th
 
 ## Config drift guard
 
-The deployed config and the one in this repo are different files, since the deployed one carries the boards and employers being targeted. So both are held to the same behaviour instead of the same bytes: `tests/contract_cases.yaml` is the contract, this repo runs it against its default, and the gitops repo runs it against the ConfigMap it deploys. Either side drifting fails a build.
+The deployed config and the one in this repo are different files, since the deployed one carries the boards and employers I'm targeting. They are tested against the same behaviour rather than compared byte for byte. `tests/contract_cases.yaml` is the contract: this repo runs it against its default config, and the gitops repo runs it against the ConfigMap it deploys. If either side drifts, a build fails.
 
 ## Application dashboard
 
