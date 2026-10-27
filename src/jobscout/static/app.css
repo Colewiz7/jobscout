@@ -1292,6 +1292,13 @@ dialog[open]::backdrop {
   flex: 1 1 100%;
 }
 
+.button-shortcut {
+  min-width: 20px;
+  height: 20px;
+  margin-left: var(--s-2);
+  padding: 0 var(--s-1);
+}
+
 .bulk-bar > span {
   min-width: max-content;
   padding-inline: var(--s-2);

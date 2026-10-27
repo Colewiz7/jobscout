@@ -3,6 +3,7 @@
 import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
+import { ariaKeyshortcuts, formatShortcut } from "./shortcuts.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -634,7 +635,7 @@ function detailMarkup(job) {
     ? `<button class="filled-button interactive" type="button" data-mark-applied="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Mark applied</button><button class="tonal-button interactive" type="button" data-move-to-queue="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Back to queue</button>`
     : "";
   const normalActions = job.status === "applying" ? applyingActions
-    : `<button class="filled-button interactive" type="button" ${job.status === "applied" ? `data-move-to-queue="${escapeHtml(job.dedupe_key)}"` : 'data-status-action="queued"'} ${pending || eligibilityBlocked || job.status === "queued" ? 'aria-disabled="true"' : ""}>${job.status === "queued" ? "Queued" : job.status === "applied" ? "Back to queue" : "Queue"}</button><button class="tonal-button interactive" type="button" data-status-action="saved" ${pending || job.status === "saved" ? 'aria-disabled="true"' : ""}>${job.status === "saved" ? "Saved" : "Save"}</button><button class="outlined-button interactive" type="button" ${job.status === "applied" ? 'data-open-posting' : 'data-apply-now'} ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>${job.status === "applied" ? "Open posting" : "Apply now"}</button>`;
+    : `<button class="filled-button interactive" type="button" ${job.status === "applied" ? `data-move-to-queue="${escapeHtml(job.dedupe_key)}"` : 'data-status-action="queued" aria-keyshortcuts="Q" title="Queue (Q)"'} ${pending || eligibilityBlocked || job.status === "queued" ? 'aria-disabled="true"' : ""}>${job.status === "queued" ? "Queued" : job.status === "applied" ? "Back to queue" : "Queue"}</button><button class="tonal-button interactive" type="button" data-status-action="saved" aria-keyshortcuts="S" title="Save (S)" ${pending || job.status === "saved" ? 'aria-disabled="true"' : ""}>${job.status === "saved" ? "Saved" : "Save"}</button><button class="outlined-button interactive" type="button" ${job.status === "applied" ? 'data-open-posting' : 'data-apply-now aria-keyshortcuts="A" title="Apply now (A)"'} ${!applicationUrl(job) || pending || eligibilityBlocked ? 'aria-disabled="true"' : ""}>${job.status === "applied" ? "Open posting" : "Apply now"}</button>`;
   return `<article class="job-detail" aria-labelledby="job-title">
     <header class="job-detail-header"><button class="detail-back text-button interactive" type="button" data-back-to-list>← Inbox</button><div class="detail-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div class="detail-heading"><h1 id="job-title" tabindex="-1">${escapeHtml(job.title)}</h1><a href="/companies/${encodeURIComponent(job.company || "")}" data-route>${escapeHtml(job.company)}</a>${job.location ? `<p class="detail-location">${escapeHtml(job.location)}</p>` : ""}</div></div>
       <dl class="fact-strip">${factItem("Posted", formatDate(job.first_seen))}${factItem("Pay", job.pay)}${factItem("Source", sourceText)}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(description?.deadline))}</dl>
@@ -656,11 +657,15 @@ function detailMarkup(job) {
   </article>`;
 }
 
+function bulkButton(action, label, spec) {
+  return `<button class="text-button interactive" type="button" data-bulk-action="${action}" aria-keyshortcuts="${ariaKeyshortcuts(spec)}" title="${label} (${formatShortcut(spec)})">${label}<kbd class="button-shortcut" aria-hidden="true">${formatShortcut(spec)}</kbd></button>`;
+}
+
 function bulkBarMarkup() {
   const count = state.selectedKeys.size;
   if (state.copySelectionMode) return `<div class="bulk-bar copy-selection-bar" aria-label="Copy selection"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected · Click jobs, or Shift-click for a range</span><button class="tonal-button interactive" type="button" data-copy-selected ${count ? "" : "disabled"}>Copy selected</button><button class="text-button interactive" type="button" data-cancel-copy-selection>Cancel</button></div>`;
   if (!count) return "";
-  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span><button class="text-button interactive" type="button" data-bulk-action="saved">Save</button><button class="text-button interactive" type="button" data-bulk-action="queued">Queue</button><button class="text-button interactive" type="button" data-bulk-action="archived">Dismiss</button><button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
 }
 
 function copyMenuMarkup() {
