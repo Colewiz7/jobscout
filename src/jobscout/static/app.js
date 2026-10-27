@@ -2696,8 +2696,7 @@ function selectJob(key, { push = true, focusDetail = false } = {}) {
     if (push) syncInboxUrl();
     renderSelectedJob();
   };
-  const reduceMotion = document.documentElement.dataset.motion === "reduce"
-    || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduceMotion = document.documentElement.dataset.motion === "reduce";
   if (changed && !reduceMotion && document.startViewTransition && document.querySelector(".reading-pane")?.getClientRects().length) {
     jobViewTransition?.skipTransition();
     const transition = document.startViewTransition(update);
@@ -3012,7 +3011,7 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-session-apply]")) { openSessionApplication(); return; }
   if (event.target.closest("[data-session-see-requirements]")) {
     const section = document.querySelector('.apply-session .parsed-section[data-section-key="requirements"]');
-    if (section) { section.open = true; section.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); }
+    if (section) { section.open = true; section.scrollIntoView({ behavior: document.documentElement.dataset.motion === "reduce" ? "auto" : "smooth", block: "start" }); }
     return;
   }
   if (event.target.closest("[data-session-applied]")) { markSessionApplied(); return; }
