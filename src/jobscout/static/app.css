@@ -1938,7 +1938,7 @@ dialog[open]::backdrop {
 
 .quick-fill-sheet[aria-hidden="false"] {
   visibility: visible;
-  transform: translateX(0);
+  transform: none; /* a transform would trap fixed drags */
   transition: transform var(--d-long1) var(--ease-emph-dec),
               visibility 0s linear 0s;
 }
@@ -2245,6 +2245,96 @@ dialog[open]::backdrop {
   margin-top: var(--s-6);
 }
 
+/* --- profile editor items --- */
+
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.profile-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s-1);
+  padding: var(--s-1);
+  border-radius: var(--r-md);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+}
+
+.profile-item-body {
+  min-width: 0;
+}
+
+.profile-item .quick-fill-edit-card {
+  margin: 0;
+  padding: var(--s-2) var(--s-1);
+  background: transparent;
+}
+
+.profile-item .quick-fill-edit-card summary {
+  min-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+.profile-item .quick-fill-edit-field:last-child {
+  margin-bottom: 0;
+}
+
+.profile-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-left: var(--s-2);
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.profile-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+.profile-add > .quick-fill-edit-field {
+  margin: 0;
+}
+
+.profile-add > .tonal-button {
+  height: 44px;
+}
+
+.profile-add > .profile-add-group {
+  grid-column: 1 / -1;
+  order: -1;
+}
+
+.profile-limit,
+.profile-error {
+  grid-column: 1 / -1;
+  margin: var(--s-2) 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.profile-limit {
+  color: var(--on-surface-variant);
+}
+
+.profile-error {
+  color: var(--error);
+}
+
+.profile-error::before {
+  content: "! ";
+  font-weight: 600;
+}
+
 /* Queue and application sessions */
 .queue-page {
   width: min(100%, var(--content-max));
@@ -2293,7 +2383,8 @@ dialog[open]::backdrop {
 /* --- drag lift --- */
 
 .queue-card,
-.board-card {
+.board-card,
+.profile-item {
   position: relative;
   isolation: isolate;
   transition: scale var(--spatial-fast);
@@ -2302,7 +2393,9 @@ dialog[open]::backdrop {
 .queue-card::before,
 .queue-card::after,
 .board-card::before,
-.board-card::after {
+.board-card::after,
+.profile-item::before,
+.profile-item::after {
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -2312,7 +2405,8 @@ dialog[open]::backdrop {
 }
 
 .queue-card::before,
-.board-card::before {
+.board-card::before,
+.profile-item::before {
   z-index: -1;
   background: currentColor;
   transition: opacity var(--effects-fast);
@@ -2320,7 +2414,8 @@ dialog[open]::backdrop {
 
 /* shadow fades, never animates */
 .queue-card::after,
-.board-card::after {
+.board-card::after,
+.profile-item::after {
   z-index: -2;
   box-shadow: var(--shadow-float);
   transition: opacity var(--spatial-fast);

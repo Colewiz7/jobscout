@@ -7,6 +7,7 @@ import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js"
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
+import { adoptIds, applyOp, itemId, limitReason, newId, opKeys, PROFILE_KINDS, renameOverrides, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
@@ -99,6 +100,7 @@ const state = {
   quickFillEdit: false, quickFillSaveState: "", quickFillSaveTimer: null,
   quickFillSetupSaving: false,
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
+  quickFillAliases: {}, quickFillProfileError: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
   sessionStarting: false, statusSaving: new Set(),
@@ -2285,20 +2287,58 @@ function editorField(label, value, attributes, {
   return `<label class="quick-fill-edit-field"><span>${escapeHtml(label)}</span>${control}</label>`;
 }
 
-function quickFillEditorMarkup() {
+// --- profile editor lists ---
+
+const profileNames = { fields: (row) => row.label || row.key, documents: (row) => row.name, answer_templates: (row) => row.name, stories: (row) => row.title };
+const profileAttrs = (kind, row, property) => `data-profile-kind="${kind}" data-profile-id="${escapeHtml(itemId(kind, row))}" data-profile-property="${property}"`;
+
+function findProfileItem(kind, id) {
+  const wanted = String(state.quickFillAliases[id] ?? id);
+  return (state.quickFillProfile?.[kind] || []).find((row) => itemId(kind, row) === wanted) || null;
+}
+
+// unsaved ids resolve to saved ones
+function canonicalRef(ref) {
+  const [kind, ...rest] = String(ref).split(":");
+  const id = rest.join(":");
+  return `${kind}:${state.quickFillAliases[id] ?? id}`;
+}
+
+function profileItemMarkup(kind, row, body) {
+  const name = profileNames[kind](row) || PROFILE_KINDS[kind].one;
+  return `<article class="profile-item" data-profile-ref="${escapeHtml(`${kind}:${itemId(kind, row)}`)}"><button class="profile-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(name)}" title="Reorder ${escapeHtml(name)}">${icons.queue}</button><div class="profile-item-body">${body}</div>${moreButtonMarkup(name)}</article>`;
+}
+
+function profileAddMarkup(kind, scope, { label, button, placeholder, maxlength, extra = "" }) {
+  const reason = limitReason(kind, (state.quickFillProfile?.[kind] || []).length);
+  const hint = `profile-limit-${scope}-${kind}`;
+  return `<div class="profile-add"><label class="quick-fill-edit-field"><span>${escapeHtml(label)}</span><input type="text" maxlength="${maxlength}" placeholder="${escapeHtml(placeholder)}" data-profile-add-input="${kind}" ${reason ? `disabled aria-describedby="${hint}"` : ""}></label>${extra}<button class="tonal-button interactive" type="button" data-profile-add="${kind}" ${reason ? `disabled aria-describedby="${hint}"` : ""}>${escapeHtml(button)}</button>${reason ? `<p class="profile-limit" id="${hint}">${escapeHtml(reason)}</p>` : ""}</div>`;
+}
+
+function profileSectionMarkup(kind, title, rows, empty, add) {
+  const error = state.quickFillProfileError?.kind === kind ? `<p class="profile-error" role="alert">${escapeHtml(state.quickFillProfileError.message)}</p>` : "";
+  return `<section data-profile-section="${kind}"><h3>${escapeHtml(title)}</h3>${rows.length ? `<div class="profile-list" data-profile-list="${kind}">${rows.join("")}</div>` : `<p class="quick-fill-empty">${escapeHtml(empty)}</p>`}${error}${add}</section>`;
+}
+
+function storyMarkup(story) {
+  const attrs = (property) => profileAttrs("stories", story, property);
+  return profileItemMarkup("stories", story, `<details class="quick-fill-edit-card"><summary>${escapeHtml(story.title)}</summary>${editorField("Title", story.title || "", attrs("title"))}${editorField("Competencies", (story.competencies || []).join(", "), attrs("competencies"))}${["situation", "task", "action", "result", "reflection"].map((part) => editorField(statusLabel(part), story[part] || "", attrs(part), { multiline: true })).join("")}</details>`);
+}
+
+function quickFillEditorMarkup(scope = "docked") {
   const profile = state.quickFillProfile || {};
   const job = currentJob();
-  const fields = (profile.fields || []).map((field, index) => editorField(
-    field.label || field.key, field.value || "", `data-profile-kind="fields" data-profile-index="${index}" data-profile-property="value"`,
+  const fields = (profile.fields || []).map((field) => editorField(
+    field.label || field.key, field.value || "", profileAttrs("fields", field, "value"),
     { multiline: String(field.value || "").length > 120 || String(field.value || "").includes("\n") },
   )).join("");
-  const templates = (profile.answer_templates || []).map((template, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Template", template.body || "", `data-profile-kind="answer_templates" data-profile-index="${index}" data-profile-property="body"`, { multiline: true })}<small>${new Intl.NumberFormat().format(String(template.body || "").length)} characters before variables are replaced</small></details>`).join("");
-  const documents = (profile.documents || []).map((document, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}</summary>${editorField("Name", document.name || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="name"`)}${editorField("Date", document.date || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="date"`)}${editorField("Path or URL", document.url || "", `data-profile-kind="documents" data-profile-index="${index}" data-profile-property="url"`)}</details>`).join("");
-  const stories = (profile.stories || []).map((story, index) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(story.title)}</summary>${editorField("Title", story.title || "", `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="title"`)}${editorField("Competencies", (story.competencies || []).join(", "), `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="competencies"`)}${["situation", "task", "action", "result", "reflection"].map((part) => editorField(statusLabel(part), story[part] || "", `data-profile-kind="stories" data-profile-index="${index}" data-profile-property="${part}"`, { multiline: true })).join("")}</details>`).join("");
+  const templates = (profile.answer_templates || []).map((template) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Template", template.body || "", profileAttrs("answer_templates", template, "body"), { multiline: true })}<small>${new Intl.NumberFormat().format(String(template.body || "").length)} characters before variables are replaced</small></details>`).join("");
+  const documents = (profile.documents || []).map((document) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}</summary>${editorField("Name", document.name || "", profileAttrs("documents", document, "name"))}${editorField("Date", document.date || "", profileAttrs("documents", document, "date"))}${editorField("Path or URL", document.url || "", profileAttrs("documents", document, "url"))}</details>`).join("");
+  const stories = profileSectionMarkup("stories", "Story bank", (profile.stories || []).map(storyMarkup), "No stories yet.", profileAddMarkup("stories", scope, { label: "New story", button: "Add story", placeholder: "Stabilized a failing service", maxlength: 160 }));
   const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
   const account = profile.company_account || {};
   const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
-  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section><section><h3>Story bank</h3>${stories || '<p class="quick-fill-empty">No stories yet.</p>'}</section><div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section>${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
@@ -2326,7 +2366,7 @@ function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
     : "";
   const emptySetup = `<div class="quick-fill-setup"><h3>Set up your copy fields.</h3><p>Start with blank labels for contact, links, education, and availability. No personal details are prefilled.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button></div>`;
   const body = state.quickFillEdit
-    ? quickFillEditorMarkup()
+    ? quickFillEditorMarkup(popout ? "popout" : embedded ? "session" : "docked")
     : `<label class="quick-fill-search" for="quick-fill-search-${popout ? "popout" : embedded ? "session" : "docked"}">${icons.search}<input id="quick-fill-search-${popout ? "popout" : embedded ? "session" : "docked"}" type="search" value="${escapeHtml(state.quickFillQuery)}" placeholder="Search fields" aria-label="Search Quick-fill fields"></label>${guidance ? `<p class="quick-fill-guidance">${escapeHtml(guidance)}</p>` : ""}${passwordManagerLink}<div class="quick-fill-groups">${state.quickFillError ? `<div class="quick-fill-empty" role="alert">${escapeHtml(state.quickFillError)}</div>` : content || (!state.quickFillProfile ? '<p class="quick-fill-empty">Loading fields…</p>' : state.quickFillProfile.fields?.length ? '<p class="quick-fill-empty">No filled fields match this search. Use Edit to add a value.</p>' : emptySetup)}</div>`;
   return `<div class="quick-fill-header"><div><h2>Quick-fill</h2><p>${state.quickFillEdit ? `<span class="quick-fill-save-state">${escapeHtml(state.quickFillSaveState || "Changes save automatically")}</span>` : escapeHtml(status)}</p></div><button class="text-button interactive quick-fill-edit-toggle" type="button" data-quick-fill-edit>${state.quickFillEdit ? "Done" : "Edit"}</button><button class="icon-button interactive" type="button" data-quick-fill-popout aria-label="Pop out Quick-fill" ${popout ? "hidden" : ""}>${icons.external}</button><button class="icon-button interactive" type="button" data-quick-fill-close aria-label="Close Quick-fill" ${embedded ? "hidden" : ""}>${icons.close}</button></div>${body}`;
 }
@@ -2342,6 +2382,8 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
       requestAnimationFrame(() => (state.quickFillEdit ? root.querySelector("[data-profile-kind]") : root.querySelector("[data-copy-index]"))?.focus());
       return;
     }
+    const add = event.target.closest("[data-profile-add]");
+    if (add) { addProfileItem(add.dataset.profileAdd, root); return; }
     if (event.target.closest("[data-profile-export]")) { exportQuickFillProfile(); return; }
     if (event.target.closest("[data-profile-import-trigger]")) { root.querySelector("[data-profile-import]")?.click(); return; }
     if (event.target.closest("[data-quick-fill-close]")) {
@@ -2372,6 +2414,7 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
     }
   });
   root.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target.matches("[data-profile-add-input]")) { event.preventDefault(); addProfileItem(event.target.dataset.profileAddInput, root); return; }
     const row = event.target.closest("[data-copy-index]");
     if (!row) return;
     const rows = [...root.querySelectorAll("[data-copy-index]")];
@@ -2415,8 +2458,8 @@ function profileContextDocument(profile = state.quickFillProfile) {
 // one in flight, latest revision
 const profileSaves = createSaveQueue({ send: sendProfile, onConflict: reportProfileConflict });
 
-function queueProfileSave() {
-  return profileSaves.save();
+function queueProfileSave(changes = 1) {
+  return profileSaves.save(changes);
 }
 
 function cancelAutosave() {
@@ -2426,7 +2469,8 @@ function cancelAutosave() {
 
 async function sendProfile() {
   const version = state.quickFillSaveVersion;
-  const sent = { ...profileDocument(), revision: state.quickFillProfile?.revision ?? 0 };
+  const sent = { ...withOrder(profileDocument()), revision: state.quickFillProfile?.revision ?? 0 };
+  const known = new Set(["documents", "answer_templates"].flatMap((kind) => (state.quickFillSavedProfile?.[kind] || []).map((row) => `${kind}:${row.id}`)));
   setQuickFillSaveState("Saving…");
   try {
     const response = await fetch("/api/v1/profile", {
@@ -2438,9 +2482,15 @@ async function sendProfile() {
     if (response.status === 409 && body.profile) { adoptProfileConflict(body.profile); return Object.assign(new Error(body.error || "Your profile changed in another tab."), { conflict: true }); }
     if (!response.ok) throw new Error(body.error || "Quick-fill could not be saved.");
     const saved = Object.assign(body.profile, profileContextDocument());
+    const aliases = adoptIds(sent, saved, known);
+    Object.assign(state.quickFillAliases, aliases);
     state.quickFillSavedProfile = cloneJson(saved);
     if (version === state.quickFillSaveVersion) state.quickFillProfile = saved;
-    else state.quickFillProfile.revision = saved.revision;
+    else {
+      // later edits need the real ids
+      state.quickFillProfile.revision = saved.revision;
+      for (const kind of ["documents", "answer_templates"]) for (const row of state.quickFillProfile[kind] || []) if (row.id in aliases) row.id = aliases[row.id];
+    }
     state.eligibility.clear();
     if (state.selectedKey) loadEligibility(state.selectedKey);
     setQuickFillSaveState("Saved automatically");
@@ -2493,6 +2543,185 @@ async function setupBlankQuickFill() {
   showSnackbar("Blank Quick-fill fields are ready. Add only details you want to reuse.");
 }
 
+// --- profile changes ---
+// so undo reverts one action
+
+function applyProfileOp(op) {
+  const renamed = op.type === "update" && op.kind === "answer_templates" && op.patch.name !== undefined ? findProfileItem("answer_templates", op.id)?.name : undefined;
+  const result = applyOp(state.quickFillProfile, op, state.quickFillAliases);
+  // overrides are keyed by name
+  if (result.inverse && renamed !== undefined && renamed !== op.patch.name) {
+    state.quickFillProfile.answer_overrides = renameOverrides(state.quickFillProfile.answer_overrides, renamed, op.patch.name);
+    if (state.quickFillSavedContext) state.quickFillSavedContext.answer_overrides = renameOverrides(state.quickFillSavedContext.answer_overrides, renamed, op.patch.name);
+  }
+  return result;
+}
+
+// pending typing rides this save
+function saveProfileChange() {
+  const typing = state.quickFillSaveTimer ? 1 : 0;
+  state.quickFillSaveVersion += 1;
+  cancelAutosave();
+  return queueProfileSave(1 + typing);
+}
+
+function changeProfile(op, { message, undone, focus = null, flip: animate = false }) {
+  if (!state.quickFillProfile) return false;
+  const kind = op.kind || "documents";
+  const keys = opKeys(state.quickFillProfile, op);
+  const result = applyProfileOp(op);
+  if (result.noop) return false;
+  if (result.error) {
+    state.quickFillProfileError = { kind, message: result.error };
+    rerenderProfile();
+    return false;
+  }
+  state.quickFillProfileError = null;
+  rerenderProfile({ focus, animate: animate && focus?.surface });
+  offerMoveSnackbar(message, `profile-${kind}`, { message, keys, run: () => undoProfileChange(result.inverse, undone, focus?.surface) }, saveProfileChange());
+  return true;
+}
+
+function undoProfileChange(inverse, undone, surface) {
+  if (!state.quickFillProfile) return;
+  const result = applyProfileOp(inverse);
+  if (result.noop) return;
+  if (result.error) { showSnackbar(`Couldn't undo. ${result.error}`); return; }
+  state.quickFillProfileError = null;
+  const ref = inverse.type === "add" ? `${inverse.kind}:${itemId(inverse.kind, inverse.item)}` : inverse.type === "default" ? "" : `${inverse.kind}:${inverse.id}`;
+  rerenderProfile({ focus: ref && surface ? { surface, ref, role: "[data-menu-trigger]", soft: true } : null, animate: inverse.type === "move" && surface });
+  saveProfileChange().then((error) => { if (!error) showSnackbar(undone); });
+}
+
+function focusRole(element) {
+  if (element.matches("[data-drag-handle]")) return "[data-drag-handle]";
+  if (element.matches("[data-menu-trigger]")) return "[data-menu-trigger]";
+  if (element.matches("summary")) return "summary";
+  return element.dataset.profileProperty ? `[data-profile-property="${element.dataset.profileProperty}"]` : "";
+}
+
+function rerenderProfile({ focus = null, animate = null } = {}) {
+  const render = () => { renderQuickFill(); renderSessionQuickFill(); };
+  if (animate) flipKeyed(`#${animate.id} .profile-item[data-profile-ref]`, (node) => canonicalRef(node.dataset.profileRef), render);
+  else render();
+  if (focus?.surface?.isConnected) focusProfileTarget(focus.surface, focus);
+}
+
+const keptAttrs = ["data-profile-add-input", "data-profile-add", "data-profile-add-extra", "data-context-key", "data-context-property", "data-quick-fill-edit"];
+
+function keptSelector(element) {
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  const attr = keptAttrs.find((name) => element.hasAttribute(name));
+  return attr ? `[${attr}="${CSS.escape(element.getAttribute(attr))}"]` : "";
+}
+
+// keep open cards, scroll and focus
+function keepSurface(surface, render) {
+  if (!surface) { render(); return; }
+  const active = surface.contains(document.activeElement) ? document.activeElement : null;
+  const item = active?.closest(".profile-item");
+  const open = new Set([...surface.querySelectorAll(".profile-item details[open]")].map((node) => canonicalRef(node.closest(".profile-item").dataset.profileRef)));
+  const scroll = surface.querySelector(".quick-fill-editor")?.scrollTop || 0;
+  const adds = [...surface.querySelectorAll("[data-profile-add-input], [data-profile-add-extra]")].map((input) => [keptSelector(input), input.value]);
+  const was = active && (item ? { ref: item.dataset.profileRef, role: focusRole(active) } : { selector: keptSelector(active) });
+  const range = active && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+  render();
+  for (const node of surface.querySelectorAll(".profile-item[data-profile-ref]")) if (open.has(canonicalRef(node.dataset.profileRef))) node.querySelector("details")?.setAttribute("open", "");
+  for (const [selector, value] of adds) { const input = selector && surface.querySelector(selector); if (input && !input.disabled) input.value = value; }
+  const editor = surface.querySelector(".quick-fill-editor");
+  if (editor) editor.scrollTop = scroll;
+  if (!was || surface.contains(document.activeElement)) return;
+  if (was.ref) focusProfileTarget(surface, was);
+  else if (was.selector) surface.querySelector(was.selector)?.focus({ preventScroll: true });
+  if (range && document.activeElement?.setSelectionRange && document.activeElement.type !== "email" && document.activeElement.type !== "url") document.activeElement.setSelectionRange(...range);
+}
+
+function focusProfileTarget(surface, target) {
+  if (target.soft && surface.contains(document.activeElement)) return;
+  if (target.add) {
+    const add = surface.querySelector(target.button ? `[data-profile-add="${target.add}"]:not(:disabled)` : `[data-profile-add-input="${target.add}"]:not(:disabled)`) || surface.querySelector(`[data-profile-section="${target.add}"] h3`);
+    if (add && !add.matches("h3")) add.focus({ preventScroll: false });
+    else { const heading = surface.querySelector(".quick-fill-header h2"); heading?.setAttribute("tabindex", "-1"); heading?.focus(); }
+    return;
+  }
+  const wanted = canonicalRef(target.ref);
+  const item = [...surface.querySelectorAll(".profile-item[data-profile-ref]")].find((node) => canonicalRef(node.dataset.profileRef) === wanted);
+  if (!item) return;
+  if (target.open) item.querySelector("details")?.setAttribute("open", "");
+  const control = (target.role && item.querySelector(target.role)) || item.querySelector("[data-menu-trigger]");
+  if (control === document.activeElement) return;
+  control?.focus({ preventScroll: true });
+  control?.scrollIntoView({ block: "nearest" });
+}
+
+function newProfileItem(kind, text, root) {
+  const taken = (state.quickFillProfile?.[kind] || []).map((row) => itemId(kind, row));
+  if (kind === "stories") return { id: newId("story", taken), title: text, situation: "", task: "", action: "", result: "", reflection: "", competencies: [] };
+  return null;
+}
+
+function addProfileItem(kind, root) {
+  const input = root.querySelector(`[data-profile-add-input="${kind}"]`);
+  if (!input || input.disabled) return;
+  const { one } = PROFILE_KINDS[kind];
+  const text = input.value.trim();
+  const surface = root.closest("#quick-fill-sheet, #session-quick-fill") || root;
+  if (!text) {
+    state.quickFillProfileError = { kind, message: `Enter a name for the new ${one} first.` };
+    rerenderProfile({ focus: { surface, add: kind } });
+    return;
+  }
+  const item = newProfileItem(kind, text, root);
+  const noun = `${one.slice(0, 1).toUpperCase()}${one.slice(1)}`;
+  const ref = `${kind}:${itemId(kind, item)}`;
+  const value = input.value;
+  input.value = "";
+  const added = changeProfile({ type: "add", kind, item }, { message: `${noun} added.`, undone: `${noun} removed.`, focus: { surface, ref, role: profileFirstInput[kind], open: true } });
+  if (!added) { const again = surface.querySelector(`[data-profile-add-input="${kind}"]`); if (again) again.value = value; }
+}
+
+const profileFirstInput = { stories: '[data-profile-property="situation"]', answer_templates: '[data-profile-property="body"]', documents: '[data-profile-property="url"]', fields: '[data-profile-property="value"]' };
+
+function profileContext(el) {
+  const [kind, ...rest] = el.dataset.profileRef.split(":");
+  const id = rest.join(":");
+  const rows = state.quickFillProfile?.[kind];
+  const item = findProfileItem(kind, id);
+  if (!item || !rows) return null;
+  return { el, kind, id: itemId(kind, item), item, index: rows.indexOf(item), count: rows.length, name: profileNames[kind](item), surface: el.closest("#quick-fill-sheet, #session-quick-fill") };
+}
+
+// pointer drops let the spring settle
+function moveProfileItem(c, to, { role = "[data-menu-trigger]", pointer = false } = {}) {
+  const target = Math.max(0, Math.min(c.count - 1, to));
+  const focus = c.surface && !pointer ? { surface: c.surface, ref: `${c.kind}:${c.id}`, role } : null;
+  const moved = changeProfile({ type: "move", kind: c.kind, id: c.id, to: target }, { message: moveAnnouncement(target, c.count), undone: "Move undone.", focus, flip: true });
+  if (moved) announce(moveAnnouncement(target, c.count));
+  return moved;
+}
+
+function deleteProfileItem(c) {
+  const rows = state.quickFillProfile[c.kind];
+  const next = rows[c.index + 1] || rows[c.index - 1];
+  const noun = `${PROFILE_KINDS[c.kind].one.slice(0, 1).toUpperCase()}${PROFILE_KINDS[c.kind].one.slice(1)}`;
+  // carrel: next item, else add box
+  const focus = c.surface && (next ? { surface: c.surface, ref: `${c.kind}:${itemId(c.kind, next)}`, role: "[data-menu-trigger]" } : { surface: c.surface, add: c.kind });
+  changeProfile({ type: "remove", kind: c.kind, id: c.id }, { message: `${noun} deleted.`, undone: `${noun} restored.`, focus });
+}
+
+function openProfileItem(c, role) {
+  if (!c.surface) return;
+  focusProfileTarget(c.surface, { ref: `${c.kind}:${c.id}`, role, open: true });
+}
+
+function dropProfileItem({ key, to, keyboard }) {
+  const item = document.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`);
+  const c = item && profileContext(item);
+  if (!c) return null;
+  moveProfileItem(c, to.index, keyboard ? { role: "[data-drag-handle]" } : { pointer: true });
+  return c.surface?.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`) || null;
+}
+
 async function persistQuickFillContext(context, job) {
   if (!job) throw new Error("Choose a job before saving its Quick-fill details.");
   const response = await fetch("/api/v1/profile/context", {
@@ -2509,8 +2738,7 @@ async function persistQuickFillContext(context, job) {
 }
 
 function updateQuickFillProfile(control) {
-  const collection = state.quickFillProfile?.[control.dataset.profileKind];
-  const item = Array.isArray(collection) ? collection[Number(control.dataset.profileIndex)] : null;
+  const item = findProfileItem(control.dataset.profileKind, control.dataset.profileId);
   const property = control.dataset.profileProperty;
   if (!item || !property) return;
   item[property] = property === "competencies"
@@ -2604,7 +2832,7 @@ async function importQuickFillProfile(file) {
 
 function renderQuickFill() {
   if (!state.quickFillEnabled) return;
-  quickFillSheet.innerHTML = quickFillInnerMarkup();
+  keepSurface(quickFillSheet, () => { quickFillSheet.innerHTML = quickFillInnerMarkup(); });
   quickFillSheet.setAttribute("aria-hidden", state.quickFillOpen ? "false" : "true");
   quickFillTrigger.setAttribute("aria-expanded", String(state.quickFillOpen));
   quickFillTrigger.setAttribute("aria-label", `${state.quickFillOpen ? "Close" : "Open"} Quick-fill`);
@@ -2617,7 +2845,7 @@ function renderQuickFill() {
 function renderSessionQuickFill() {
   const surface = document.querySelector("#session-quick-fill");
   if (!surface || !state.quickFillEnabled || !state.quickFillProfile) return;
-  surface.innerHTML = quickFillInnerMarkup({ embedded: true });
+  keepSurface(surface, () => { surface.innerHTML = quickFillInnerMarkup({ embedded: true }); });
 }
 
 async function loadQuickFillData() {
@@ -3216,7 +3444,20 @@ function trackerContext(el, table) {
   return { el, key, job, table, column, index: column.indexOf(key) };
 }
 
+const profileMenuItems = [
+  { label: "Move up", disabled: (c) => c.index === 0, run: (c) => moveProfileItem(c, c.index - 1) },
+  { label: "Move down", disabled: (c) => c.index === c.count - 1, run: (c) => moveProfileItem(c, c.index + 1) },
+  { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => moveProfileItem(c, 0) },
+  { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => moveProfileItem(c, c.count - 1) },
+  { label: "Edit", divider: true, when: (c) => c.kind === "stories", run: (c) => openProfileItem(c, '[data-profile-property="title"]') },
+  { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
+];
+
 const objectMenus = [
+  {
+    selector: ".profile-item[data-profile-ref]", keyAttr: "data-profile-ref", fallback: ".quick-fill-header h2",
+    label: (c) => c.name, context: profileContext, items: profileMenuItems,
+  },
   {
     selector: ".job-row[data-job-key]", keyAttr: "data-job-key", fallback: "#job-list-layer .job-row[tabindex='0'], .inbox-list h1",
     label: (c) => c.bulk ? `${new Intl.NumberFormat().format(state.selectedKeys.size)} selected jobs` : `${c.job.title}, ${c.job.company}`,
@@ -3312,7 +3553,8 @@ function resolveObjectMenu(target) {
     if (!context) return null;
     const items = type.items.filter((item) => !item.when || item.when(context)).map((item) => ({
       label: typeof item.label === "function" ? item.label(context) : item.label,
-      shortcut: item.shortcut, divider: item.divider,
+      shortcut: item.shortcut, divider: item.divider, danger: item.danger,
+      hint: typeof item.hint === "function" ? item.hint(context) : item.hint,
       checked: item.checked?.(context), disabled: Boolean(item.disabled?.(context)),
       run: () => item.run(context),
     }));
@@ -3645,6 +3887,20 @@ bindDrag({
   lists: () => [...document.querySelectorAll(".queue-list")],
   key: (item) => item.dataset.queueKey,
   drop: ({ key, to }) => reorderQueue(key, to.index),
+  announce,
+  lifted: (at) => liftAnnouncement(at.index, at.count),
+  moved: (at) => moveAnnouncement(at.index, at.count),
+  dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
+  cancelled: (at) => cancelAnnouncement(at.index, at.count),
+});
+
+bindDrag({
+  handle: ".profile-drag-handle", item: ".profile-item[data-profile-ref]",
+  // only the lifted items own list
+  lists: () => { const list = document.querySelector(".profile-item.is-lifted")?.parentElement; return list ? [list] : []; },
+  key: (item) => item.dataset.profileRef,
+  find: (key) => document.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`),
+  drop: dropProfileItem,
   announce,
   lifted: (at) => liftAnnouncement(at.index, at.count),
   moved: (at) => moveAnnouncement(at.index, at.count),
