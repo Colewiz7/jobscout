@@ -2949,7 +2949,7 @@ function handleGlobalKeydown(event) {
   if (routeRoot() === "inbox" && state.loaded) {
     if (key === "/") { event.preventDefault(); document.querySelector("#job-search")?.focus(); return; }
     if (key === "j" || key === "k") { event.preventDefault(); moveSelection(key === "j" ? 1 : -1); return; }
-    if (event.key === "Enter") { event.preventDefault(); document.querySelector("#job-title")?.focus({ preventScroll: true }); return; }
+    if (event.key === "Enter" && !event.target.closest("button:not(.job-row), a, summary")) { event.preventDefault(); document.querySelector("#job-title")?.focus({ preventScroll: true }); return; }
     if (key === "f") { event.preventDefault(); state.focus = !state.focus; syncInboxUrl(); renderInbox({ focus: true }); return; }
     if (key === "s") { event.preventDefault(); performDecision("saved", "Saved"); return; }
     if (key === "x") { event.preventDefault(); performDecision("archived", "Dismissed"); return; }
