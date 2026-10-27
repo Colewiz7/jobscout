@@ -249,16 +249,20 @@ try {
   const copiedList = await cdp.evaluate(`(async () => {
     let copied = '';
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { copied = value; } } });
+    const labels = { all: 'All in view', new: 'New in view', single: 'Current job', multiple: 'Select multiple…' };
+    const item = (scope) => [...document.querySelectorAll('.action-menu [role="menuitem"]')].find((node) => node.querySelector('.menu-label').textContent === labels[scope]);
     const choose = (scope) => {
-      document.querySelector('.copy-menu summary').click();
-      document.querySelector('[data-copy-scope="' + scope + '"]').click();
+      document.querySelector('[data-copy-menu]').click();
+      item(scope).click();
     };
     choose('all');
     await new Promise((resolve) => setTimeout(resolve, 10));
     const all = { lines: copied.split('\\n').length, containsPostingUrl: copied.includes('https://') };
     choose('new');
     await new Promise((resolve) => setTimeout(resolve, 10));
-    const newCount = Number(document.querySelector('[data-copy-scope="new"] span').textContent.replace(/,/g, ''));
+    document.querySelector('[data-copy-menu]').click();
+    const newCount = Number(item('new').querySelector('.menu-hint').textContent.replace(/,/g, ''));
+    document.querySelector('[data-copy-menu]').click();
     const fresh = copied.split('\\n').length === newCount;
     choose('single');
     await new Promise((resolve) => setTimeout(resolve, 10));

@@ -1,5 +1,6 @@
 "use strict";
 
+import { toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
@@ -660,10 +661,20 @@ function bulkBarMarkup() {
   return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span><button class="text-button interactive" type="button" data-bulk-action="saved">Save</button><button class="text-button interactive" type="button" data-bulk-action="queued">Queue</button><button class="text-button interactive" type="button" data-bulk-action="archived">Dismiss</button><button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
 }
 
-function copyMenuMarkup(jobs) {
+function copyMenuMarkup() {
+  return `<button class="icon-button interactive copy-menu" type="button" data-copy-menu aria-haspopup="menu" aria-expanded="false" aria-label="Copy jobs" title="Copy jobs">${icons.copy}<span class="copy-menu-caret" aria-hidden="true">⌄</span></button>`;
+}
+
+function copyMenuItems() {
+  const jobs = filteredJobs();
+  const format = (value) => new Intl.NumberFormat().format(value);
   const newCount = jobs.filter((job) => job.status === "new").length;
-  const single = jobs.some((job) => job.dedupe_key === state.selectedKey);
-  return `<details class="copy-menu"><summary class="icon-button interactive" aria-label="Copy jobs" title="Copy jobs">${icons.copy}<span class="copy-menu-caret" aria-hidden="true">⌄</span></summary><div class="copy-menu-panel" aria-label="Copy options"><button type="button" data-copy-scope="all">All in view <span>${new Intl.NumberFormat().format(jobs.length)}</span></button><button type="button" data-copy-scope="new" ${newCount ? "" : "disabled"}>New in view <span>${new Intl.NumberFormat().format(newCount)}</span></button><button type="button" data-copy-scope="single" ${single ? "" : "disabled"}>Current job</button><button type="button" data-copy-scope="multiple">Select multiple…</button></div></details>`;
+  return [
+    { label: "All in view", hint: format(jobs.length), disabled: !jobs.length, run: () => copyInboxScope("all") },
+    { label: "New in view", hint: format(newCount), disabled: !newCount, run: () => copyInboxScope("new") },
+    { label: "Current job", disabled: !jobs.some((job) => job.dedupe_key === state.selectedKey), run: () => copyInboxScope("single") },
+    { label: "Select multiple…", run: () => copyInboxScope("multiple") },
+  ];
 }
 
 function inboxMarkup() {
@@ -674,7 +685,7 @@ function inboxMarkup() {
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();
   return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}" aria-label="Inbox">
-    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup(jobs)}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
+    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup()}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
       <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true" ${state.copySelectionMode ? 'tabindex="-1"' : ""}>${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
     <main class="reading-pane" id="inbox-reading-pane">${detailMarkup(selectedJob)}</main>
   </section>`;
@@ -2917,15 +2928,6 @@ function shortcutScopeAllows(event) {
 }
 
 function handleGlobalKeydown(event) {
-  if (event.target instanceof Element && event.target.closest(".copy-menu")) {
-    if (event.key === "Escape") {
-      const menu = event.target.closest(".copy-menu");
-      menu.open = false;
-      menu.querySelector("summary")?.focus();
-      event.preventDefault();
-    }
-    return;
-  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && routeRoot() === "inbox" && shortcutScopeAllows(event)) { event.preventDefault(); undoLastDecision(); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -2974,13 +2976,12 @@ function handleGlobalKeydown(event) {
 }
 
 document.addEventListener("click", (event) => {
-  if (!event.target.closest(".copy-menu")) document.querySelector(".copy-menu[open]")?.removeAttribute("open");
   if (event.target.closest("[data-refresh-quick-fill-access]")) {
     loadInbox().then(() => showSnackbar(state.quickFillEnabled ? "Quick-fill is ready." : state.error || "Quick-fill is not enabled for this session."));
     return;
   }
-  const copyScope = event.target.closest("[data-copy-scope]");
-  if (copyScope) { copyInboxScope(copyScope.dataset.copyScope); return; }
+  const copyMenu = event.target.closest("[data-copy-menu]");
+  if (copyMenu) { toggleMenu(copyMenu, copyMenuItems(), { label: "Copy jobs" }); return; }
   if (event.target.closest("[data-copy-selected]")) {
     copyInboxJobs(filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)), { finishSelection: true }); return;
   }
