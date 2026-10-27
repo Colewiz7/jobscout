@@ -3198,6 +3198,29 @@ dialog[open]::backdrop {
   font-size: 13px;
 }
 
+.interview-list article.is-cancelled time,
+.interview-list article.is-cancelled strong {
+  color: var(--on-surface-variant);
+  text-decoration: line-through;
+}
+
+.interview-list .interview-status {
+  margin-top: var(--s-1);
+  color: var(--on-surface);
+  font-weight: 500;
+}
+
+.interview-past {
+  margin-top: var(--s-4);
+}
+
+.interview-past summary {
+  width: max-content;
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 500;
+}
+
 .interview-add,
 .contact-add {
   margin-top: var(--s-4);

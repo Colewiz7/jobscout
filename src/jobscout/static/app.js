@@ -115,7 +115,7 @@ const state = {
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
-  companyLogos: {}, companyIconKeys: new Set(),
+  companyLogos: {}, companyIconKeys: new Set(), pastInterviewsOpen: false,
 };
 
 let commandSelection = 0;
@@ -650,7 +650,7 @@ function detailMarkup(job) {
   const history = (state.trackerData?.history || []).filter((item) => item.dedupe_key === job.dedupe_key).slice(-6).reverse();
   const interviews = (state.trackerData?.interviews || []).filter((item) => item.dedupe_key === job.dedupe_key);
   const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div>${statusMarkup(item.to_status)}<time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time></div>`).join("")}</div>` : "";
-  const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>Interview</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
+  const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>${item.cancelled_at ? "Cancelled interview" : "Interview"}</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>This link came from a non-public Workday site. ${job.public_apply_url ? "Apply opens the verified public RTX posting." : "No exact public posting was verified. Find it on the employer’s public careers site before applying."}</p>` : "";
@@ -1170,10 +1170,16 @@ function reminderMarkup() {
   return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title">Follow-ups due</h2><p>${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.</p></div></div><div class="reminder-list">${due.map((reminder) => `<article class="reminder-row" data-reminder-id="${reminder.id}"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span></div><time datetime="${escapeHtml(reminder.snoozed_until || reminder.due_at)}">${escapeHtml(formatDate(reminder.snoozed_until || reminder.due_at))}</time><div><button class="text-button interactive" type="button" data-reminder-action="snooze" data-reminder-id="${reminder.id}">Snooze 3d</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button>${moreButtonMarkup(`${reminder.company} follow-up`)}</div></article>`).join("")}</div></section>`;
 }
 
+function interviewMarkup(item) {
+  const cancelled = Boolean(item.cancelled_at);
+  return `<article class="${cancelled ? "is-cancelled" : ""}" data-interview-id="${item.id}"><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time><div><strong>${escapeHtml(item.company)}</strong><span>${escapeHtml(item.title)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</span>${cancelled ? '<span class="interview-status">Cancelled</span>' : ""}</div><div class="row-actions">${cancelled ? "" : `<a class="text-button interactive" href="/api/v1/interviews.ics?id=${item.id}">.ics</a>`}${moreButtonMarkup(`${item.company} interview`)}</div></article>`;
+}
+
 function interviewsMarkup(applications) {
-  const upcoming = (state.trackerData?.interviews || []).filter((item) => new Date(item.starts_at) >= new Date());
+  const { upcoming, past, scheduled } = splitInterviews(state.trackerData?.interviews || []);
   const options = applications.map((job) => `<option value="${escapeHtml(job.dedupe_key)}">${escapeHtml(job.company)} — ${escapeHtml(job.title)}</option>`).join("");
-  return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title">Interviews</h2><p>${upcoming.length ? `${upcoming.length} upcoming.` : "Keep interview details with the application."}</p></div>${upcoming.length ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map((item) => `<article data-interview-id="${item.id}"><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time><div><strong>${escapeHtml(item.company)}</strong><span>${escapeHtml(item.title)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</span></div><div class="row-actions"><a class="text-button interactive" href="/api/v1/interviews.ics?id=${item.id}">.ics</a>${moreButtonMarkup(`${item.company} interview`)}</div></article>`).join("")}</div>` : ""}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
+  const pastMarkup = past.length ? `<details class="interview-past" ${state.pastInterviewsOpen ? "open" : ""}><summary>Past interviews (${new Intl.NumberFormat().format(past.length)})</summary><div class="interview-list">${past.map(interviewMarkup).join("")}</div></details>` : "";
+  return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title" tabindex="-1">Interviews</h2><p>${scheduled ? `${scheduled} upcoming.` : "Keep interview details with the application."}</p></div>${scheduled ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map(interviewMarkup).join("")}</div>` : ""}${pastMarkup}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
 }
 
 function trackerTableMarkup(applications) {
@@ -1279,7 +1285,7 @@ function updateTodayStrip() {
   }).length;
   const followups = (state.trackerData?.reminders || []).filter((item) => new Date(item.snoozed_until || item.due_at) <= now).length;
   const interviews = (state.trackerData?.interviews || []).filter((item) => {
-    const date = new Date(item.starts_at); return date >= now && date <= week;
+    const date = new Date(item.starts_at); return !item.cancelled_at && date >= now && date <= week;
   }).length;
   const items = [
     deadlines ? `${deadlines} ${deadlines === 1 ? "deadline" : "deadlines"} this week` : "",
@@ -3138,6 +3144,135 @@ async function undoPostingEdit(id, key) {
   showSnackbar("Posting edit undone.");
 }
 
+const jsonHeaders = { "Content-Type": "application/json", Accept: "application/json" };
+const revisionAliases = new Map();
+
+// our own undo isnt a conflict
+function currentRevision(scope, revision) {
+  let known = revision;
+  while (revisionAliases.has(`${scope}@${known}`)) known = revisionAliases.get(`${scope}@${known}`);
+  return known;
+}
+
+// keeps focus through a rerender
+function rerenderRecords(focusBack) {
+  if (routeRoot() === "tracker") renderTracker();
+  else if (routeRoot() === "companies") renderCompanies();
+  else if (routeRoot() === "inbox" && state.loaded) renderSelectedJob();
+  if (focusBack && (!document.activeElement || document.activeElement === document.body)) focusBack();
+}
+
+function interviewFocus(id) {
+  return recordFocus(`.interview-list article[data-interview-id="${id}"]`, "#interviews-title");
+}
+
+function editInterview(interview) {
+  openEditor({
+    title: `Edit ${interview.company} interview`,
+    focusBack: interviewFocus(interview.id),
+    fields: [
+      { name: "starts_at", label: "Starts", type: "datetime-local", value: toLocalInput(interview.starts_at), required: true },
+      { name: "ends_at", label: "Ends", type: "datetime-local", value: toLocalInput(interview.ends_at), optional: true },
+      { name: "location", label: "Location", value: interview.location, optional: true, maxlength: 500 },
+      { name: "notes", label: "Notes", value: interview.notes, optional: true, rows: 4, maxlength: 20000 },
+    ],
+    save(changes) {
+      const payload = { ...changes };
+      for (const name of ["starts_at", "ends_at"]) {
+        if (!(name in payload)) continue;
+        payload[name] = fromLocalInput(payload[name]);
+        if (payload[name] === undefined) return Promise.resolve("Enter a valid interview date and time.");
+      }
+      return saveInterview(interview.id, payload, { message: "Interview updated.", undone: "Interview edit undone." });
+    },
+  });
+}
+
+async function setInterviewCancelled(interview, cancelled) {
+  const error = await saveInterview(interview.id, { cancelled }, cancelled
+    ? { message: "Interview cancelled.", undone: "Interview is scheduled again." }
+    : { message: "Interview is scheduled again.", undone: "Interview cancelled again." });
+  if (error) { assertiveRegion.textContent = error; showSnackbar(error); }
+}
+
+// undo sends the old values back
+async function saveInterview(id, payload, { message = "", undone = "", offer = true, aliasFrom = null } = {}) {
+  let body;
+  const list = state.trackerData?.interviews;
+  const place = (interview) => {
+    const index = list ? list.findIndex((item) => item.id === id) : -1;
+    if (index >= 0) list[index] = interview;
+    rerenderRecords(interviewFocus(id));
+  };
+  try {
+    const response = await secureWrite(`/api/v1/interviews/${id}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify(payload) });
+    body = await response.json().catch(() => ({}));
+    if (response.status === 404) throw new Error("This interview was deleted in another tab.");
+    // show what the other tab saved
+    if (response.status === 409 && body.interview) { place(body.interview); throw new Error("It changed in another tab, so it now shows that version."); }
+    if (!response.ok) throw new Error(body.error || "Couldn't save the interview. Retry shortly.");
+  } catch (error) {
+    return error instanceof Error ? error.message : "Couldn't save the interview. Retry shortly.";
+  }
+  place(body.interview);
+  if (aliasFrom !== null) revisionAliases.set(`interview:${id}@${aliasFrom}`, body.interview.revision);
+  if (offer) {
+    const restore = Object.fromEntries(Object.keys(payload).map((name) => [name, name === "cancelled" ? Boolean(body.previous.cancelled_at) : body.previous[name]]));
+    const after = body.interview.revision;
+    offerUndoSnackbar(message, [`interview:${id}`], async () => {
+      restore.expected_revision = currentRevision(`interview:${id}`, after);
+      const error = await saveInterview(id, restore, { offer: false, aliasFrom: body.previous.revision });
+      showSnackbar(error ? `Couldn't undo. ${error}` : undone);
+    }, { latest: `interview:${id}` });
+  }
+  return "";
+}
+
+async function deleteInterview(interview) {
+  const when = formatAbsolute(interview.starts_at);
+  if (!await confirmDelete({
+    title: `Delete the ${interview.company} interview on ${when}?`,
+    body: "It leaves the tracker and the calendar export. You can undo only right after. To keep a record of it, cancel it instead.",
+    trigger: document.activeElement,
+  })) return;
+  const list = state.trackerData?.interviews || [];
+  const index = list.findIndex((item) => item.id === interview.id);
+  if (index < 0) return;
+  const { upcoming, past } = splitInterviews(list);
+  const focus = focusAfterRemoval([...upcoming, ...past].map((item) => String(item.id)), [String(interview.id)], ".interview-list article", "data-interview-id", "#interviews-title");
+  const [removed] = list.splice(index, 1);
+  rerenderRecords();
+  focus();
+  try {
+    const response = await secureWrite(`/api/v1/interviews/${interview.id}`, { method: "DELETE", headers: { Accept: "application/json" } });
+    // another tab got there first
+    if (response.status === 404) { showSnackbar("Already deleted in another tab."); return; }
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't delete the interview.");
+  } catch (error) {
+    list.splice(index, 0, removed);
+    rerenderRecords(interviewFocus(interview.id));
+    assertiveRegion.textContent = `${error.message} Change undone.`;
+    showSnackbar(`${error.message} Change undone.`);
+    return;
+  }
+  offerUndoSnackbar("Interview deleted.", [`interview:${interview.id}`], () => restoreInterview(interview.id, index));
+}
+
+async function restoreInterview(id, index) {
+  try {
+    const response = await secureWrite(`/api/v1/interviews/${id}/restore`, { method: "POST", headers: { Accept: "application/json" } });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "Couldn't restore the interview.");
+    const list = state.trackerData?.interviews;
+    if (list && !list.some((item) => item.id === id)) list.splice(Math.min(index, list.length), 0, body.interview);
+  } catch (error) {
+    showSnackbar(`Couldn't undo. ${error instanceof Error ? error.message : ""}`.trim());
+    return;
+  }
+  rerenderRecords(interviewFocus(id));
+  showSnackbar("Interview restored.");
+}
+
 function openProfileItem(c, role) {
   if (!c.surface) return;
   focusProfileTarget(c.surface, { ref: `${c.kind}:${c.id}`, role, open: true });
@@ -3978,8 +4113,11 @@ const objectMenus = [
       return interview && { interview };
     },
     items: [
-      { label: "Export .ics", run: (c) => { window.location.href = `/api/v1/interviews.ics?id=${c.interview.id}`; } },
-      { label: "Open company", run: (c) => navigate(`/companies/${encodeURIComponent(c.interview.company)}`) },
+      { label: "Edit…", run: (c) => editInterview(c.interview) },
+      { label: (c) => c.interview.cancelled_at ? "Mark as scheduled" : "Cancel interview", run: (c) => setInterviewCancelled(c.interview, !c.interview.cancelled_at) },
+      { label: "Export .ics", divider: true, when: (c) => !c.interview.cancelled_at, run: (c) => { window.location.href = `/api/v1/interviews.ics?id=${c.interview.id}`; } },
+      { label: "Open company", divider: (c) => Boolean(c.interview.cancelled_at), run: (c) => navigate(`/companies/${encodeURIComponent(c.interview.company)}`) },
+      { label: "Delete…", danger: true, divider: true, run: (c) => deleteInterview(c.interview) },
     ],
   },
   {
@@ -4005,7 +4143,7 @@ function resolveObjectMenu(target) {
     if (!context) return null;
     const items = type.items.filter((item) => !item.when || item.when(context)).map((item) => ({
       label: typeof item.label === "function" ? item.label(context) : item.label,
-      shortcut: item.shortcut, divider: item.divider, danger: item.danger,
+      shortcut: item.shortcut, divider: typeof item.divider === "function" ? item.divider(context) : item.divider, danger: item.danger,
       hint: typeof item.hint === "function" ? item.hint(context) : item.hint,
       checked: item.checked?.(context), disabled: Boolean(item.disabled?.(context)),
       run: () => item.run(context),
@@ -4493,6 +4631,9 @@ for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
 }
+
+// toggle doesnt bubble
+routeView.addEventListener("toggle", (event) => { if (event.target.matches?.(".interview-past")) state.pastInterviewsOpen = event.target.open; }, true);
 
 bindQuickFillSurface(quickFillSheet);
 bindObjectMenus(resolveObjectMenu);
