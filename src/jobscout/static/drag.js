@@ -59,11 +59,33 @@ export function flip(nodes, change) {
     if (!onScreen(before) && !onScreen(after)) continue; // content-visibility skips these
     moves.push([node, dx, dy]);
   }
+  play(moves);
+}
+
+function play(moves) {
   if (moves.length > FLIP_CAP) return;
   for (const [node, dx, dy] of moves) {
     const animation = node.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], { duration: SHIFT, easing: SPATIAL_DEFAULT });
     animation.id = "flip";
   }
+}
+
+// for lists that rerender their nodes
+export function flipKeyed(selector, keyOf, change) {
+  if (reducedMotion()) { change(); return; }
+  const first = new Map([...document.querySelectorAll(selector)].map((node) => [keyOf(node), node.getBoundingClientRect()]));
+  change();
+  const moves = [];
+  for (const node of document.querySelectorAll(selector)) {
+    const before = first.get(keyOf(node));
+    if (!before) continue;
+    const after = node.getBoundingClientRect();
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    if ((Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) || (!onScreen(before) && !onScreen(after))) continue;
+    moves.push([node, dx, dy]);
+  }
+  play(moves);
 }
 
 // flip offsets would skew the midpoints
@@ -432,7 +454,7 @@ export function bindDrag(config) {
       const lists = config.lists();
       const next = lists[lists.indexOf(at.list) + (event.key === "ArrowLeft" ? -1 : 1)];
       if (!next) return;
-      const slot = config.keyboardSlot ? config.keyboardSlot({ list: next, item: held.item }) : Math.min(at.index, itemsOf(next, held.item).length);
+      const slot = config.keyboardSlot ? config.keyboardSlot({ list: next, item: held.item, origin: held.origin }) : Math.min(at.index, itemsOf(next, held.item).length);
       shift(next, slot);
       config.announce(config.moved(spotOf(held.item), held.item));
     }

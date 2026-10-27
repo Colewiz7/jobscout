@@ -5,8 +5,8 @@ import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
-import { bindDrag, flip, placeNodes } from "./drag.js";
-import { cancelAnnouncement, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
+import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
+import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -1082,7 +1082,7 @@ function parseTrackerUrl() {
   const params = new URLSearchParams(window.location.search);
   state.trackerView = params.get("view") === "board" ? "board" : params.get("view") === "calibration" ? "calibration" : "table";
   state.trackerStatus = allowedStatuses.has(params.get("status")) ? params.get("status") : "all";
-  state.trackerSort = ["company", "status", "applied", "last_activity"].includes(params.get("sort")) ? params.get("sort") : "last_activity";
+  state.trackerSort = ["company", "status", "applied", "last_activity", "manual"].includes(params.get("sort")) ? params.get("sort") : "last_activity";
   state.trackerQuery = params.get("q") || "";
 }
 
@@ -1173,11 +1173,13 @@ function calibrationMarkup(applications) {
   }).join("")}</div><div class="calibration-table"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Outcome</th></tr></thead><tbody>${applications.filter((job) => job.score != null).sort((a, b) => b.score - a.score).map((job) => `<tr><td>${new Intl.NumberFormat().format(job.score)}</td><td>${escapeHtml(job.company)}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td></tr>`).join("")}</tbody></table></div></section>`;
 }
 
+const trackerSorts = [["last_activity", "Last activity"], ["applied", "Date applied"], ["company", "Company"], ["status", "Status"], ["manual", "Manual"]];
+
 function trackerMarkup() {
   const all = state.trackerData?.applications || [];
   const applications = trackerApplications();
   const statuses = ["all", "applying", "applied", "interviewing", "offer", "rejected"];
-  return `<section class="tracker-page" aria-labelledby="tracker-title"><header class="tracker-heading"><div><h1 id="tracker-title" tabindex="-1">Application tracker</h1><p>Keep the next action visible, then learn from the outcome.</p></div><div class="view-switch" aria-label="Tracker view">${[["table", "Table"], ["board", "Board"], ["calibration", "Calibration"]].map(([value, label]) => `<button class="interactive" type="button" data-tracker-view="${value}" aria-pressed="${state.trackerView === value}">${label}</button>`).join("")}</div></header>${trackerInsights(all)}${reminderMarkup()}${interviewsMarkup(all)}<section class="tracker-section applications-section" aria-labelledby="applications-title"><div class="section-heading"><div><h2 id="applications-title">Applications</h2><p>${applications.length} ${applications.length === 1 ? "application" : "applications"} in this view.</p></div><button class="outlined-button interactive" type="button" data-export-tracker>Export CSV</button></div><div class="tracker-tools"><label>${icons.search}<input id="tracker-search" type="search" placeholder="Search applications" value="${escapeHtml(state.trackerQuery)}" aria-label="Search applications"></label><label><span class="visually-hidden">Filter by status</span><select id="tracker-status">${statuses.map((status) => `<option value="${status}" ${state.trackerStatus === status ? "selected" : ""}>${status === "all" ? "All statuses" : statusLabel(status)}</option>`).join("")}</select></label></div>${state.trackerView === "board" ? trackerBoardMarkup(applications) : state.trackerView === "calibration" ? calibrationMarkup(applications) : trackerTableMarkup(applications)}</section></section>`;
+  return `<section class="tracker-page" aria-labelledby="tracker-title"><header class="tracker-heading"><div><h1 id="tracker-title" tabindex="-1">Application tracker</h1><p>Keep the next action visible, then learn from the outcome.</p></div><div class="view-switch" aria-label="Tracker view">${[["table", "Table"], ["board", "Board"], ["calibration", "Calibration"]].map(([value, label]) => `<button class="interactive" type="button" data-tracker-view="${value}" aria-pressed="${state.trackerView === value}">${label}</button>`).join("")}</div></header>${trackerInsights(all)}${reminderMarkup()}${interviewsMarkup(all)}<section class="tracker-section applications-section" aria-labelledby="applications-title"><div class="section-heading"><div><h2 id="applications-title">Applications</h2><p>${applications.length} ${applications.length === 1 ? "application" : "applications"} in this view.</p></div><button class="outlined-button interactive" type="button" data-export-tracker>Export CSV</button></div><div class="tracker-tools"><label>${icons.search}<input id="tracker-search" type="search" placeholder="Search applications" value="${escapeHtml(state.trackerQuery)}" aria-label="Search applications"></label><label><span class="visually-hidden">Filter by status</span><select id="tracker-status">${statuses.map((status) => `<option value="${status}" ${state.trackerStatus === status ? "selected" : ""}>${status === "all" ? "All statuses" : statusLabel(status)}</option>`).join("")}</select></label><label><span class="visually-hidden">Sort applications</span><select id="tracker-sort">${trackerSorts.map(([value, label]) => `<option value="${value}" ${state.trackerSort === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>${state.trackerView === "board" ? trackerBoardMarkup(applications) : state.trackerView === "calibration" ? calibrationMarkup(applications) : trackerTableMarkup(applications)}</section></section>`;
 }
 
 function renderTracker({ focus = false } = {}) {
@@ -1194,8 +1196,16 @@ function renderTracker({ focus = false } = {}) {
   if (focus) document.querySelector("#tracker-title, .error-state h1")?.focus({ preventScroll: true });
 }
 
+const trackerLoads = createLoadGate();
+
+// older reads miss this write
+function trackerWriteLanded() {
+  if (trackerLoads.invalidate()) loadTrackerData({ background: true });
+}
+
+// newest fetch wins, polls never skip
 async function loadTrackerData({ background = false } = {}) {
-  if (state.trackerLoading) return;
+  const generation = trackerLoads.start();
   state.trackerLoading = true; state.trackerError = "";
   let timer;
   if (!background) timer = setTimeout(() => { state.trackerShowLoader = true; if (routeRoot() === "tracker") renderTracker(); }, 300);
@@ -1206,8 +1216,12 @@ async function loadTrackerData({ background = false } = {}) {
       throw new Error("Session expired. Reconnecting through Authentik…");
     }
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The tracker did not respond.");
-    state.trackerData = await response.json();
+    const data = await response.json();
+    if (!trackerLoads.current(generation)) return;
+    state.trackerData = data;
+    overlayUnsavedOrders();
   } catch (error) {
+    if (!trackerLoads.current(generation)) return;
     const message = error instanceof Error ? error.message : "The tracker did not respond.";
     if (!state.trackerData) state.trackerError = message;
     else if (Date.now() - lastNetworkNoticeAt > 60000) {
@@ -1215,7 +1229,11 @@ async function loadTrackerData({ background = false } = {}) {
       lastNetworkNoticeAt = Date.now();
     }
   } finally {
-    clearTimeout(timer); state.trackerLoading = false; state.trackerShowLoader = false;
+    clearTimeout(timer);
+    trackerLoads.finish(generation);
+  }
+  if (trackerLoads.current(generation)) {
+    state.trackerLoading = false; state.trackerShowLoader = false;
     updateTodayStrip();
     if (routeRoot() === "tracker") renderTracker();
     else if (routeRoot() === "inbox" && state.loaded) renderInbox();
@@ -1488,7 +1506,26 @@ async function saveTrackerNextStep(key, value, input) {
   } finally { input?.removeAttribute("aria-busy"); }
 }
 
-async function setTrackerStatus(key, status, { offerUndo = true, fallback = null } = {}) {
+async function writeTrackerStatus(key, job, tracked, status) {
+  if (status === "applied") {
+    const response = await secureWrite(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ document_id: null }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The status could not be saved.");
+    jobsWriteLanded();
+    const snapshot = (await response.json()).snapshot;
+    Object.assign(job, { applied_at: snapshot.captured_at, resume_document_id: snapshot.resume_document_id, resume_name: snapshot.resume_name, queue_position: null });
+  } else {
+    const result = await patchJob(job, status);
+    job.status = result.status;
+    if (tracked) tracked.status = result.status;
+    if (result.liveness) Object.assign(job, { liveness_status: result.liveness.status, liveness_evidence: result.liveness.evidence });
+  }
+}
+
+async function setTrackerStatus(key, status, { offerUndo = true, fallback = null, afterSave = null, onFail = null, undo = null, undoKeys = null } = {}) {
   const tracked = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
   const job = state.jobs.find((item) => item.dedupe_key === key) || tracked || fallback;
   if (!job || job.status === status || state.statusSaving.has(key)) return;
@@ -1498,39 +1535,32 @@ async function setTrackerStatus(key, status, { offerUndo = true, fallback = null
   if (tracked) tracked.status = status;
   if (routeRoot() === "tracker") renderTracker();
   if (routeRoot() === "inbox") renderSelectedJob();
-  try {
-    if (status === "applied") {
-      const response = await secureWrite(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ document_id: null }),
-      });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The status could not be saved.");
-      const snapshot = (await response.json()).snapshot;
-      Object.assign(job, { applied_at: snapshot.captured_at, resume_document_id: snapshot.resume_document_id, resume_name: snapshot.resume_name, queue_position: null });
-    } else {
-      const result = await patchJob(job, status);
-      job.status = result.status;
-      if (tracked) tracked.status = result.status;
-      if (result.liveness) Object.assign(job, { liveness_status: result.liveness.status, liveness_evidence: result.liveness.evidence });
-    }
-    await loadTrackerData({ background: true });
-    if (routeRoot() === "inbox") renderSelectedJob();
-    const offBoard = routeRoot() === "tracker" && state.trackerView === "board" && !boardStatuses.includes(job.status);
-    const message = job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}${offBoard ? ", off the board" : ""}.`;
-    // closed postings leave both lists
-    if (offerUndo) offerUndoSnackbar(message, [key], () => setTrackerStatus(key, previous, { offerUndo: false, fallback: job }));
-    else showSnackbar(message);
-  } catch (error) {
-    job.status = previous; if (tracked) tracked.status = previous;
-    if (routeRoot() === "tracker") renderTracker();
-    if (routeRoot() === "inbox") renderSelectedJob();
-    showSnackbar(`${error.message} Status restored.`);
-  } finally {
+  const settle = () => {
     state.statusSaving.delete(key);
     if (routeRoot() === "tracker") renderTracker();
     if (routeRoot() === "inbox") renderSelectedJob();
+  };
+  try {
+    await writeTrackerStatus(key, job, tracked, status);
+    trackerWriteLanded();
+  } catch (error) {
+    job.status = previous; if (tracked) tracked.status = previous;
+    onFail?.();
+    settle();
+    showSnackbar(`${error.message} Status restored.`);
+    return;
   }
+  // the server keeps the new status
+  const placed = afterSave ? await afterSave().then(() => true, () => false) : true;
+  await loadTrackerData({ background: true });
+  settle();
+  const offBoard = routeRoot() === "tracker" && state.trackerView === "board" && !boardStatuses.includes(job.status);
+  const moved = `Moved to ${statusLabel(job.status)}${offBoard ? ", off the board" : ""}`;
+  const message = job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : placed ? `${moved}.` : `${moved}, but couldn't save its position.`;
+  const plainUndo = () => setTrackerStatus(key, previous, { offerUndo: false, fallback: job });
+  // closed postings leave both lists
+  if (offerUndo) offerUndoSnackbar(message, placed ? undoKeys || [key] : [key], placed && undo ? undo : plainUndo);
+  else showSnackbar(message);
 }
 
 async function submitInterview(form) {
@@ -3146,7 +3176,11 @@ function runUndo(taken) {
 // keeps later actions out of handlers
 
 const trackerItems = [
-  { label: "Open company", run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
+  { label: "Move up", when: (c) => !c.table, disabled: (c) => c.index === 0, run: (c) => moveOnBoard(c, c.index - 1) },
+  { label: "Move down", when: (c) => !c.table, disabled: (c) => c.index === c.column.length - 1, run: (c) => moveOnBoard(c, c.index + 1) },
+  { label: "Move to top", when: (c) => !c.table, disabled: (c) => c.index === 0, run: (c) => moveOnBoard(c, 0) },
+  { label: "Move to bottom", when: (c) => !c.table, disabled: (c) => c.index === c.column.length - 1, run: (c) => moveOnBoard(c, c.column.length - 1) },
+  { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
 ];
@@ -3154,7 +3188,9 @@ const trackerItems = [
 function trackerContext(el, table) {
   const key = el.dataset.trackerKey;
   const job = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
-  return job && { el, key, job, table };
+  if (!job) return null;
+  const column = table ? [] : trackerApplications().filter((item) => item.status === job.status).map((item) => item.dedupe_key);
+  return { el, key, job, table, column, index: column.indexOf(key) };
 }
 
 const objectMenus = [
@@ -3462,9 +3498,123 @@ function boardSlot({ list, item, origin }) {
   return sortedInsertIndex(trackerApplications().filter((app) => app.status === status), job, status, state.trackerSort);
 }
 
-function dropOnBoard({ key, to }) {
-  setTrackerStatus(key, boardStatusOf(to.list));
+async function putBoardOrder(status, keys) {
+  const response = await secureWrite("/api/v1/tracker/board-order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ status, dedupe_keys: keys }),
+  });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The board order could not be saved.");
+}
+
+// card status may still be old
+function applyBoardOrder(status, keys) {
+  const positions = new Map(keys.map((key, index) => [key, index]));
+  for (const app of state.trackerData?.applications || []) {
+    if (positions.has(app.dedupe_key)) app.board_position = positions.get(app.dedupe_key);
+    else if (app.status === status) app.board_position = null;
+  }
+}
+
+const boardSavers = new Map();
+
+function boardSaver(status) {
+  if (!boardSavers.has(status)) boardSavers.set(status, createOrderSaver({
+    send: (keys) => putBoardOrder(status, keys),
+    onLanded: trackerWriteLanded,
+    // other clients may have moved cards
+    onRevert: () => loadTrackerData({ background: true }),
+  }));
+  return boardSavers.get(status);
+}
+
+const boardOrderError = (error) => `${error.message.replace(/\.?$/, ".")} Reloading the board.`; // server errors lack a stop
+
+// a reload mustnt drop unsaved moves
+function overlayUnsavedOrders() {
+  const apps = state.trackerData?.applications || [];
+  for (const [status, saver] of boardSavers) {
+    if (!saver.unsaved) continue;
+    const here = new Set(apps.filter((app) => app.status === status).map((app) => app.dedupe_key));
+    saver.prune((key) => here.has(key));
+    applyBoardOrder(status, saver.unsaved);
+  }
+}
+
+// every write queues behind its column
+function saveBoardOrder(status, keys, confirmed) {
+  const saver = boardSaver(status);
+  if (!saver.busy) saver.reset(confirmed);
+  return saver.save(keys);
+}
+
+async function saveBoardOrders(writes, confirmed) {
+  const errors = (await Promise.all(writes.map(({ status, keys }) => saveBoardOrder(status, keys, confirmed.get(status) || [])))).filter(Boolean);
+  if (errors.length) throw errors[0];
+}
+
+function renderBoardMove(animate) {
+  if (routeRoot() !== "tracker") return;
+  if (animate) flipKeyed(".board-card[data-tracker-key]", (card) => card.dataset.trackerKey, () => renderTracker());
+  else renderTracker();
+}
+
+// dont switch sorts needlessly
+function placeOnBoard(key, status, visible, index, { animate = true } = {}) {
+  const apps = state.trackerData?.applications || [];
+  const job = apps.find((app) => app.dedupe_key === key);
+  if (!job || state.statusSaving.has(key)) return;
+  const from = job.status;
+  const previousSort = state.trackerSort;
+  const base = columnKeys(apps, status, previousSort);
+  const order = placeKey(base, visible, key, index);
+  if (from === status && order.every((item, at) => item === base[at])) return;
+  const columns = [...new Set([from, status])].filter((column) => boardStatuses.includes(column));
+  const before = new Map(columns.map((column) => [column, positionedKeys(apps, column)]));
+  const undoOrders = boardUndoOrders(apps, key, from, status, previousSort);
+  const restore = (writes) => {
+    if (state.trackerSort !== previousSort) { state.trackerSort = previousSort; syncTrackerUrl(); }
+    [...writes].reverse().forEach(({ status: column, keys }) => applyBoardOrder(column, keys)); // null the card before placing it
+  };
+  const exactly = [...before].map(([column, keys]) => ({ status: column, keys }));
+  const undo = () => {
+    const current = new Map(columns.map((column) => [column, positionedKeys(apps, column)]));
+    restore(undoOrders);
+    return setTrackerStatus(key, from, { offerUndo: false, fallback: job, afterSave: () => saveBoardOrders(undoOrders, current) });
+  };
+  if (from !== status) {
+    const natural = base.toSpliced(sortedInsertIndex(apps.filter((app) => app.status === status), job, status, previousSort), 0, key);
+    if (order.every((item, at) => item === natural[at])) { setTrackerStatus(key, status, { undo, undoKeys: [key] }); return; }
+  }
+  // the origin would reshuffle under manual
+  const fromOrder = from !== status && boardStatuses.includes(from) ? columnKeys(apps, from, previousSort).filter((item) => item !== key) : null;
+  const writes = [{ status, keys: order }, ...(fromOrder ? [{ status: from, keys: fromOrder }] : [])];
+  const touched = [...new Set([...order, ...(fromOrder || [])])];
+  writes.forEach(({ status: column, keys }) => applyBoardOrder(column, keys));
+  if (previousSort !== "manual") { state.trackerSort = "manual"; syncTrackerUrl(); }
+  if (from === status) {
+    const saved = saveBoardOrder(status, order, before.get(status));
+    renderBoardMove(animate);
+    const shown = trackerApplications().filter((app) => app.status === status).map((app) => app.dedupe_key);
+    offerMoveSnackbar(moveAnnouncement(shown.indexOf(key), shown.length), "board-move", { message: "Board move", keys: touched, run: () => {
+      restore(exactly);
+      saveBoardOrder(status, before.get(status), order).then((error) => showSnackbar(error ? boardOrderError(error) : "Board move undone."));
+      renderBoardMove(true);
+    } }, saved);
+    saved.then((error) => { if (error) showSnackbar(boardOrderError(error)); });
+    return;
+  }
+  setTrackerStatus(key, status, { afterSave: () => saveBoardOrders(writes, before), onFail: () => restore(exactly), undoKeys: touched, undo });
+}
+
+function dropOnBoard({ key, to, keyboard }) {
+  const visible = [...to.list.querySelectorAll(":scope > .board-card[data-tracker-key]")].map((card) => card.dataset.trackerKey);
+  placeOnBoard(key, boardStatusOf(to.list), visible, visible.indexOf(key), { animate: Boolean(keyboard) });
   return document.querySelector(`.board-card[data-tracker-key="${CSS.escape(key)}"]`);
+}
+
+function moveOnBoard(c, index) {
+  placeOnBoard(c.key, c.job.status, c.column, index);
 }
 
 bindDrag({
@@ -3485,14 +3635,12 @@ bindDrag({
   zone: (list) => list.closest(".board-column"),
   key: (item) => item.dataset.trackerKey,
   find: (key) => document.querySelector(`.board-card[data-tracker-key="${CSS.escape(key)}"]`),
-  vertical: false,
-  slot: boardSlot,
   keyboardSlot: boardSlot,
   drop: dropOnBoard,
   announce,
-  lifted: (at) => `Picked up, in ${statusLabel(boardStatusOf(at.list))}. Use Left and Right to change column, Space to drop, Escape to cancel.`,
-  moved: (at) => `Over ${statusLabel(boardStatusOf(at.list))}.`,
-  dropped: (at) => `Dropped, still in ${statusLabel(boardStatusOf(at.list))}.`,
+  lifted: (at) => `Picked up, ${statusLabel(boardStatusOf(at.list))}, position ${at.index + 1} of ${at.count}. Use the arrow keys to move, Space to drop, Escape to cancel.`,
+  moved: (at) => `${statusLabel(boardStatusOf(at.list))}, position ${at.index + 1} of ${at.count}.`,
+  dropped: (at) => `Dropped, still ${statusLabel(boardStatusOf(at.list))}, position ${at.index + 1} of ${at.count}.`,
   cancelled: (at) => `Move cancelled, back in ${statusLabel(boardStatusOf(at.list))}.`,
 });
 
@@ -3521,6 +3669,7 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   if (event.target.id === "job-sort") { state.sort = event.target.value; state.scrollTop = 0; syncInboxUrl(); renderInbox(); }
   else if (event.target.id === "tracker-status") { state.trackerStatus = event.target.value; syncTrackerUrl(); renderTracker(); }
+  else if (event.target.id === "tracker-sort") { state.trackerSort = event.target.value; syncTrackerUrl(); renderTracker(); document.querySelector("#tracker-sort")?.focus(); }
   else if (event.target.matches("[data-board-status-select]")) setTrackerStatus(event.target.dataset.boardStatusSelect, event.target.value);
   else if (event.target.matches("[data-tracker-status-select]")) setTrackerStatus(event.target.dataset.trackerStatusSelect, event.target.value);
   else if (event.target.matches("[data-job-status-select]")) setTrackerStatus(event.target.dataset.jobStatusSelect, event.target.value);
