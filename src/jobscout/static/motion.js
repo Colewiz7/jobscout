@@ -22,7 +22,7 @@ export const springTokens = {
 };
 
 // x0 is offset from target
-// closed form so frame rate doesnt matter
+// frame rate cant change it
 export function solve(k, c, m, x0, v0, t) {
   const w0 = Math.sqrt(k / m);
   const z = c / (2 * Math.sqrt(k * m));
@@ -73,7 +73,7 @@ export class Spring {
   }
 }
 
-// fast release toward a close target overshoots otherwise
+// stops overshoot on close targets
 export const clampVelocity = (v, distance, duration) => {
   const max = (2 * Math.PI / duration) * Math.abs(distance);
   return Math.sign(v) * Math.min(Math.abs(v), max);

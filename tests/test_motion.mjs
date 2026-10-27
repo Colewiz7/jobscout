@@ -87,7 +87,7 @@ test("spatial-default is ratio 0.9 stiffness 700", () => {
 
 test("velocity tracker reads the last 100 ms", () => {
   const tracker = new VelocityTracker();
-  for (let t = 0; t <= 100; t += 10) tracker.add(0, t); // still at first
+  for (let t = 0; t <= 100; t += 10) tracker.add(0, t);
   for (let t = 110; t <= 200; t += 10) tracker.add((t - 100) * 2, t);
   close(tracker.velocity(200), 2000, "moving");
   close(tracker.velocity(250), 2000, "just lifted");
