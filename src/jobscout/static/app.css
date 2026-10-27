@@ -4440,6 +4440,114 @@ body.quick-fill-popout {
   }
 }
 
+.action-menu {
+  position: fixed;
+  inset: auto;
+  min-width: 200px;
+  max-width: min(320px, calc(100vw - var(--s-4)));
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  box-shadow: var(--shadow-float);
+  opacity: 0;
+  transition: opacity var(--d-short3) var(--ease-emph-acc),
+              display var(--d-short3) allow-discrete,
+              overlay var(--d-short3) allow-discrete;
+}
+
+.action-menu:popover-open {
+  opacity: 1;
+  transform: none;
+  transition: opacity var(--effects-fast),
+              transform var(--d-medium1) var(--ease-emph-dec);
+}
+
+@starting-style {
+  .action-menu:popover-open {
+    opacity: 0;
+    transform: scale(.92);
+  }
+}
+
+.menu-item {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3) 0 var(--s-2);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--on-surface);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.menu-item:focus::before {
+  opacity: .1;
+}
+
+.menu-item[aria-disabled="true"] {
+  color: color-mix(in srgb, var(--on-surface) 38%, transparent);
+  cursor: default;
+}
+
+.menu-item[aria-disabled="true"]::before {
+  display: none;
+}
+
+.menu-item.is-danger {
+  color: var(--error);
+}
+
+.menu-check {
+  width: 18px;
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+.menu-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-hint {
+  color: var(--on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-shortcut {
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  background: none;
+  color: var(--on-surface-variant);
+}
+
+.menu-divider {
+  height: 1px;
+  margin: var(--s-1) var(--s-2);
+  background: var(--outline-variant);
+}
+
+:root[data-motion="reduce"] .action-menu {
+  transition-property: opacity, display, overlay !important;
+  transition-duration: var(--d-short2) !important;
+}
+
 :root[data-motion="reduce"] *,
 :root[data-motion="reduce"] *::before,
 :root[data-motion="reduce"] *::after {

@@ -84,6 +84,7 @@
   --ease-emph: cubic-bezier(0.2, 0, 0, 1);
   --ease-emph-dec: cubic-bezier(0.05, 0.7, 0.1, 1);
   --ease-emph-acc: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --effects-fast: 100ms cubic-bezier(0.19, 0.06, 0.22, 1);
   --d-short1: 50ms;
   --d-short2: 100ms;
   --d-short3: 150ms;
