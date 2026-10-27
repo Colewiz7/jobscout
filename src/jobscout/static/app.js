@@ -6,7 +6,7 @@ import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, placeNodes } from "./drag.js";
-import { createLoadGate, createOrderSaver, moveAnnouncement, moveKey, restoreOrder } from "./drag-logic.js";
+import { cancelAnnouncement, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder } from "./drag-logic.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -3476,6 +3476,11 @@ bindDrag({
   lists: () => [...document.querySelectorAll(".queue-list")],
   key: (item) => item.dataset.queueKey,
   drop: ({ key, to }) => reorderQueue(key, to.index),
+  announce,
+  lifted: (at) => liftAnnouncement(at.index, at.count),
+  moved: (at) => moveAnnouncement(at.index, at.count),
+  dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
+  cancelled: (at) => cancelAnnouncement(at.index, at.count),
 });
 
 document.addEventListener("input", (event) => {

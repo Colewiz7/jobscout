@@ -1,5 +1,5 @@
 // native dnd cant carry release velocity
-import { autoScrollSpeed, autoScrollStep, columnAt, EDGE, settleVelocity, slotIndex, startGesture } from "./drag-logic.js";
+import { autoScrollSpeed, autoScrollStep, columnAt, EDGE, keyboardTarget, settleVelocity, slotIndex, startGesture } from "./drag-logic.js";
 import { Spring, VelocityTracker, fromRatio, springTokens } from "./motion.js";
 
 export const SPATIAL_DEFAULT = "cubic-bezier(0.21, 0.05, 0.28, 1)";
@@ -328,5 +328,89 @@ export function bindDrag(config) {
   // page must not scroll mid drag
   document.addEventListener("touchmove", (event) => { if (drag) event.preventDefault(); }, { passive: false });
 
-  return { get active() { return Boolean(drag || pending); } };
+  // --- keyboard lift ---
+  let held = null;
+  let shifting = false;
+
+  const spotOf = (item) => ({ list: item.parentElement, count: itemsOf(item.parentElement, null).length, index: itemsOf(item.parentElement, item).filter((el) => el.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).length });
+
+  function shift(list, index) {
+    const { item } = held;
+    const touched = [...new Set([item.parentElement, list])].flatMap((each) => itemsOf(each, null));
+    shifting = true; // fallback moves blur for a tick
+    flip(touched, () => {
+      if (list === item.parentElement) placeNodes(list, itemsOf(list, item).toSpliced(index, 0, item), item);
+      else moveNode(list, item, itemsOf(list, item)[index] || null);
+    });
+    shifting = false;
+    item.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  function dropHeld({ restore = false } = {}) {
+    const session = held;
+    held = null;
+    session.item.classList.remove("is-lifted");
+    if (!session.item.isConnected) return;
+    const at = spotOf(session.item);
+    if (restore) {
+      held = session;
+      if (at.list !== session.origin.list || at.index !== session.origin.index) shift(session.origin.list, session.origin.index);
+      held = null;
+      config.announce(config.cancelled(session.origin, session.item));
+      return;
+    }
+    if (at.list === session.origin.list && at.index === session.origin.index) { config.announce(config.dropped(at, session.item)); return; }
+    config.drop({ key: config.key(session.item), item: session.item, from: session.origin, to: at, keyboard: true });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (drag) return;
+    if (!held) {
+      const handle = event.target instanceof Element ? event.target.closest(config.handle) : null;
+      if (!handle || (event.key !== " " && event.key !== "Enter") || event.repeat) return;
+      const item = handle.closest(config.item);
+      if (!item?.parentElement) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      finishSettle();
+      held = { handle, item, origin: spotOf(item) };
+      item.classList.add("is-lifted");
+      config.announce(config.lifted(held.origin, item));
+      return;
+    }
+    if (!held.item.isConnected) { held = null; return; }
+    if (event.key === "Tab") { dropHeld({ restore: true }); return; }
+    event.preventDefault();
+    event.stopImmediatePropagation(); // app shortcuts wait
+    if (event.repeat && (event.key === " " || event.key === "Enter")) return;
+    if (event.key === " " || event.key === "Enter") { dropHeld(); return; }
+    if (event.key === "Escape") { dropHeld({ restore: true }); return; }
+    const at = spotOf(held.item);
+    const count = itemsOf(at.list, null).length;
+    const index = keyboardTarget(at.index, count, event.key);
+    if (index !== null && index !== at.index) {
+      shift(at.list, index);
+      config.announce(config.moved(spotOf(held.item), held.item));
+      return;
+    }
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && config.lists().length > 1) {
+      const lists = config.lists();
+      const next = lists[lists.indexOf(at.list) + (event.key === "ArrowLeft" ? -1 : 1)];
+      if (!next) return;
+      const slot = config.keyboardSlot ? config.keyboardSlot({ list: next, item: held.item }) : Math.min(at.index, itemsOf(next, held.item).length);
+      shift(next, slot);
+      config.announce(config.moved(spotOf(held.item), held.item));
+    }
+  }, true);
+
+  // keyup space would click the handle
+  document.addEventListener("keyup", (event) => {
+    if (event.key === " " && event.target instanceof Element && event.target.closest(config.handle)) event.preventDefault();
+  }, true);
+
+  document.addEventListener("focusout", (event) => {
+    if (held && !shifting && event.target === held.handle) dropHeld({ restore: true });
+  });
+
+  return { get active() { return Boolean(drag || pending || held); } };
 }
