@@ -428,6 +428,24 @@ MIGRATIONS = (
          where d.id = ranked.id;
         """,
     ),
+    Migration(
+        17,
+        "hidden_jobs",
+        """
+        create table if not exists hidden_jobs (
+            id         bigserial primary key,
+            dedupe_key text not null unique,
+            keys       text[] not null,
+            titles     text[] not null,
+            reqs       text[] not null default '{}',
+            hidden_at  timestamptz not null default now()
+        );
+        alter table postings add column if not exists hidden_by bigint
+            references hidden_jobs(id) on delete set null;
+        create index if not exists postings_hidden_by_idx on postings (hidden_by)
+            where hidden_by is not null;
+        """,
+    ),
 )
 
 

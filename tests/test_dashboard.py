@@ -207,6 +207,75 @@ def test_manual_capture_requires_auth_and_csrf_then_adds_a_job(dashboard):
         assert response.json()["job"]["company"] == "Example Labs"
 
 
+def test_hidden_jobs_leave_every_view_until_undone(dashboard):
+    base, store = dashboard
+    store.rows[0]["status"] = "applied"
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    jobs = lambda: [job["dedupe_key"] for job in client.get("/api/v1/jobs?closed=1").json()["jobs"]]
+    assert client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1"]}).status_code == 403
+    assert client.post("/api/v1/hidden", json={"dedupe_keys": []}, headers=headers).status_code == 400
+
+    hidden = client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1", "missing"]}, headers=headers)
+    assert hidden.json() == {"hidden": [{"id": 1, "dedupe_key": "demo:1"}]}
+    assert jobs() == ["demo:2"]
+    assert client.get("/api/v1/tracker").json()["applications"] == []
+    recaptured = client.post("/api/v1/capture", headers=headers, json={
+        "url": "https://example.org/jobs/sre", "company": "Cloudflare, Inc.",
+        "title": "Site Reliability Engineer Intern - Summer 2027",
+    })
+    assert recaptured.status_code == 400
+    assert recaptured.json()["error"] == "You hid this job, so it stays hidden."
+
+    undone = client.post("/api/v1/hidden/undo", json={"ids": [1]}, headers=headers)
+    assert undone.json() == {"restored": 1}
+    assert jobs() == ["demo:1", "demo:2"]
+
+
+def test_undo_from_a_stale_tab_cannot_reverse_an_earlier_hide(dashboard):
+    base, _ = dashboard
+    first_tab, token = authenticated_client(base)
+    second_tab, second_token = authenticated_client(base)
+    hide = {"dedupe_keys": ["demo:1"]}
+    first = first_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": token}).json()["hidden"]
+    second = second_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": second_token}).json()["hidden"]
+    assert len(first) == 1 and second == []
+
+    undo = second_tab.post("/api/v1/hidden/undo", json={"ids": [entry["id"] for entry in second]},
+                           headers={"X-CSRF-Token": second_token})
+    assert undo.status_code == 400
+    jobs = [job["dedupe_key"] for job in second_tab.get("/api/v1/jobs").json()["jobs"]]
+    assert jobs == ["demo:2"]
+
+
+def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
+    base, store = quick_fill_dashboard
+    store.rows[0]["status"] = "applied"
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1"]}, headers=headers)
+    writes = [
+        ("PATCH", "/api/v1/jobs/demo%3A1", {"status": "saved", "notes": "stale"}),
+        ("PUT", "/api/v1/applications/demo%3A1/next-step", {"next_step": "stale"}),
+        ("POST", "/api/v1/applications/demo%3A1/applied", {}),
+        ("POST", "/api/v1/interviews", {"dedupe_key": "demo:1", "starts_at": "2026-11-01T15:00:00Z"}),
+        ("POST", "/api/v1/jobs/demo%3A1/description", {"text": "stale"}),
+        ("POST", "/api/v1/jobs/demo%3A1/eligibility/override", {"note": "stale"}),
+        ("POST", "/api/v1/queue/check", {"dedupe_key": "demo:1"}),
+        ("POST", "/api/v1/profile/copy", {"dedupe_key": "demo:1", "target_key": "name"}),
+        ("PUT", "/api/v1/profile/context", {"dedupe_key": "demo:1", "company": "Cloudflare"}),
+        ("PUT", "/api/v1/queue/order", {"dedupe_keys": ["demo:1"]}),
+        ("PUT", "/api/v1/tracker/board-order", {"status": "applied", "dedupe_keys": ["demo:1"]}),
+    ]
+    for method, path, body in writes:
+        response = client.request(method, path, json=body, headers=headers)
+        assert (path, response.status_code) == (path, 410)
+        assert response.json()["error"] == "This job is hidden, so it can't change."
+    row = store.rows[0]
+    assert (row["status"], row["notes"], row.get("next_step", "")) == ("applied", "Mention the homelab incident response story.", "")
+    assert client.patch("/api/v1/jobs/demo%3A2", json={"status": "saved"}, headers=headers).status_code == 200
+
+
 def test_forged_username_without_outpost_metadata_is_rejected(dashboard):
     base, _ = dashboard
     response = httpx.get(

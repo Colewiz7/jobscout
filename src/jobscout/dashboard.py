@@ -25,7 +25,7 @@ import yaml
 from . import db as database
 from .config import Config
 from .filters import keep as keep_posting
-from .models import Posting
+from .models import Posting, workday_req_from_url
 from .capture import PostingCapture, manual_capture
 from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, extract_pay, parse_description, parse_sections
 from .overview import OverviewService
@@ -39,6 +39,8 @@ DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "prof
 MAX_BODY = 64 * 1024
 CSRF_COOKIE = "jobseer_csrf"
 APP_ROUTE_ROOTS = frozenset({"inbox", "queue", "tracker", "companies", "profile"})
+HIDDEN_CAPTURE = "You hid this job, so it stays hidden."
+HIDDEN_WRITE = "This job is hidden, so it can't change."
 
 
 def _queue_sort_key(job: dict) -> tuple:
@@ -314,10 +316,13 @@ class PostgresStore:
                     deadline_source=detail.deadline_source,
                     error=None,
                 )
-        return next(
-            job for job in self.jobs(include_closed=True)
-            if job["dedupe_key"] == posting.dedupe_key
+        job = next(
+            (job for job in self.jobs(include_closed=True) if job["dedupe_key"] == posting.dedupe_key),
+            None,
         )
+        if job is None:
+            raise ValueError(HIDDEN_CAPTURE)
+        return job
 
     def rules(self) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -372,6 +377,21 @@ class PostgresStore:
             "status": effective_status,
             "liveness": dataclasses.asdict(liveness) if liveness else None,
         }
+
+    def hide(self, dedupe_keys: list[str]) -> list[dict]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.hide_jobs(conn, dedupe_keys)
+
+    def unhide(self, hidden_ids: list[int]) -> int:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.unhide_jobs(conn, hidden_ids)
+
+    def hidden_keys(self, dedupe_keys: list[str]) -> set[str]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.hidden_keys(conn, dedupe_keys)
 
     def reorder_queue(self, dedupe_keys: list[str]) -> list[str]:
         with database.connect(self.dsn) as conn:
@@ -734,6 +754,8 @@ class DemoStore:
             },
         ]
         self.rows = _demo_rows(count, seed, now) if count > 2 else base_rows[:count]
+        self._hidden: dict[str, dict] = {}
+        self._next_hidden_id = 1
         self._saved_views: list[dict] = []
         self._next_view_id = 1
         self._profile_path = profile_path or DEFAULT_PROFILE
@@ -796,11 +818,45 @@ class DemoStore:
         for contact in self._contacts:
             if contact["source"] == "linkedin_csv":
                 counts[contact["company_key"]] = counts.get(contact["company_key"], 0) + 1
-        jobs = [dict(row) for row in self.rows if include_closed or not row["closed"]]
+        jobs = [
+            dict(row) for row in self.rows
+            if (include_closed or not row["closed"]) and not self._is_hidden(row)
+        ]
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
             job.setdefault("next_step", "")
         return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    def _is_hidden(self, row: dict) -> bool:
+        title = database.title_key(row["company"], row["title"])
+        req = workday_req_from_url(str(row.get("url") or ""))
+        return row["dedupe_key"] in self._hidden or any(
+            title in entry["titles"] or (req and req in entry["reqs"]) for entry in self._hidden.values()
+        )
+
+    def hide(self, dedupe_keys: list[str]) -> list[dict]:
+        created = []
+        for key in dict.fromkeys(dedupe_keys):
+            rows = [row for row in self.rows if row["dedupe_key"] == key]
+            if not rows or any(self._is_hidden(row) for row in rows):
+                continue
+            self._hidden[key] = {
+                "id": self._next_hidden_id,
+                "titles": {database.title_key(row["company"], row["title"]) for row in rows} - {""},
+                "reqs": {workday_req_from_url(str(row.get("url") or "")) for row in rows} - {None},
+            }
+            created.append({"id": self._next_hidden_id, "dedupe_key": key})
+            self._next_hidden_id += 1
+        return created
+
+    def unhide(self, hidden_ids: list[int]) -> int:
+        doomed = [key for key, entry in self._hidden.items() if entry["id"] in hidden_ids]
+        for key in doomed:
+            del self._hidden[key]
+        return len(doomed)
+
+    def hidden_keys(self, dedupe_keys: list[str]) -> set[str]:
+        return {row["dedupe_key"] for row in self.rows if row["dedupe_key"] in dedupe_keys and self._is_hidden(row)}
 
     def company_icon_keys(self) -> list[str]:
         return []
@@ -816,6 +872,8 @@ class DemoStore:
         existing = next(
             (row for row in self.rows if row["dedupe_key"] == posting.dedupe_key), None
         )
+        if existing is not None and self._is_hidden(existing):
+            raise ValueError(HIDDEN_CAPTURE)
         if existing is not None:
             return copy.deepcopy(existing)
         now = dt.datetime.now(dt.timezone.utc)
@@ -832,6 +890,8 @@ class DemoStore:
             "liveness_evidence": None, "applied_at": None,
             "resume_document_id": None, "resume_name": None,
         }
+        if self._is_hidden(row):
+            raise ValueError(HIDDEN_CAPTURE)
         self.rows.append(row)
         return copy.deepcopy(row)
 
@@ -936,7 +996,7 @@ class DemoStore:
         return {"saved": False, "status": status, "liveness": None}
 
     def reorder_queue(self, dedupe_keys: list[str]) -> list[str]:
-        queued = {row["dedupe_key"] for row in self.rows if row["status"] == "queued"}
+        queued = {row["dedupe_key"] for row in self.rows if row["status"] == "queued" and not self._is_hidden(row)}
         if queued != set(dedupe_keys) or len(dedupe_keys) != len(set(dedupe_keys)):
             raise ValueError("queue order must contain every queued job exactly once")
         positions = {key: index for index, key in enumerate(dedupe_keys)}
@@ -1014,13 +1074,16 @@ class DemoStore:
             job for job in self.jobs(include_closed=True)
             if job["status"] in {"applying", "applied", "interviewing", "offer", "rejected"}
         ]
+        visible = {row["dedupe_key"] for row in self.rows if not self._is_hidden(row)}
         return {
             "applications": applications,
             "reminders": copy.deepcopy([
-                reminder for reminder in self._reminders if reminder["status"] != "done"
+                reminder for reminder in self._reminders
+                if reminder["status"] != "done" and reminder["dedupe_key"] in visible
             ]),
             "interviews": copy.deepcopy(sorted(
-                self._interviews, key=lambda item: item["starts_at"]
+                (item for item in self._interviews if item["dedupe_key"] in visible),
+                key=lambda item: item["starts_at"],
             )),
             "history": [],
         }
@@ -1425,6 +1488,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    # stale tabs must not edit
+    def _reject_hidden(self, *keys: str) -> bool:
+        keys = [key for key in keys if key]
+        try:
+            hidden = bool(keys) and bool(self.app.store.hidden_keys(keys))
+        except Exception:
+            log.exception("could not check hidden jobs")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
+            return True
+        if hidden:
+            self._error(HTTPStatus.GONE, HIDDEN_WRITE)
+        return hidden
+
     def _require_quick_fill_write(self) -> bool:
         if self._require_api_auth() is None:
             return False
@@ -1701,6 +1777,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             key = urllib.parse.unquote(parsed.path.removeprefix(prefix))
+            if self._reject_hidden(key):
+                return
             status = str(payload["status"])
             notes = str(payload.get("notes", ""))
             if len(notes) > 20_000:
@@ -1743,6 +1821,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "not found")
                 return
             key = urllib.parse.unquote(parsed.path[len(description_prefix):-len(overview_suffix)].rstrip("/"))
+            if self._reject_hidden(key):
+                return
             try:
                 if isinstance(self.app.store, PostgresStore):
                     if not self.app.store.enqueue_overview(key):
@@ -1769,6 +1849,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._require_write_security():
                 return
             key = urllib.parse.unquote(parsed.path[len(description_prefix):-len(description_suffix)].rstrip("/"))
+            if self._reject_hidden(key):
+                return
             try:
                 detail = self.app.store.save_manual_description(
                     key, str(self._read_json().get("text") or "")
@@ -1803,6 +1885,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._json({"job": job}, HTTPStatus.CREATED)
+            return
+        if parsed.path in {"/api/v1/hidden", "/api/v1/hidden/undo"}:
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                if parsed.path == "/api/v1/hidden":
+                    keys = payload.get("dedupe_keys")
+                    if not isinstance(keys, list) or not keys or len(keys) > 500 or not all(isinstance(key, str) and key for key in keys):
+                        raise ValueError("dedupe_keys must be a list of job keys")
+                    self._json({"hidden": self.app.store.hide(keys)})
+                else:
+                    # only ids this tab created
+                    ids = payload.get("ids")
+                    if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(type(item) is int for item in ids):
+                        raise ValueError("ids must be a list of hide ids")
+                    self._json({"restored": self.app.store.unhide(ids)})
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+            except Exception:
+                log.exception("could not change hidden jobs")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
             return
         rule_action_prefix = "/api/v1/rule-actions/"
         rule_action_suffix = "/undo"
@@ -1846,6 +1950,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             key = urllib.parse.unquote(
                 parsed.path[len(eligibility_prefix):-len(eligibility_suffix)].rstrip("/")
             )
+            if self._reject_hidden(key):
+                return
             try:
                 result = self.app.store.override_eligibility(
                     key, str(self._read_json().get("note") or "")
@@ -1866,7 +1972,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._require_write_security():
                 return
             try:
-                interview = self.app.store.add_interview(self._read_json())
+                payload = self._read_json()
+                if self._reject_hidden(str(payload.get("dedupe_key") or "")):
+                    return
+                interview = self.app.store.add_interview(payload)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
                 return
@@ -1927,6 +2036,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = self._read_json()
+                if self._reject_hidden(str(payload.get("dedupe_key") or "")):
+                    return
                 result = self.app.store.check_session_job(str(payload.get("dedupe_key") or ""))
             except (ValueError, TypeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
@@ -1945,6 +2056,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             key = urllib.parse.unquote(
                 parsed.path[len(applied_prefix):-len(applied_suffix)].rstrip("/")
             )
+            if self._reject_hidden(key):
+                return
             try:
                 payload = self._read_json()
                 snapshot = self.app.store.mark_applied(key, payload.get("document_id"))
@@ -1965,6 +2078,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = self._read_json()
+                if self._reject_hidden(str(payload.get("dedupe_key", ""))):
+                    return
                 self.app.store.mark_copy(
                     str(payload.get("dedupe_key", "")), str(payload.get("target_key", ""))
                 )
@@ -2046,6 +2161,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             key = urllib.parse.unquote(
                 parsed.path[len(next_step_prefix):-len(next_step_suffix)].rstrip("/")
             )
+            if self._reject_hidden(key):
+                return
             try:
                 saved = self.app.store.save_next_step(
                     key, str(self._read_json().get("next_step") or "")
@@ -2087,6 +2204,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 dedupe_keys = payload.get("dedupe_keys")
                 if not isinstance(dedupe_keys, list) or not all(isinstance(key, str) for key in dedupe_keys):
                     raise ValueError("dedupe_keys must be a list of job keys")
+                if self._reject_hidden(*dedupe_keys):
+                    return
                 order = self.app.store.reorder_queue(dedupe_keys)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
@@ -2108,6 +2227,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("status must be a board column")
                 if not isinstance(dedupe_keys, list) or not all(isinstance(key, str) for key in dedupe_keys):
                     raise ValueError("dedupe_keys must be a list of job keys")
+                if self._reject_hidden(*dedupe_keys):
+                    return
                 order = self.app.store.reorder_board(status, dedupe_keys)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
@@ -2126,6 +2247,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if parsed.path == "/api/v1/profile/context":
+                if self._reject_hidden(str(payload.get("dedupe_key") or "")):
+                    return
                 profile = self.app.store.save_profile_context(payload)
             else:
                 document = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload

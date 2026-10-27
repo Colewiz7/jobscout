@@ -168,10 +168,102 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
             list(companies.items()),
         )
         _apply_rules_cursor(cur)
+        _apply_hidden_cursor(cur)
         cur.execute("select count(*) as n from postings")
         after = cur.fetchone()["n"]
     conn.commit()
     return after - before
+
+
+def title_key(company: str, title: str) -> str:
+    # the dashboard collapses on this
+    company, title = company_key(company), normalise(title)
+    return f"{company}\t{title}" if company and title else ""
+
+
+def hide_jobs(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[dict]:
+    created = []
+    with conn.cursor() as cur:
+        for key in dict.fromkeys(dedupe_keys):
+            cur.execute(
+                "select fallback_key, company, title, url, hidden_by from postings where dedupe_key = %s",
+                (key,),
+            )
+            rows = cur.fetchall()
+            # repeat hides have nothing to undo
+            if not rows or any(row["hidden_by"] is not None for row in rows):
+                continue
+            keys = sorted({key} | {row["fallback_key"] for row in rows if row["fallback_key"]})
+            titles = sorted({title for row in rows if (title := title_key(row["company"], row["title"]))})
+            reqs = sorted({req for row in rows if (req := workday_req_from_url(row["url"]))})
+            cur.execute(
+                """
+                insert into hidden_jobs (dedupe_key, keys, titles, reqs) values (%s, %s, %s, %s)
+                on conflict (dedupe_key) do nothing
+                returning id
+                """,
+                (key, keys, titles, reqs),
+            )
+            entry = cur.fetchone()
+            if entry:
+                created.append({"id": entry["id"], "dedupe_key": key})
+        _apply_hidden_cursor(cur)
+    conn.commit()
+    return created
+
+
+def hidden_keys(conn: psycopg.Connection, dedupe_keys: list[str]) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "select distinct dedupe_key from postings where dedupe_key = any(%s) and hidden_by is not null",
+            (list(dedupe_keys),),
+        )
+        return {row["dedupe_key"] for row in cur.fetchall()}
+
+
+def unhide_jobs(conn: psycopg.Connection, hidden_ids: list[int]) -> int:
+    with conn.cursor() as cur:
+        cur.execute("delete from hidden_jobs where id = any(%s)", (list(hidden_ids),))
+        removed = cur.rowcount
+        # other entries may still match
+        _apply_hidden_cursor(cur)
+    conn.commit()
+    return removed
+
+
+def _apply_hidden_cursor(cur) -> None:
+    cur.execute("select id, titles, reqs from hidden_jobs")
+    entries = cur.fetchall()
+    if not entries:
+        return
+    cur.execute(
+        """
+        update postings p set hidden_by = h.id
+          from hidden_jobs h
+         where p.hidden_by is null
+           and (p.dedupe_key = any(h.keys) or (p.fallback_key <> '' and p.fallback_key = any(h.keys)))
+        """
+    )
+    titles = {title: entry["id"] for entry in entries for title in entry["titles"]}
+    reqs = {req: entry["id"] for entry in entries for req in entry["reqs"]}
+    cur.execute("select id, company, title, url from postings where hidden_by is null")
+    matched = []
+    for row in cur.fetchall():
+        title, req = title_key(row["company"], row["title"]), workday_req_from_url(row["url"])
+        entry = titles.get(title) or (reqs.get(req) if req else None)
+        if entry:
+            matched.append((entry, row["id"]))
+    if matched:
+        cur.executemany("update postings set hidden_by = %s where id = %s", matched)
+    # a hidden row hides its twins
+    cur.execute(
+        """
+        update postings p set hidden_by = q.hidden_by
+          from postings q
+         where p.hidden_by is null and q.hidden_by is not null
+           and p.dedupe_key = q.dedupe_key
+        """
+    )
 
 
 def mark_closed(conn: psycopg.Connection, source: str, dedupe_keys: list[str]) -> int:
@@ -233,6 +325,7 @@ _OPEN_SQL = """
 with candidates as (
     select * from postings p
      where not p.closed
+       and p.hidden_by is null
        and p.board is distinct from 'testnisc'
        {unnotified}
 ),
@@ -627,6 +720,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                            filter (where p.score_detail is not null))[1] as score_detail
                   from postings p
                  where (%s or not p.closed)
+                   and p.hidden_by is null
                    and p.board is distinct from 'testnisc'
                  group by p.dedupe_key
             ), application_events as (
@@ -661,6 +755,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                          join postings other on other.dedupe_key = e.dedupe_key
                         where lower(other.company) = lower(g.company)
                           and other.dedupe_key <> g.dedupe_key
+                          and other.hidden_by is null
                           and e.changed_at >= now() - interval '30 days'
                    ) as recent_company_application_at,
                    (select coalesce(
@@ -1381,7 +1476,16 @@ def save_queue_order(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[s
     if len(dedupe_keys) != len(set(dedupe_keys)) or len(dedupe_keys) > 2_000:
         raise ValueError("queue order contains duplicates or too many jobs")
     with conn.cursor() as cur:
-        cur.execute("select dedupe_key from application_states where status = 'queued'")
+        cur.execute(
+            """
+            select s.dedupe_key from application_states s
+             where s.status = 'queued'
+               and not exists (
+                   select 1 from postings p
+                    where p.dedupe_key = s.dedupe_key and p.hidden_by is not null
+               )
+            """
+        )
         queued = {row["dedupe_key"] for row in cur.fetchall()}
         if queued != set(dedupe_keys):
             raise ValueError("queue order must contain every queued job exactly once")
@@ -1549,7 +1653,7 @@ def tracker_support(conn: psycopg.Connection) -> dict:
                    r.snoozed_until, min(p.company) as company, min(p.title) as title
               from reminders r
               join postings p on p.dedupe_key = r.dedupe_key
-             where r.status <> 'done'
+             where r.status <> 'done' and p.hidden_by is null
              group by r.id
              order by coalesce(r.snoozed_until, r.due_at), r.id
             """
@@ -1561,6 +1665,7 @@ def tracker_support(conn: psycopg.Connection) -> dict:
                    min(p.company) as company, min(p.title) as title
               from interviews i
               join postings p on p.dedupe_key = i.dedupe_key
+             where p.hidden_by is null
              group by i.id
              order by i.starts_at, i.id
             """
@@ -1568,9 +1673,13 @@ def tracker_support(conn: psycopg.Connection) -> dict:
         interviews = cur.fetchall()
         cur.execute(
             """
-            select dedupe_key, from_status, to_status, changed_at
-              from application_status_history
-             order by changed_at, id
+            select h.dedupe_key, h.from_status, h.to_status, h.changed_at
+              from application_status_history h
+             where not exists (
+                 select 1 from postings p
+                  where p.dedupe_key = h.dedupe_key and p.hidden_by is not null
+             )
+             order by h.changed_at, h.id
             """
         )
         history = cur.fetchall()

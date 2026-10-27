@@ -48,6 +48,7 @@ def conn():
         cur.execute("drop table if exists saved_views")
         cur.execute("drop table if exists board_notices")
         cur.execute("drop table if exists postings")
+        cur.execute("drop table if exists hidden_jobs")
         cur.execute("drop table if exists profile_meta")
         cur.execute("drop table if exists schema_migrations")
     connection.commit()
@@ -88,6 +89,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 14, "name": "board_positions"},
             {"version": 15, "name": "profile_revision"},
             {"version": 16, "name": "document_default_and_order"},
+            {"version": 17, "name": "hidden_jobs"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -425,6 +427,100 @@ def test_application_status_changes_are_timestamped(conn):
             {"from_status": "new", "to_status": "saved"},
             {"from_status": "saved", "to_status": "queued"},
         ]
+
+
+def _visible(conn):
+    return sorted(row["dedupe_key"] for row in database.dashboard_postings(conn, include_closed=True))
+
+
+def test_hidden_job_stays_hidden_when_rescraped(conn):
+    board = _p(source="greenhouse", board="acme", provider_id="greenhouse:1",
+               url="https://boards.greenhouse.io/acme/jobs/1")
+    other = _p(title="Data Intern", url="https://acme.example/data")
+    database.upsert_open(conn, [board, other])
+    database.save_application_state(conn, board.dedupe_key, "applied", "kept")
+    database.add_interview(conn, dedupe_key=board.dedupe_key,
+                           starts_at=dt.datetime.now(dt.timezone.utc), ends_at=None,
+                           location="", notes="")
+
+    assert [entry["dedupe_key"] for entry in database.hide_jobs(conn, [board.dedupe_key, "missing"])] == [board.dedupe_key]
+    assert _visible(conn) == [other.dedupe_key]
+
+    # same id, other source, same title
+    database.upsert_open(conn, [
+        board,
+        _p(source="simplify-s27", title="Cloud Engineering Intern (Summer 2027)",
+           url="https://boards.greenhouse.io/acme/jobs/1?src=simplify"),
+        _p(source="lever", company="Acme, Inc.", title="Cloud Intern!",
+           url="https://jobs.lever.co/acme/00000000-0000-0000-0000-000000000002"),
+    ])
+    assert _visible(conn) == [other.dedupe_key]
+    assert [row["dedupe_key"] for row in database.pending(conn)] == [other.dedupe_key]
+    support = database.tracker_support(conn)
+    assert support["reminders"] == support["interviews"] == support["history"] == []
+    with conn.cursor() as cur:
+        cur.execute("select status, notes from application_states where dedupe_key = %s", (board.dedupe_key,))
+        assert cur.fetchone() == {"status": "interviewing", "notes": "kept"}
+        cur.execute("select count(*) as n from postings where hidden_by is not null")
+        assert cur.fetchone()["n"] == 3
+
+
+def test_unhiding_restores_only_that_job(conn):
+    first = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    second = _p(title="Data Intern", url="https://boards.greenhouse.io/acme/jobs/2")
+    database.upsert_open(conn, [first, second])
+    [entry] = database.hide_jobs(conn, [first.dedupe_key])
+    database.hide_jobs(conn, [second.dedupe_key])
+    assert _visible(conn) == []
+
+    assert database.unhide_jobs(conn, [entry["id"]]) == 1
+    assert _visible(conn) == [first.dedupe_key]
+    database.upsert_open(conn, [first, second])
+    assert _visible(conn) == [first.dedupe_key]
+
+
+def test_hiding_a_workday_copy_hides_its_requisition_twins(conn):
+    tenant = "https://acme.wd5.myworkdayjobs.com"
+    first = _p(title="Cloud Intern", url=f"{tenant}/en-US/External/job/Austin-TX/Cloud-Intern_R12345")
+    second = _p(source="simplify-s27", title="Cloud Infrastructure Intern",
+                url=f"{tenant}/Careers/job/Remote/Cloud-Infrastructure-Intern_R12345")
+    other = _p(title="Data Intern", url=f"{tenant}/External/job/Austin-TX/Data-Intern_R99999")
+    database.upsert_open(conn, [first, second, other])
+    assert first.dedupe_key != second.dedupe_key
+    assert len(_visible(conn)) == 2  # the twins collapse
+
+    shown = next(key for key in _visible(conn) if key != other.dedupe_key)
+    database.hide_jobs(conn, [shown])
+    assert _visible(conn) == [other.dedupe_key]
+
+    third = _p(source="greenhouse", title="Platform Intern",
+               url=f"{tenant}/fr-CA/External/job/Remote/Platform-Intern_R12345")
+    database.upsert_open(conn, [third])
+    assert _visible(conn) == [other.dedupe_key]
+
+
+def test_a_repeat_hide_gives_the_second_tab_nothing_to_undo(conn):
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    first_tab = database.hide_jobs(conn, [posting.dedupe_key])
+    second_tab = database.hide_jobs(conn, [posting.dedupe_key])
+    assert len(first_tab) == 1 and second_tab == []
+
+    assert database.unhide_jobs(conn, [entry["id"] for entry in second_tab]) == 0
+    assert _visible(conn) == []
+    assert database.unhide_jobs(conn, [first_tab[0]["id"]]) == 1
+    assert _visible(conn) == [posting.dedupe_key]
+
+
+def test_queue_order_skips_hidden_jobs(conn):
+    kept = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    gone = _p(title="Data Intern", url="https://boards.greenhouse.io/acme/jobs/2")
+    database.upsert_open(conn, [kept, gone])
+    for posting in (kept, gone):
+        database.save_application_state(conn, posting.dedupe_key, "queued", "")
+    database.hide_jobs(conn, [gone.dedupe_key])
+    assert database.hidden_keys(conn, [kept.dedupe_key, gone.dedupe_key]) == {gone.dedupe_key}
+    assert database.save_queue_order(conn, [kept.dedupe_key]) == [kept.dedupe_key]
 
 
 def test_saved_views_are_server_backed_and_upsert_by_name(conn):
