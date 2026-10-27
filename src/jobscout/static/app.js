@@ -3103,6 +3103,7 @@ function handleGlobalKeydown(event) {
     if (key === "x") { event.preventDefault(); performDecision("archived", "Dismissed"); return; }
     if (key === "q") {
       event.preventDefault();
+      if (state.selectedKeys.size) { queueSelection(); return; } // same eligibility split as the bar
       const job = state.jobs.find((candidate) => candidate.dedupe_key === state.selectedKey);
       if (jobHasActiveBlocker(job)) { showSnackbar("Override the eligibility verdict before queueing."); return; }
       performDecision("queued", "Queued"); return;
