@@ -1028,7 +1028,7 @@ function queueCard(job, index, count) {
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
     <button class="queue-drag-handle interactive" type="button" draggable="true" aria-label="Reorder ${escapeHtml(job.title)}" title="Drag to reorder">${icons.queue}</button>
     <div class="queue-card-copy"><h2>${escapeHtml(job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
-    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} earlier" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} later" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
+    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
   </article>`;
 }
 
@@ -3189,8 +3189,10 @@ const objectMenus = [
       return index < 0 ? null : { key: jobs[index].dedupe_key, job: jobs[index], index, count: jobs.length };
     },
     items: [
-      { label: "Move earlier", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, c.index - 1) },
-      { label: "Move later", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.index + 1) },
+      { label: "Move up", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, c.index - 1) },
+      { label: "Move down", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.index + 1) },
+      { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, 0) },
+      { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.count - 1) },
       { label: "Open original posting", when: (c) => c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
       { label: "Save for later", divider: true, run: (c) => removeFromQueue(c.key) },
     ],
