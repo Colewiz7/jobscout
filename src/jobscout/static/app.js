@@ -28,6 +28,7 @@ const DIVIDER_HEIGHT = 32;
 const LAST_VISIT_KEY = "jobseer.inboxLastVisit";
 const allowedStatuses = new Set(["all", "new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"]);
 const allowedSorts = new Set(["score", "newest", "company"]);
+const boardStatuses = ["applying", "applied", "interviewing", "offer", "rejected"];
 const blankQuickFillFields = [
   ["name", "Identity", "Full name", true],
   ["email", "Contact", "Email", true],
@@ -1128,8 +1129,7 @@ function trackerTableMarkup(applications) {
 }
 
 function trackerBoardMarkup(applications) {
-  const statuses = ["applying", "applied", "interviewing", "offer", "rejected"];
-  return `<div class="tracker-board" aria-label="Applications by status">${statuses.map((status) => {
+  return `<div class="tracker-board" aria-label="Applications by status">${boardStatuses.map((status) => {
     const jobs = applications.filter((job) => job.status === status);
     return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}</article>`).join("")}</div></section>`;
   }).join("")}</div>`;
@@ -1456,9 +1456,9 @@ async function saveTrackerNextStep(key, value, input) {
   } finally { input?.removeAttribute("aria-busy"); }
 }
 
-async function setTrackerStatus(key, status, { offerUndo = true } = {}) {
+async function setTrackerStatus(key, status, { offerUndo = true, fallback = null } = {}) {
   const tracked = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
-  const job = state.jobs.find((item) => item.dedupe_key === key) || tracked;
+  const job = state.jobs.find((item) => item.dedupe_key === key) || tracked || fallback;
   if (!job || job.status === status || state.statusSaving.has(key)) return;
   const previous = job.status;
   state.statusSaving.add(key);
@@ -1484,9 +1484,11 @@ async function setTrackerStatus(key, status, { offerUndo = true } = {}) {
     }
     await loadTrackerData({ background: true });
     if (routeRoot() === "inbox") renderSelectedJob();
-    showSnackbar(job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}.`, offerUndo ? {
+    const offBoard = routeRoot() === "tracker" && state.trackerView === "board" && !boardStatuses.includes(job.status);
+    showSnackbar(job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}${offBoard ? ", off the board" : ""}.`, offerUndo ? {
       action: "Undo", duration: 6000,
-      onAction: () => setTrackerStatus(key, previous, { offerUndo: false }),
+      // closed postings leave both lists
+      onAction: () => setTrackerStatus(key, previous, { offerUndo: false, fallback: job }),
     } : {});
   } catch (error) {
     job.status = previous; if (tracked) tracked.status = previous;
