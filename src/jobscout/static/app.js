@@ -187,7 +187,15 @@ async function secureWrite(url, init) {
     }
   }
   if (response.redirected || response.type === "opaqueredirect") authRecovery();
+  noticeHidden(response);
   return response;
+}
+
+// another tab hid this job
+function noticeHidden(response) {
+  if (response.status !== 410) return;
+  reloadJobs();
+  if (state.trackerData) loadTrackerData({ background: true });
 }
 
 function escapeHtml(value) {
@@ -678,7 +686,7 @@ function bulkBarMarkup() {
   const actions = selectionArchived()
     ? '<button class="text-button interactive" type="button" data-bulk-restore>Restore</button>'
     : `${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button>`;
-  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="text-button interactive" type="button" data-bulk-hide>Hide…</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
 }
 
 function selectionArchived() {
@@ -779,6 +787,7 @@ async function loadOverview(key, { force = false } = {}) {
       method: "POST", credentials: "same-origin",
       headers: { Accept: "application/json", "X-CSRF-Token": state.csrf },
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The overview could not be queued.");
     const payload = await response.json();
     applyOverviewPayload(key, payload);
@@ -873,6 +882,7 @@ async function saveManualDescription() {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ text }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't save that description.");
     const value = (await response.json()).description || {};
     state.descriptions.set(key, { loading: false, showLoader: false, value, error: "" });
@@ -922,6 +932,7 @@ async function overrideEligibility() {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ note: "Overridden from the reading pane" }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The override could not be recorded.");
     state.eligibility.set(key, { loading: false, value: (await response.json()).eligibility, error: "" });
     renderInbox({ focus: true });
@@ -1509,6 +1520,7 @@ async function saveTrackerNextStep(key, value, input) {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ next_step: value }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The next step could not be saved.");
     showSnackbar("Next step saved.");
     await loadTrackerData({ background: true });
@@ -1594,6 +1606,7 @@ async function submitInterview(form) {
         location: data.get("location"), notes: data.get("notes"),
       }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The interview could not be saved.");
     await loadTrackerData({ background: true });
     showSnackbar("Interview added.");
@@ -1653,6 +1666,7 @@ const queueSaver = createOrderSaver({
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ dedupe_keys: keys }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The queue order could not be saved.");
   },
   onLanded: () => jobsWriteLanded(),
@@ -1776,6 +1790,104 @@ async function removeFromQueue(key) {
     renderQueue();
     showSnackbar(`${error.message} Change undone.`);
   }
+}
+
+// --- hiding jobs ---
+// the scout never shows them again
+
+function hideInboxJobs(keys, trigger) {
+  const order = filteredJobs().map((job) => job.dedupe_key);
+  hideJobs(keys, { trigger, focus: focusAfterRemoval(order, keys, "#job-list-layer .job-row", "data-job-key", "[data-clear-all-filters], .inbox-list h1") });
+}
+
+// a refetch could beat the write
+function renderJobSurface() {
+  if (routeRoot() === "inbox") renderInbox();
+  else if (routeRoot() === "queue" && !window.location.pathname.startsWith("/queue/session/")) renderQueue();
+  else if (routeRoot() === "tracker") renderTracker();
+}
+
+// carrel: next item, else previous
+function focusAfterRemoval(order, keys, selector, attr, fallback) {
+  const index = Math.max(0, order.findIndex((key) => keys.includes(key)));
+  const rest = order.filter((key) => !keys.includes(key));
+  const next = rest[Math.min(index, rest.length - 1)];
+  return () => {
+    const node = next && document.querySelector(`${selector}[${attr}="${CSS.escape(next)}"]`);
+    const target = node ? (node.matches(".job-row") ? node : node.querySelector("button[data-menu-trigger]")) : null;
+    (target || document.querySelector(fallback))?.focus({ preventScroll: true });
+  };
+}
+
+function hideCopy(jobs) {
+  if (jobs.length === 1) return {
+    title: `Hide “${jobs[0].title}” at ${jobs[0].company}?`,
+    body: "It won't come back, even if the scout finds it again on another site. Its notes and history are kept but never shown. You can undo only right after.",
+  };
+  return {
+    title: `Hide ${new Intl.NumberFormat().format(jobs.length)} jobs?`,
+    body: "They won't come back, even if the scout finds them again on another site. Their notes and history are kept but never shown. You can undo only right after.",
+  };
+}
+
+async function hideJobs(keys, { trigger = null, focus = null } = {}) {
+  const known = (key) => state.jobs.find((job) => job.dedupe_key === key) || state.trackerData?.applications?.find((job) => job.dedupe_key === key);
+  const jobs = keys.map(known).filter(Boolean);
+  if (!jobs.length || jobs.some((job) => state.pending.has(job.dedupe_key))) return;
+  if (!await confirmDelete({ ...hideCopy(jobs), action: "Hide", trigger })) return;
+  const hidden = new Set(jobs.map((job) => job.dedupe_key));
+  const removed = { jobs: state.jobs.filter((job) => hidden.has(job.dedupe_key)), tracked: (state.trackerData?.applications || []).filter((job) => hidden.has(job.dedupe_key)) };
+  const nextKey = hidden.has(state.selectedKey) ? nextKeyAfter([...hidden]) : state.selectedKey;
+  const restore = (keep = hidden) => {
+    for (const job of removed.jobs) if (keep.has(job.dedupe_key) && !state.jobs.includes(job)) state.jobs.push(job);
+    if (state.trackerData) for (const job of removed.tracked) if (keep.has(job.dedupe_key) && !state.trackerData.applications.includes(job)) state.trackerData.applications.push(job);
+  };
+  state.jobs = state.jobs.filter((job) => !hidden.has(job.dedupe_key));
+  if (state.trackerData) state.trackerData.applications = state.trackerData.applications.filter((job) => !hidden.has(job.dedupe_key));
+  for (const key of hidden) state.selectedKeys.delete(key);
+  if (routeRoot() === "inbox") { state.selectedKey = nextKey; syncInboxUrl(); }
+  renderJobSurface();
+  focus?.();
+  let created;
+  try {
+    const response = await secureWrite("/api/v1/hidden", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ dedupe_keys: [...hidden] }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't hide the job.");
+    created = (await response.json()).hidden || [];
+  } catch (error) {
+    restore();
+    renderJobSurface();
+    assertiveRegion.textContent = `${error.message} Change undone.`;
+    showSnackbar(`${error.message} Change undone.`);
+    return;
+  }
+  jobsWriteLanded(); trackerWriteLanded();
+  // another tab hid these first
+  if (!created.length) { showSnackbar("Already hidden in another tab."); return; }
+  const mine = new Set(created.map((entry) => entry.dedupe_key));
+  const message = mine.size === 1 ? "Role hidden." : `${new Intl.NumberFormat().format(mine.size)} roles hidden.`;
+  offerUndoSnackbar(message, [...mine], () => unhideJobs(created.map((entry) => entry.id), () => restore(mine)));
+}
+
+async function unhideJobs(ids, restore) {
+  try {
+    const response = await secureWrite("/api/v1/hidden/undo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't undo.");
+  } catch (error) {
+    showSnackbar(`${error.message} The role stays hidden.`);
+    return;
+  }
+  restore();
+  jobsWriteLanded(); trackerWriteLanded();
+  renderJobSurface();
+  showSnackbar("Hide undone.");
 }
 
 function sessionPathKey() {
@@ -1957,6 +2069,7 @@ async function verifySessionJob(key) {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ dedupe_key: key }),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't check this posting.");
     jobsWriteLanded(); // a closed posting gets archived
     const result = await response.json();
@@ -2878,6 +2991,7 @@ async function persistQuickFillContext(context, job) {
       company_account: context.company_account,
     }),
   });
+  noticeHidden(response);
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Job-specific Quick-fill details could not be saved.");
   return (await response.json()).profile;
 }
@@ -3110,6 +3224,7 @@ async function copyQuickFillItem(index) {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ dedupe_key: jobKey, target_key: item.key }),
     }).then(async (response) => {
+      noticeHidden(response);
       if (response.ok) return;
       state.copiedByJob.get(jobKey)?.delete(item.key); renderQuickFill();
       showSnackbar((await response.json().catch(() => ({}))).error || "Copy marker could not be saved.");
@@ -3579,6 +3694,10 @@ const trackerItems = [
   { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
+  { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
+    trigger: c.el.querySelector("button[data-menu-trigger]"),
+    focus: focusAfterRemoval(c.table ? trackerApplications().map((job) => job.dedupe_key) : c.column, [c.key], c.table ? ".tracker-table tr" : ".board-card", "data-tracker-key", "#tracker-title"),
+  }) },
 ];
 
 function trackerContext(el, table) {
@@ -3630,6 +3749,7 @@ const objectMenus = [
       { label: "Restore", when: (c) => c.bulk ? selectionArchived() : c.job.status === "archived", run: (c) => performDecision("new", "Restored", c.bulk ? null : [c.key]) },
       { label: "Copy", divider: true, run: (c) => copyInboxJobs(c.bulk ? filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)) : [c.job]) },
       { label: (c) => state.selectedKeys.has(c.key) ? "Deselect" : "Select", run: (c) => { if (state.selectedKeys.has(c.key)) state.selectedKeys.delete(c.key); else state.selectedKeys.add(c.key); syncVisibleJobSelection(); } },
+      { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideInboxJobs(c.bulk ? [...state.selectedKeys] : [c.key], c.el) },
     ],
   },
   {
@@ -3647,6 +3767,10 @@ const objectMenus = [
       { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.count - 1) },
       { label: "Open original posting", when: (c) => c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
       { label: "Save for later", divider: true, run: (c) => removeFromQueue(c.key) },
+      { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
+        trigger: document.querySelector(`.queue-card[data-queue-key="${CSS.escape(c.key)}"] button[data-menu-trigger]`),
+        focus: focusAfterRemoval(queueJobs().map((job) => job.dedupe_key), [c.key], ".queue-card", "data-queue-key", "#queue-title, .empty-state h2"),
+      }) },
     ],
   },
   {
@@ -3869,6 +3993,7 @@ document.addEventListener("click", (event) => {
   }
   if (event.target.closest("[data-dismiss-company]")) { dismissSelectedCompanies(); return; }
   if (event.target.closest("[data-bulk-restore]")) { performDecision("new", "Restored"); return; }
+  if (event.target.closest("[data-bulk-hide]")) { hideInboxJobs([...state.selectedKeys], event.target.closest("[data-bulk-hide]")); return; }
   if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
   const tab = event.target.closest("[data-status-tab]");
   if (tab) { state.status = tab.dataset.statusTab; state.scrollTop = 0; state.selectedKeys.clear(); syncInboxUrl(); renderInbox(); return; }
