@@ -998,6 +998,65 @@ def test_company_notes_contacts_and_matched_connections(dashboard):
     assert datadog["connections_count"] == 1
 
 
+def test_contacts_are_edited_deleted_and_restored(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    imported = client.post("/api/v1/connections/import", headers=headers, json={"contacts": [{
+        "company": "Datadog", "name": "Lin Example", "title": "Engineer",
+        "linkedin_url": "https://www.linkedin.com/in/lin-example",
+    }]})
+    assert imported.status_code == 201
+    contacts = lambda: client.get("/api/v1/companies", params={"name": "Datadog"}).json()["company"]["contacts"]
+    connections = lambda: next(job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog")["connections_count"]
+    [contact] = contacts()
+    path = f"/api/v1/contacts/{contact['id']}"
+    assert httpx.patch(f"{base}{path}", json={"name": "x"}).status_code == 401
+    assert client.patch(path, json={"name": "x"}).status_code == 403
+    assert client.delete(path).status_code == 403
+    assert client.post(f"{path}/restore").status_code == 403
+    for body, error in [
+        ({"name": " "}, "A contact needs a name. Add one and save again."),
+        ({"linkedin_url": "http://www.linkedin.com/in/lin"}, "LinkedIn URL must use HTTPS"),
+        ({"company": "Cloudflare"}, "company can't be edited"),
+        ({}, "Change the name, role, email or LinkedIn URL, then save"),
+    ]:
+        response = client.patch(path, json=body, headers=headers)
+        assert (response.status_code, response.json()["error"]) == (400, error)
+    assert client.patch("/api/v1/contacts/99", json={"name": "x"}, headers=headers).status_code == 404
+    assert client.delete("/api/v1/contacts/abc", headers=headers).status_code == 400
+
+    edited = client.patch(path, headers=headers, json={"title": "Staff Engineer", "email": "lin@example.com"}).json()
+    assert (edited["contact"]["title"], edited["previous"]["title"]) == ("Staff Engineer", "Engineer")
+    previous = edited["previous"]
+    client.patch(path, headers=headers, json={key: previous[key] for key in ("name", "title", "email", "linkedin_url")})
+    assert (contacts()[0]["title"], contacts()[0]["email"]) == ("Engineer", "")
+
+    assert client.delete(path, headers=headers).json() == {"ok": True}
+    assert contacts() == [] and connections() == 0
+    assert client.delete(path, headers=headers).status_code == 404
+    assert client.post(f"{path}/restore", headers=headers).json()["contact"]["name"] == "Lin Example"
+    assert client.post(f"{path}/restore", headers=headers).status_code == 404
+    assert len(contacts()) == 1 and connections() == 1
+
+
+def test_contact_undo_is_refused_after_another_tab_edits(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    other, other_token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    contact = client.post("/api/v1/contacts", headers=headers, json={"company": "Datadog", "name": "Grace", "title": "A"}).json()["contact"]
+    path = f"/api/v1/contacts/{contact['id']}"
+    edited = client.patch(path, headers=headers, json={"title": "B"}).json()["contact"]
+    assert client.patch(path, headers=headers, json={"title": "A", "expected_revision": edited["revision"]}).status_code == 200
+    redone = client.patch(path, headers=headers, json={"title": "B"}).json()["contact"]
+    other.patch(path, headers={"X-CSRF-Token": other_token}, json={"title": "C"})
+    stale = client.patch(path, headers=headers, json={"title": "A", "expected_revision": redone["revision"]})
+    assert stale.status_code == 409
+    assert (stale.json()["error"], stale.json()["contact"]["title"]) == ("This contact changed in another tab.", "C")
+    assert client.patch(path, headers=headers, json={"title": "x", "expected_revision": "2"}).status_code == 400
+
+
 def test_company_writes_reject_unknown_companies(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

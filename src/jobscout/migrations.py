@@ -480,6 +480,14 @@ MIGRATIONS = (
         alter table interviews add column if not exists revision integer not null default 0;
         """,
     ),
+    Migration(
+        20,
+        "contact_deletes",
+        """
+        alter table contacts add column if not exists deleted_at timestamptz;
+        alter table contacts add column if not exists revision integer not null default 0;
+        """,
+    ),
 )
 
 

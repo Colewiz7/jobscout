@@ -94,6 +94,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 17, "name": "hidden_jobs"},
             {"version": 18, "name": "posting_edits"},
             {"version": 19, "name": "interview_cancel_and_delete"},
+            {"version": 20, "name": "contact_deletes"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1063,6 +1064,32 @@ def test_interviews_are_edited_cancelled_and_soft_deleted(conn):
                                    ends_at=None, location="", notes="")
     database.delete_interview(conn, other["id"])
     assert database.interview_key(conn, interview["id"]) is None  # purged
+
+
+def test_contacts_are_edited_and_soft_deleted(conn):
+    database.upsert_open(conn, [_p()])
+    linked = {"company": "Acme", "name": "Ada Example", "linkedin_url": "https://www.linkedin.com/in/ada"}
+    contact = database.save_contact(conn, linked, source="linkedin_csv")
+    assert database.update_contact(conn, 999, {"name": "x"}) is None
+    edited = database.update_contact(conn, contact["id"], {"title": "Recruiter", "email": "ada@example.com"})
+    assert edited["previous"]["title"] == "" and edited["contact"]["email"] == "ada@example.com"
+    assert edited["contact"]["revision"] == edited["previous"]["revision"] + 1
+    with pytest.raises(database.RecordConflict) as conflict:
+        database.update_contact(conn, contact["id"], {"title": ""}, expected=edited["previous"]["revision"])
+    assert conflict.value.record["title"] == "Recruiter"
+
+    assert database.delete_contact(conn, contact["id"]) is True
+    assert database.delete_contact(conn, contact["id"]) is False
+    assert database.company_records(conn, "Acme")["contacts"] == []
+    assert database.contact_counts(conn) == {}
+    assert database.update_contact(conn, contact["id"], {"name": "x"}) is None
+    assert database.restore_contact(conn, contact["id"])["title"] == "Recruiter"
+    assert database.restore_contact(conn, contact["id"]) is None
+    assert database.contact_counts(conn) == {"acme": 1}
+
+    database.delete_contact(conn, contact["id"])
+    database.save_contact(conn, linked, source="linkedin_csv")  # a reimport brings it back
+    assert [row["id"] for row in database.company_records(conn, "Acme")["contacts"]] == [contact["id"]]
 
 
 def test_eligibility_overrides_are_append_only_evidence_records(conn):

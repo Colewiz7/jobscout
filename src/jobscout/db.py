@@ -1804,7 +1804,7 @@ def contact_counts(conn: psycopg.Connection) -> dict[str, int]:
             """
             select company_key, count(*)::integer as count
               from contacts
-             where source = 'linkedin_csv'
+             where source = 'linkedin_csv' and deleted_at is null
              group by company_key
             """
         )
@@ -2055,14 +2055,16 @@ def save_next_step(conn: psycopg.Connection, dedupe_key: str, value: str) -> boo
     return saved
 
 
+_CONTACT_COLUMNS = "id, company_name, name, title, email, linkedin_url, source, created_at, updated_at, revision"
+
+
 def company_records(conn: psycopg.Connection, name: str) -> dict:
     key = company_key(name)
     with conn.cursor() as cur:
         cur.execute(
-            """
-            select id, company_name, name, title, email, linkedin_url, source,
-                   created_at, updated_at
-              from contacts where company_key = %s
+            f"""
+            select {_CONTACT_COLUMNS}
+              from contacts where company_key = %s and deleted_at is null
              order by source desc, lower(name), id
             """,
             (key,),
@@ -2145,10 +2147,62 @@ def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual"
             on conflict (import_key) do update set
                 company_name = excluded.company_name, name = excluded.name,
                 title = excluded.title, email = excluded.email,
-                linkedin_url = excluded.linkedin_url, updated_at = now()
+                linkedin_url = excluded.linkedin_url, deleted_at = null,
+                revision = contacts.revision + 1, updated_at = now()
             returning *
             """,
             (key, known_company["name"], name, title, email, linkedin_url, source, import_key),
+        )
+        contact = cur.fetchone()
+    conn.commit()
+    return contact
+
+
+def update_contact(conn: psycopg.Connection, contact_id: int, changes: dict, expected: int | None = None) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select {_CONTACT_COLUMNS} from contacts where id = %s and deleted_at is null for update",
+            (contact_id,),
+        )
+        previous = cur.fetchone()
+        if previous is None:
+            return None
+        # undo must not undo another tab
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        merged = {**previous, **changes}
+        cur.execute(
+            f"""
+            update contacts set name = %s, title = %s, email = %s, linkedin_url = %s,
+                   revision = revision + 1, updated_at = now()
+             where id = %s returning {_CONTACT_COLUMNS}
+            """,
+            (merged["name"], merged["title"], merged["email"], merged["linkedin_url"], contact_id),
+        )
+        contact = cur.fetchone()
+    conn.commit()
+    return {"contact": contact, "previous": previous}
+
+
+def delete_contact(conn: psycopg.Connection, contact_id: int) -> bool:
+    with conn.cursor() as cur:
+        # undo only lasts a moment
+        cur.execute("delete from contacts where deleted_at < now() - interval '1 day'")
+        cur.execute(
+            "update contacts set deleted_at = now() where id = %s and deleted_at is null returning id",
+            (contact_id,),
+        )
+        deleted = cur.fetchone() is not None
+    conn.commit()
+    return deleted
+
+
+def restore_contact(conn: psycopg.Connection, contact_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"update contacts set deleted_at = null where id = %s and deleted_at is not null returning {_CONTACT_COLUMNS}",
+            (contact_id,),
         )
         contact = cur.fetchone()
     conn.commit()

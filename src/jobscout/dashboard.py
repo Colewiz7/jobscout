@@ -150,6 +150,26 @@ def _interview_changes(payload: dict) -> dict:
     return changes
 
 
+def _contact_changes(payload: dict) -> dict:
+    unknown = sorted(set(payload) - {"name", "title", "email", "linkedin_url"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    changes = {}
+    for name, limit in (("name", 500), ("title", 500), ("email", 500), ("linkedin_url", 2_000)):
+        if name not in payload:
+            continue
+        if not isinstance(payload[name], str) or len(payload[name].strip()) > limit:
+            raise ValueError(f"{name} must be text under {limit:,} characters")
+        changes[name] = payload[name].strip()
+    if "name" in changes and not changes["name"]:
+        raise ValueError("A contact needs a name. Add one and save again.")
+    if changes.get("linkedin_url") and not changes["linkedin_url"].startswith("https://"):
+        raise ValueError("LinkedIn URL must use HTTPS")
+    if not changes:
+        raise ValueError("Change the name, role, email or LinkedIn URL, then save")
+    return changes
+
+
 def _company_groups(jobs: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     tracked = {"applying", "applied", "interviewing", "offer", "rejected"}
@@ -579,6 +599,24 @@ class PostgresStore:
             database.require_schema(conn)
             return database.save_contact(conn, payload, source=source)
 
+    def update_contact(self, contact_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _contact_changes(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_contact(conn, contact_id, changes, expected)
+
+    def delete_contact(self, contact_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_contact(conn, contact_id)
+
+    def restore_contact(self, contact_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.restore_contact(conn, contact_id)
+
     def import_connections(self, contacts: list[dict]) -> dict:
         companies = {
             item["key"]: item["name"] for item in _company_groups(self.jobs(include_closed=True))
@@ -934,7 +972,7 @@ class DemoStore:
     def jobs(self, include_closed: bool = False) -> list[dict]:
         counts: dict[str, int] = {}
         for contact in self._contacts:
-            if contact["source"] == "linkedin_csv":
+            if contact["source"] == "linkedin_csv" and not contact.get("deleted"):
                 counts[contact["company_key"]] = counts.get(contact["company_key"], 0) + 1
         jobs = [
             self._with_override(row) for row in self.rows
@@ -1317,7 +1355,8 @@ class DemoStore:
         company = next((item for item in groups if item["key"] == key), None)
         if company is None:
             return {"company": None}
-        contacts = [item for item in self._contacts if item["company_key"] == key]
+        contacts = [self._public_contact(item) for item in self._contacts
+                    if item["company_key"] == key and not item.get("deleted")]
         note = self._company_notes.get(key, {"body": "", "updated_at": None})
         account = self._company_accounts.get(database.company_key(company["name"])) if include_account else None
         return {"company": {
@@ -1365,19 +1404,54 @@ class DemoStore:
                 item["company_key"] == key and item["name"].casefold() == name.casefold()
                 and item["linkedin_url"] == linkedin_url), None)
             if existing:
-                existing.update(title=str(payload.get("title") or ""), updated_at=dt.datetime.now(dt.timezone.utc))
-                return copy.deepcopy(existing)
+                existing.update(title=str(payload.get("title") or ""), deleted=False, revision=existing["revision"] + 1,
+                                updated_at=dt.datetime.now(dt.timezone.utc))
+                return self._public_contact(existing)
         contact = {
             "id": self._next_contact_id, "company_key": key, "company_name": company,
             "name": name, "title": str(payload.get("title") or "")[:500],
             "email": str(payload.get("email") or "")[:500],
-            "linkedin_url": linkedin_url[:2_000], "source": source,
+            "linkedin_url": linkedin_url[:2_000], "source": source, "revision": 0,
             "created_at": dt.datetime.now(dt.timezone.utc),
             "updated_at": dt.datetime.now(dt.timezone.utc),
         }
         self._next_contact_id += 1
         self._contacts.append(contact)
         return copy.deepcopy(contact)
+
+    @staticmethod
+    def _public_contact(contact: dict) -> dict:
+        return copy.deepcopy({key: value for key, value in contact.items() if key != "deleted"})
+
+    def _live_contact(self, contact_id: int, *, deleted: bool = False) -> dict | None:
+        return next((item for item in self._contacts
+                     if item["id"] == contact_id and bool(item.get("deleted")) == deleted), None)
+
+    def update_contact(self, contact_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _contact_changes(payload)
+        contact = self._live_contact(contact_id)
+        if contact is None:
+            return None
+        previous = self._public_contact(contact)
+        if expected is not None and contact["revision"] != expected:
+            raise database.RecordConflict(previous)
+        contact.update(changes, revision=contact["revision"] + 1, updated_at=dt.datetime.now(dt.timezone.utc))
+        return {"contact": self._public_contact(contact), "previous": previous}
+
+    def delete_contact(self, contact_id: int) -> bool:
+        contact = self._live_contact(contact_id)
+        if contact is not None:
+            contact["deleted"] = True
+        return contact is not None
+
+    def restore_contact(self, contact_id: int) -> dict | None:
+        contact = self._live_contact(contact_id, deleted=True)
+        if contact is None:
+            return None
+        contact["deleted"] = False
+        return self._public_contact(contact)
 
     def import_connections(self, contacts: list[dict]) -> dict:
         companies = {
@@ -2005,49 +2079,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._edited_json(result, edit_id=result["edit_id"])
 
-    # every interview write checks its job
-    def _interview_write(self, raw_id: str, action: str) -> None:
+    def _record_write(self, kind: str, raw_id: str, action: str) -> None:
         if not self._require_write_security():
             return
         try:
-            interview_id = int(raw_id)
+            record_id = int(raw_id)
         except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid interview")
+            self._error(HTTPStatus.BAD_REQUEST, f"invalid {kind}")
             return
+        store = self.app.store
         try:
-            key = self.app.store.interview_key(interview_id)
-            if key is None:
-                self._error(HTTPStatus.NOT_FOUND, "interview not found")
-                return
-            if self._reject_hidden(key):
-                return
+            # interviews belong to a job
+            if kind == "interview":
+                key = store.interview_key(record_id)
+                if key is None:
+                    self._error(HTTPStatus.NOT_FOUND, "interview not found")
+                    return
+                if self._reject_hidden(key):
+                    return
             if action == "edit":
-                result = self.app.store.update_interview(interview_id, self._read_json())
+                result = getattr(store, f"update_{kind}")(record_id, self._read_json())
             elif action == "delete":
-                result = {"ok": True} if self.app.store.delete_interview(interview_id) else None
+                result = {"ok": True} if getattr(store, f"delete_{kind}")(record_id) else None
             else:
-                restored = self.app.store.restore_interview(interview_id)
-                result = restored and {"interview": restored}
+                restored = getattr(store, f"restore_{kind}")(record_id)
+                result = restored and {kind: restored}
         except (json.JSONDecodeError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
             return
         except database.RecordConflict as conflict:
-            self._json({"error": "This interview changed in another tab.", "interview": conflict.record}, HTTPStatus.CONFLICT)
+            self._json({"error": f"This {kind} changed in another tab.", kind: conflict.record}, HTTPStatus.CONFLICT)
             return
         except Exception:
-            log.exception("could not change interview")
-            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the interview. Retry shortly.")
+            log.exception("could not change %s", kind)
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, f"Couldn't save the {kind}. Retry shortly.")
             return
         if result is None:
-            self._error(HTTPStatus.NOT_FOUND, "interview not found")
+            self._error(HTTPStatus.NOT_FOUND, f"{kind} not found")
             return
         self._json(result)
 
+    def _record_route(self, path: str, method: str) -> bool:
+        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/")):
+            if not path.startswith(prefix):
+                continue
+            rest = path.removeprefix(prefix)
+            if method == "POST" and rest.endswith("/restore"):
+                self._record_write(kind, rest.removesuffix("/restore"), "restore")
+            elif method in {"PATCH", "DELETE"}:
+                self._record_write(kind, rest, "edit" if method == "PATCH" else "delete")
+            else:
+                return False
+            return True
+        return False
+
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        interview_prefix = "/api/v1/interviews/"
-        if parsed.path.startswith(interview_prefix):
-            self._interview_write(parsed.path.removeprefix(interview_prefix), "edit")
+        if self._record_route(parsed.path, "PATCH"):
             return
         prefix = "/api/v1/jobs/"
         posting_suffix = "/posting"
@@ -2292,8 +2380,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._json({"eligibility": result}, HTTPStatus.CREATED)
             return
-        if parsed.path.startswith("/api/v1/interviews/") and parsed.path.endswith("/restore"):
-            self._interview_write(parsed.path[len("/api/v1/interviews/"):-len("/restore")], "restore")
+        if self._record_route(parsed.path, "POST"):
             return
         if parsed.path == "/api/v1/interviews":
             if not self._require_write_security():
@@ -2601,8 +2688,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        if parsed.path.startswith("/api/v1/interviews/"):
-            self._interview_write(parsed.path.removeprefix("/api/v1/interviews/"), "delete")
+        if self._record_route(parsed.path, "DELETE"):
             return
         prefix = "/api/v1/saved-views/"
         if not parsed.path.startswith(prefix):
