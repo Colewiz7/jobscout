@@ -180,6 +180,20 @@
     <p class="capture-bookmarklet">From another site: <a id="capture-bookmarklet" href="#" draggable="true">drag “Add to JobSeer” to your bookmarks bar</a>.</p>
   </dialog>
 
+  <dialog class="capture-dialog edit-dialog" id="edit-dialog" aria-labelledby="edit-title" aria-describedby="edit-intro">
+    <div class="dialog-heading">
+      <div><h2 id="edit-title">Edit</h2><p id="edit-intro" hidden></p></div>
+      <button class="icon-button interactive" type="button" data-edit-cancel aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <form id="edit-form">
+      <p class="capture-error" id="edit-error" role="alert" hidden></p>
+      <div id="edit-fields"></div>
+      <div class="capture-actions"><button class="text-button interactive" type="button" data-edit-cancel>Cancel</button><button class="filled-button interactive" id="edit-submit" type="submit">Save</button></div>
+    </form>
+  </dialog>
+
   <dialog class="confirm-dialog" id="confirm-dialog" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-body">
     <h2 id="confirm-title"></h2>
     <p id="confirm-body"></p>

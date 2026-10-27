@@ -4103,7 +4103,8 @@ body.quick-fill-popout {
   font-size: 13px;
 }
 
-.capture-field input {
+.capture-field input,
+.capture-field textarea {
   min-width: 0;
   min-height: 44px;
   padding: 0 var(--s-3);
@@ -4112,6 +4113,36 @@ body.quick-fill-popout {
   background: var(--surface-container-low);
   color: var(--on-surface);
   font: inherit;
+}
+
+.capture-field textarea {
+  padding: var(--s-3);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.capture-field small {
+  color: var(--on-surface-variant);
+}
+
+.edit-dialog {
+  width: min(100% - var(--s-8), 560px);
+}
+
+.posting-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  margin-top: var(--s-6);
+}
+
+.posting-detail-actions .original-link {
+  margin-top: 0;
+}
+
+.posting-sections > [data-edit-posting] {
+  margin-top: var(--s-3);
 }
 
 .capture-manual {

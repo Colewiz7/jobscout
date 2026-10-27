@@ -54,6 +54,35 @@ test("undoing an older entry drops newer ones on the same job", () => {
   assert.equal(stack.pop().entry.label, "saved");
 });
 
+test("an older field edit waits for the newer one on the same record", () => {
+  const stack = new UndoStack();
+  const first = stack.push({ label: "A to B", keys: ["interview:1"], latest: "interview:1" });
+  const second = stack.push({ label: "B to C", keys: ["interview:1"], latest: "interview:1" });
+  const blocked = stack.take(first);
+  assert.equal(blocked.blocked, true);
+  assert.deepEqual(blocked.dropped, []);
+  assert.ok(stack.has(first) && stack.has(second));
+  assert.deepEqual(labels(stack.take(second)), ["B to C"]);
+  assert.deepEqual(labels(stack.take(first)), ["A to B"]);
+});
+
+test("a newer delete also holds back an older field edit", () => {
+  const stack = new UndoStack();
+  const edit = stack.push({ label: "edit", keys: ["contact:4"], latest: "contact:4" });
+  stack.push({ label: "delete", keys: ["contact:4"] });
+  assert.equal(stack.take(edit).blocked, true);
+  assert.equal(stack.pop().entry.label, "delete");
+});
+
+test("a field edit only waits on its own scope", () => {
+  const stack = new UndoStack();
+  const edit = stack.push({ label: "edit", keys: ["job1", "posting:job1"], latest: "posting:job1" });
+  stack.push({ label: "saved", keys: ["job1"] });
+  stack.push({ label: "other", keys: ["posting:job2"], latest: "posting:job2" });
+  assert.deepEqual(labels(stack.take(edit)), ["edit", "saved"]);
+  assert.equal(stack.size, 1);
+});
+
 test("dropping only touches overlapping newer entries", () => {
   const stack = new UndoStack();
   const older = stack.push({ label: "older", keys: ["job2"] });

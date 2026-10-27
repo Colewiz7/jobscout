@@ -9,6 +9,7 @@ import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
+import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -28,6 +29,8 @@ const quickFillTrigger = document.querySelector("#quick-fill-trigger");
 const quickFillSheet = document.querySelector("#quick-fill-sheet");
 const captureDialog = document.querySelector("#capture-dialog");
 const confirmDialog = document.querySelector("#confirm-dialog");
+const editDialog = document.querySelector("#edit-dialog");
+const editForm = document.querySelector("#edit-form");
 const captureForm = document.querySelector("#capture-form");
 const captureError = document.querySelector("#capture-error");
 const offlineState = document.querySelector("#offline-state");
@@ -118,6 +121,7 @@ const state = {
 let commandSelection = 0;
 let commandMatches = commands;
 let dialogTrigger = null;
+let editor = null;
 let goChordUntil = 0;
 let loadingTimer = null;
 let snackbarCurrent = null;
@@ -548,7 +552,8 @@ function descriptionMarkup(job, { compact = false } = {}) {
   }).join("");
   const legend = [...usedHighlights].map((kind) => `<span class="highlight-key-item highlight-key-item--${kind}">${escapeHtml(HIGHLIGHT_LABELS[kind])}</span>`).join("");
   const original = value.description_text ? `<details class="parsed-section original-posting"><summary>Original posting</summary><div class="original-text">${escapeHtml(value.description_text)}</div></details>` : "";
-  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${legend ? `<div class="highlight-key" aria-label="Highlight key">${legend}</div>` : ""}${parsed}${original}</section>` : "";
+  const correct = compact ? "" : '<button class="text-button interactive" type="button" data-edit-posting="description">Correct description</button>';
+  return parsed || original ? `<section class="detail-section posting-sections" aria-labelledby="description-heading"><h2 id="description-heading">About the role</h2>${legend ? `<div class="highlight-key" aria-label="Highlight key">${legend}</div>` : ""}${parsed}${original}${correct}</section>` : "";
 }
 
 function overviewMarkup(job) {
@@ -668,7 +673,7 @@ function detailMarkup(job) {
       ${atGlanceMarkup(job)}
       ${skillMatchMarkup(job)}
       ${descriptionMarkup(job)}
-      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl>${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}</section>
+      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl><div class="posting-detail-actions">${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}<button class="text-button interactive" type="button" data-edit-posting ${pending ? 'aria-disabled="true"' : ""}>Edit posting</button></div></section>
       <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><div class="activity-status-control"><span>Correct status</span>${statusSelectMarkup(job, "data-job-status-select")}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
@@ -2955,16 +2960,182 @@ function setDefaultDocument(c, id) {
 let confirmResolve = null;
 
 // cancel is the default focus
-function confirmDelete({ title, body, action = "Delete", trigger }) {
+function confirmDelete({ title, body, action = "Delete", cancel = "Cancel", trigger }) {
   if (confirmDialog.open) return Promise.resolve(false);
   confirmDialog.querySelector("#confirm-title").textContent = title;
   confirmDialog.querySelector("#confirm-body").textContent = body;
   confirmDialog.querySelector("[data-confirm-accept]").textContent = action;
+  confirmDialog.querySelector("[data-confirm-cancel]").textContent = cancel;
   confirmDialog.returnValue = "";
   rememberDialogTrigger(trigger);
   confirmDialog.showModal();
   confirmDialog.querySelector("[data-confirm-cancel]").focus();
   return new Promise((resolve) => { confirmResolve = resolve; });
+}
+
+// --- record editors ---
+// one dialog serves every record
+
+function editFieldMarkup(field) {
+  const id = `edit-${field.name}`;
+  const attrs = [
+    field.required ? "required" : "", field.maxlength ? `maxlength="${field.maxlength}"` : "",
+    field.inputmode ? `inputmode="${field.inputmode}"` : "", `autocomplete="${field.autocomplete || "off"}"`,
+    field.inputmode === "url" ? 'spellcheck="false" autocapitalize="off"' : "",
+    field.help ? `aria-describedby="${id}-help"` : "",
+  ].filter(Boolean).join(" ");
+  const control = field.rows
+    ? `<textarea id="${id}" name="${field.name}" rows="${field.rows}" ${attrs}>${escapeHtml(field.value ?? "")}</textarea>`
+    : `<input id="${id}" name="${field.name}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${attrs}>`;
+  return `<label class="capture-field" for="${id}"><span>${escapeHtml(field.label)}${field.optional ? " <small>(optional)</small>" : ""}</span>${control}${field.help ? `<small class="edit-help" id="${id}-help">${escapeHtml(field.help)}</small>` : ""}</label>`;
+}
+
+function openEditor({ title, intro = "", fields, save, key = "", trigger = null, focusBack = null, focus = "" }) {
+  if (editDialog.open || confirmDialog.open) return;
+  editor = {
+    key, fields, save, focusBack, saving: false,
+    trigger: trigger instanceof HTMLElement ? trigger : document.activeElement,
+    original: Object.fromEntries(fields.map((field) => [field.name, field.value ?? ""])),
+  };
+  editDialog.querySelector("#edit-title").textContent = title;
+  const introNode = editDialog.querySelector("#edit-intro");
+  introNode.textContent = intro;
+  introNode.hidden = !intro;
+  editDialog.querySelector(".dialog-heading [data-edit-cancel]").setAttribute("aria-label", `Close ${title}`);
+  editDialog.querySelector("#edit-fields").innerHTML = fields.map(editFieldMarkup).join("");
+  showEditError("");
+  editDialog.showModal();
+  editForm.elements[focus || fields[0].name]?.focus();
+}
+
+function showEditError(message) {
+  const node = editDialog.querySelector("#edit-error");
+  node.textContent = message;
+  node.hidden = !message;
+}
+
+function editorChanges() {
+  const draft = Object.fromEntries(editor.fields.map((field) => [field.name, editForm.elements[field.name].value]));
+  return changedFields(editor.original, draft);
+}
+
+async function submitEditor() {
+  if (!editor || editor.saving) return;
+  const changes = editorChanges();
+  if (!Object.keys(changes).length) { closeEditor(); return; }
+  const button = editDialog.querySelector("#edit-submit");
+  editor.saving = true;
+  button.setAttribute("aria-disabled", "true");
+  const error = await editor.save(changes);
+  if (!editor) return;
+  editor.saving = false;
+  button.removeAttribute("aria-disabled");
+  if (error) { showEditError(error); return; }
+  closeEditor();
+}
+
+// the trigger may have rerendered
+function closeEditor() {
+  const current = editor;
+  editor = null;
+  if (editDialog.open) editDialog.close();
+  if (current?.trigger?.isConnected) current.trigger.focus({ preventScroll: true });
+  else current?.focusBack?.();
+}
+
+async function cancelEditor() {
+  if (!editor || editor.saving) return;
+  if (!Object.keys(editorChanges()).length) { closeEditor(); return; }
+  const keep = !await confirmDelete({
+    title: "Discard changes?", body: "Your edits here haven't been saved.",
+    action: "Discard", cancel: "Keep editing", trigger: document.activeElement,
+  });
+  if (!keep) closeEditor();
+}
+
+// rows rerender after a save
+function recordFocus(selector, fallback) {
+  return () => {
+    const node = document.querySelector(selector);
+    const target = node ? (node.matches(".job-row") ? node : node.querySelector("button[data-menu-trigger]")) : null;
+    (target || document.querySelector(fallback))?.focus({ preventScroll: true });
+  };
+}
+
+function trackedJob(key) {
+  return state.jobs.find((job) => job.dedupe_key === key) || state.trackerData?.applications?.find((job) => job.dedupe_key === key);
+}
+
+function editPosting(key, { trigger = null, focusBack = null, focus = "" } = {}) {
+  const job = trackedJob(key);
+  if (!job || state.pending.has(key)) return;
+  const text = state.descriptions.get(key)?.value?.description_text || "";
+  openEditor({
+    title: "Edit posting", intro: "Fix what the capture got wrong. Scout refreshes keep your changes.",
+    key, trigger, focusBack, focus,
+    fields: [
+      { name: "company", label: "Company", value: job.company, required: true, maxlength: 500, autocomplete: "organization" },
+      { name: "title", label: "Role title", value: job.title, required: true, maxlength: 500 },
+      { name: "url", label: "Posting URL", type: "url", inputmode: "url", value: job.url, required: Boolean(job.url), optional: !job.url, maxlength: 4096 },
+      { name: "description", label: "Description", value: text, rows: 10, optional: true, maxlength: 100000, help: "Correct the posting text. Sections and highlights are read from it." },
+    ],
+    save: (changes) => savePostingEdit(key, changes),
+  });
+  // a late load still prefills
+  if (!state.descriptions.has(key)) loadDescription(key).then(() => {
+    // the dialog may hold another posting now
+    const field = editor?.key === key && editForm.elements.description;
+    const loaded = state.descriptions.get(key)?.value?.description_text || "";
+    if (field && !field.value && loaded) { field.value = loaded; editor.original.description = loaded; }
+  });
+}
+
+async function savePostingEdit(key, changes) {
+  try {
+    const response = await secureWrite(`/api/v1/jobs/${encodeURIComponent(key)}/posting`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(changes),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error || "Couldn't save the posting. Retry shortly.";
+    applyPostingResult(key, body);
+    if (body.edit_id) offerUndoSnackbar("Posting updated.", [key, `posting:${key}`], () => undoPostingEdit(body.edit_id, key), { latest: `posting:${key}` });
+    return "";
+  } catch (error) {
+    return error instanceof Error ? error.message : "Couldn't save the posting. Retry shortly.";
+  }
+}
+
+function applyPostingResult(key, { job, description }) {
+  if (job) for (const found of [state.jobs.find((item) => item.dedupe_key === key), state.trackerData?.applications?.find((item) => item.dedupe_key === key)]) {
+    if (found) Object.assign(found, { company: job.company, title: job.title, url: job.url });
+  }
+  if (description) {
+    state.descriptions.set(key, { loading: false, showLoader: false, value: description, error: description.description_error || "" });
+    const found = state.jobs.find((item) => item.dedupe_key === key);
+    if (found) { found.pay = description.pay || ""; found.pay_checked = Boolean(description.description_text); }
+    state.overviews.delete(key);
+    state.overviewCacheAttempted.delete(key);
+    showCachedOverview(key);
+  }
+  if (state.companiesData) state.companiesData = null;
+  jobsWriteLanded(); trackerWriteLanded();
+  if (routeRoot() === "companies") loadCompanies();
+  renderJobSurface();
+}
+
+async function undoPostingEdit(id, key) {
+  try {
+    const response = await secureWrite(`/api/v1/posting-edits/${id}/undo`, { method: "POST", headers: { Accept: "application/json" } });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "Couldn't undo the edit.");
+    applyPostingResult(key, body);
+  } catch (error) {
+    showSnackbar(error instanceof Error ? error.message : "Couldn't undo the edit.");
+    return;
+  }
+  showSnackbar("Posting edit undone.");
 }
 
 function openProfileItem(c, role) {
@@ -3668,13 +3839,15 @@ function withdrawUndo(undoId) {
 }
 
 // lets undo spot stale entries
-function offerUndoSnackbar(message, keys, run) {
-  const undoId = undoStack.push({ message, keys, run });
+function offerUndoSnackbar(message, keys, run, { latest = "" } = {}) {
+  const undoId = undoStack.push({ message, keys, run, latest });
   showSnackbar(message, { action: "Undo", undoId, onAction: () => runUndo(undoStack.take(undoId)) });
 }
 
 function runUndo(taken) {
   if (!taken) { showSnackbar("Nothing to undo."); return; }
+  // the newer undo stays offered
+  if (taken.blocked) { showSnackbar("Couldn't undo. It changed again since, so undo the newer change first."); return; }
   // their snackbars are stale now
   const stale = new Set([taken.entry, ...taken.dropped].map((entry) => entry.id));
   for (let index = snackbarQueue.length - 1; index >= 0; index -= 1) if (stale.has(snackbarQueue[index].undoId)) snackbarQueue.splice(index, 1);
@@ -3693,6 +3866,7 @@ const trackerItems = [
   { label: "Move to bottom", when: (c) => !c.table, disabled: (c) => c.index === c.column.length - 1, run: (c) => moveOnBoard(c, c.column.length - 1) },
   { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
+  { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`${c.table ? ".tracker-table tr" : ".board-card"}[data-tracker-key="${CSS.escape(c.key)}"]`, "#tracker-title") }) },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
   { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
     trigger: c.el.querySelector("button[data-menu-trigger]"),
@@ -3742,6 +3916,7 @@ const objectMenus = [
       { label: "Open", when: (c) => !c.bulk, run: (c) => selectJob(c.key, { focusDetail: true }) },
       { label: "Apply now", shortcut: "a", when: (c) => !c.bulk && applicationUrl(c.job), disabled: (c) => jobHasActiveBlocker(c.job), run: (c) => applyToJob(c.job) },
       { label: "Open original posting", when: (c) => !c.bulk && c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Edit posting…", when: (c) => !c.bulk, run: (c) => editPosting(c.key, { focusBack: recordFocus(`#job-list-layer .job-row[data-job-key="${CSS.escape(c.key)}"]`, ".inbox-list h1") }) },
       { label: "Save", shortcut: "s", divider: true, when: (c) => c.bulk || c.job.status !== "saved", run: (c) => performDecision("saved", "Saved", c.bulk ? null : [c.key]) },
       { label: "Queue", shortcut: "q", when: (c) => c.bulk || c.job.status !== "queued", disabled: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => c.bulk ? queueSelection() : performDecision("queued", "Queued", [c.key]) },
       { label: "Dismiss", shortcut: "x", when: (c) => c.bulk || c.job.status !== "archived", run: (c) => performDecision("archived", "Dismissed", c.bulk ? null : [c.key]) },
@@ -3766,6 +3941,7 @@ const objectMenus = [
       { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, 0) },
       { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.count - 1) },
       { label: "Open original posting", when: (c) => c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`.queue-card[data-queue-key="${CSS.escape(c.key)}"]`, "#queue-title") }) },
       { label: "Save for later", divider: true, run: (c) => removeFromQueue(c.key) },
       { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
         trigger: document.querySelector(`.queue-card[data-queue-key="${CSS.escape(c.key)}"] button[data-menu-trigger]`),
@@ -3854,7 +4030,7 @@ function shortcutScopeAllows(event) {
 }
 
 function handleGlobalKeydown(event) {
-  if (confirmDialog.open) return; // escape must reach the dialog
+  if (confirmDialog.open || editDialog.open) return; // escape must reach the dialog
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
   if (matchShortcut(event, "Mod+Z") && shortcutScopeAllows(event)) { event.preventDefault(); runUndo(undoStack.pop()); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -4015,6 +4191,12 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
   if (event.target.closest("[data-retry-description]")) { state.descriptions.delete(state.selectedKey); loadDescription(state.selectedKey, { force: true }); renderSelectedJob(); return; }
   if (event.target.closest("[data-save-manual-description]")) { saveManualDescription(); return; }
+  const editButton = event.target.closest("[data-edit-posting]");
+  if (editButton) {
+    const field = editButton.dataset.editPosting;
+    if (editButton.getAttribute("aria-disabled") !== "true") editPosting(state.selectedKey, { trigger: editButton, focus: field, focusBack: () => document.querySelector(`[data-edit-posting="${field}"]`)?.focus() });
+    return;
+  }
   if (event.target.closest("[data-retry-overview]")) { loadOverview(state.selectedKey, { force: true }); return; }
   if (event.target.closest("[data-generate-overview]")) { loadOverview(state.selectedKey); if (routeRoot() === "inbox") renderSelectedJob(); else if (window.location.pathname.startsWith("/queue/session/")) renderApplySession(); return; }
   if (event.target.closest("[data-open-command]")) { openCommand(event.target.closest("[data-open-command]")); return; }
@@ -4257,6 +4439,7 @@ document.addEventListener("focusout", (event) => {
 
 document.addEventListener("submit", (event) => {
   if (event.target.id === "capture-form") { event.preventDefault(); submitCapture(); }
+  if (event.target.id === "edit-form") { event.preventDefault(); submitEditor(); }
   if (event.target.id === "interview-form") { event.preventDefault(); submitInterview(event.target); }
   if (event.target.id === "contact-form") { event.preventDefault(); submitContact(event.target); }
   if (event.target.id === "rule-form") { event.preventDefault(); submitRule(event.target); }
@@ -4287,6 +4470,14 @@ commandInput.addEventListener("keydown", (event) => {
 });
 
 confirmDialog.querySelector("[data-confirm-cancel]").addEventListener("click", () => confirmDialog.close());
+for (const button of editDialog.querySelectorAll("[data-edit-cancel]")) button.addEventListener("click", cancelEditor);
+// escape asks before dropping edits
+editDialog.addEventListener("cancel", (event) => { event.preventDefault(); cancelEditor(); });
+editDialog.addEventListener("click", (event) => {
+  if (event.target !== editDialog) return;
+  const bounds = editDialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) cancelEditor();
+});
 confirmDialog.querySelector("[data-confirm-accept]").addEventListener("click", () => confirmDialog.close("confirm"));
 confirmDialog.addEventListener("close", () => {
   const resolve = confirmResolve;

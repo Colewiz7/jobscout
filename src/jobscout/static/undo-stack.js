@@ -21,7 +21,12 @@ export class UndoStack {
   take(id) {
     const index = this.entries.findIndex((entry) => entry.id === id);
     if (index < 0) return null;
-    const [entry] = this.entries.splice(index, 1);
+    const entry = this.entries[index];
+    // field edits undo newest first
+    if (entry.latest && this.entries.slice(index + 1).some((later) => (later.keys || []).includes(entry.latest))) {
+      return { entry, dropped: [], blocked: true };
+    }
+    this.entries.splice(index, 1);
     const keys = new Set(entry.keys || []);
     const dropped = this.entries.slice(index).filter((later) => (later.keys || []).some((key) => keys.has(key)));
     this.entries = this.entries.filter((later) => !dropped.includes(later));
