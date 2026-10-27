@@ -394,6 +394,13 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        14,
+        "board_positions",
+        """
+        alter table application_states add column if not exists board_position integer;
+        """,
+    ),
 )
 
 

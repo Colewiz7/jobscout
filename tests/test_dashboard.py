@@ -538,6 +538,74 @@ def test_queue_session_rechecks_liveness_reorders_and_snapshots(dashboard):
     assert changed["applied_at"] is not None
 
 
+def test_board_order_saves_a_column_and_status_changes_reset_it(dashboard):
+    base, store = dashboard
+    keys = ["demo:1", "demo:2"]
+    for key in keys:
+        store.save(key, "interviewing", "")
+    client, csrf = authenticated_client(base)
+    try:
+        saved = client.put(
+            "/api/v1/tracker/board-order",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "interviewing", "dedupe_keys": ["demo:2", "demo:1"]},
+        )
+        positions = {
+            job["dedupe_key"]: job["board_position"]
+            for job in client.get("/api/v1/tracker").json()["applications"]
+        }
+        moved = client.patch(
+            "/api/v1/jobs/demo%3A1",
+            headers={"X-CSRF-Token": csrf},
+            json={"status": "offer", "notes": ""},
+        )
+        after = {
+            job["dedupe_key"]: job["board_position"]
+            for job in client.get("/api/v1/tracker").json()["applications"]
+        }
+    finally:
+        client.close()
+    assert saved.status_code == 200
+    assert saved.json() == {"status": "interviewing", "dedupe_keys": ["demo:2", "demo:1"]}
+    assert [positions[key] for key in keys] == [1, 0]
+    assert moved.status_code == 200
+    assert after["demo:1"] is None  # lands after the ordered cards
+    assert after["demo:2"] == 0
+
+
+def test_board_order_rejects_bad_columns_and_keys(dashboard):
+    base, store = dashboard
+    store.save("demo:1", "offer", "")
+    store.save("demo:2", "applied", "")
+    client, csrf = authenticated_client(base)
+    put = lambda body: client.put("/api/v1/tracker/board-order", headers={"X-CSRF-Token": csrf}, json=body)
+    try:
+        wrong_column = put({"status": "offer", "dedupe_keys": ["demo:1", "demo:2"]})
+        duplicate = put({"status": "offer", "dedupe_keys": ["demo:1", "demo:1"]})
+        not_board = put({"status": "queued", "dedupe_keys": []})
+        bad_keys = put({"status": "offer", "dedupe_keys": "demo:1"})
+        missing_status = put({"dedupe_keys": ["demo:1"]})
+        no_csrf = client.put("/api/v1/tracker/board-order", json={"status": "offer", "dedupe_keys": ["demo:1"]})
+    finally:
+        client.close()
+    assert [r.status_code for r in (wrong_column, duplicate, not_board, bad_keys, missing_status)] == [400] * 5
+    assert "only contain jobs in that column" in wrong_column.json()["error"]
+    assert "duplicates" in duplicate.json()["error"]
+    assert no_csrf.status_code == 403
+
+
+def test_board_order_keeps_position_when_status_is_unchanged(dashboard):
+    _, store = dashboard
+    store.save("demo:1", "applied", "")
+    store.save("demo:2", "applied", "")
+    store.reorder_board("applied", ["demo:2", "demo:1"])
+    store.save("demo:1", "applied", "new notes")
+    store.mark_applied("demo:2", None)
+    rows = {row["dedupe_key"]: row for row in store.rows}
+    assert rows["demo:1"]["board_position"] == 1
+    assert rows["demo:2"]["board_position"] == 0
+
+
 def test_queue_writes_require_csrf(dashboard):
     base, _ = dashboard
     reorder = httpx.put(

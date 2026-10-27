@@ -350,6 +350,7 @@ APPLICATION_STATUSES = frozenset(
         "offer", "rejected", "archived",
     }
 )
+BOARD_STATUSES = frozenset({"applying", "applied", "interviewing", "offer", "rejected"})
 
 
 def company_key(value: str) -> str:
@@ -650,7 +651,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                    coalesce(s.status, 'new') as status,
                    coalesce(s.notes, '') as notes,
                    s.updated_at as application_updated_at,
-                   s.queue_position, s.applied_at, s.resume_document_id, s.resume_name,
+                   s.queue_position, s.board_position, s.applied_at, s.resume_document_id, s.resume_name,
                    coalesce(s.next_step, '') as next_step,
                    rule_action.id as rule_action_id,
                    rule_action.name as archived_by_rule,
@@ -1183,6 +1184,10 @@ def save_application_state(
                     when excluded.status = 'queued' then application_states.queue_position
                     else null
                 end,
+                board_position = case
+                    when excluded.status = application_states.status then application_states.board_position
+                    else null
+                end,
                 applied_at = case
                     when excluded.status = 'applied'
                         then coalesce(application_states.applied_at, now())
@@ -1296,6 +1301,26 @@ def save_queue_order(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[s
     return dedupe_keys
 
 
+def save_board_order(conn: psycopg.Connection, status: str, dedupe_keys: list[str]) -> list[str]:
+    # filtered boards send partial columns
+    if status not in BOARD_STATUSES:
+        raise ValueError(f"not a board column: {status}")
+    if len(dedupe_keys) != len(set(dedupe_keys)) or len(dedupe_keys) > 2_000:
+        raise ValueError("board order contains duplicates or too many jobs")
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from application_states where status = %s for update", (status,))
+        column = {row["dedupe_key"] for row in cur.fetchall()}
+        if not set(dedupe_keys) <= column:
+            raise ValueError("board order must only contain jobs in that column")
+        cur.execute("update application_states set board_position = null where status = %s", (status,))
+        cur.executemany(
+            "update application_states set board_position = %s where dedupe_key = %s",
+            [(position, key) for position, key in enumerate(dedupe_keys)],
+        )
+    conn.commit()
+    return dedupe_keys
+
+
 def mark_application_applied(
     conn: psycopg.Connection, dedupe_key: str, document_id: int | None = None
 ) -> dict | None:
@@ -1354,6 +1379,10 @@ def mark_application_applied(
                 status = 'applied',
                 applied_at = coalesce(application_states.applied_at, now()),
                 queue_position = null,
+                board_position = case
+                    when application_states.status = 'applied' then application_states.board_position
+                    else null
+                end,
                 resume_document_id = excluded.resume_document_id,
                 resume_name = excluded.resume_name, updated_at = now()
             """,

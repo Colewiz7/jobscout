@@ -84,6 +84,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 11, "name": "company_icons"},
             {"version": 12, "name": "queued_ai_overviews"},
             {"version": 13, "name": "posting_taglines"},
+            {"version": 14, "name": "board_positions"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -567,6 +568,44 @@ def test_queue_order_rejects_missing_or_duplicate_jobs(conn):
         database.save_queue_order(conn, [])
     with pytest.raises(ValueError, match="duplicates"):
         database.save_queue_order(conn, [posting.dedupe_key, posting.dedupe_key])
+
+
+def test_board_order_and_status_changes(conn):
+    first = _p(url="https://acme.example/one")
+    second = _p(title="Systems Intern", url="https://acme.example/two")
+    third = _p(title="Data Intern", url="https://acme.example/three")
+    database.upsert_open(conn, [first, second, third])
+    for posting in (first, second, third):
+        database.save_application_state(conn, posting.dedupe_key, "interviewing", "")
+    assert database.save_board_order(conn, "interviewing", [third.dedupe_key, first.dedupe_key]) == [
+        third.dedupe_key, first.dedupe_key,
+    ]
+    rows = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}
+    assert rows[third.dedupe_key]["board_position"] == 0
+    assert rows[first.dedupe_key]["board_position"] == 1
+    assert rows[second.dedupe_key]["board_position"] is None
+
+    database.save_application_state(conn, first.dedupe_key, "interviewing", "notes only")
+    database.save_application_state(conn, third.dedupe_key, "offer", "")
+    database.mark_application_applied(conn, second.dedupe_key, None)
+    rows = {row["dedupe_key"]: row for row in database.dashboard_postings(conn)}
+    assert rows[first.dedupe_key]["board_position"] == 1
+    assert rows[third.dedupe_key]["board_position"] is None
+    assert rows[second.dedupe_key]["board_position"] is None
+
+
+def test_board_order_rejects_other_columns_and_duplicates(conn):
+    posting = _p()
+    other = _p(title="Systems Intern", url="https://acme.example/two")
+    database.upsert_open(conn, [posting, other])
+    database.save_application_state(conn, posting.dedupe_key, "offer", "")
+    database.save_application_state(conn, other.dedupe_key, "applied", "")
+    with pytest.raises(ValueError, match="only contain jobs in that column"):
+        database.save_board_order(conn, "offer", [posting.dedupe_key, other.dedupe_key])
+    with pytest.raises(ValueError, match="duplicates"):
+        database.save_board_order(conn, "offer", [posting.dedupe_key, posting.dedupe_key])
+    with pytest.raises(ValueError, match="not a board column"):
+        database.save_board_order(conn, "queued", [])
 
 
 def test_tracker_followups_interviews_and_company_records(conn):

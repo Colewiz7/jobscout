@@ -373,6 +373,11 @@ class PostgresStore:
             database.require_schema(conn)
             return database.save_queue_order(conn, dedupe_keys)
 
+    def reorder_board(self, status: str, dedupe_keys: list[str]) -> list[str]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_board_order(conn, status, dedupe_keys)
+
     def start_session(self) -> dict:
         # Do not probe the whole queue before showing the first job. A large
         # queue would make this request take minutes and appear blank to users.
@@ -677,7 +682,7 @@ def _demo_rows(count: int, seed: int, now: dt.datetime) -> list[dict]:
             "notes": "",
             "application_updated_at": applied_at if status != "new" else None,
             "recent_company_application_at": applied_at if index >= len(companies) else None,
-            "deadline": None, "queue_position": None,
+            "deadline": None, "queue_position": None, "board_position": None,
             "liveness_status": None, "liveness_checked_at": None,
             "liveness_evidence": None, "applied_at": applied_at if status == "applied" else None,
             "resume_document_id": None, "resume_name": None,
@@ -702,7 +707,7 @@ class DemoStore:
                 "status": "queued", "notes": "Mention the homelab incident response story.",
                 "application_updated_at": now,
                 "recent_company_application_at": None,
-                "deadline": None, "queue_position": 0,
+                "deadline": None, "queue_position": 0, "board_position": None,
                 "liveness_status": "live", "liveness_checked_at": now,
                 "liveness_evidence": "Demo posting is available",
                 "applied_at": None, "resume_document_id": None, "resume_name": None,
@@ -717,7 +722,7 @@ class DemoStore:
                 "score_detail": {"role_named": 100, "internship": 20, "fresh": 10},
                 "status": "new", "notes": "", "application_updated_at": None,
                 "recent_company_application_at": None,
-                "deadline": None, "queue_position": None,
+                "deadline": None, "queue_position": None, "board_position": None,
                 "liveness_status": None, "liveness_checked_at": None,
                 "liveness_evidence": None,
                 "applied_at": None, "resume_document_id": None, "resume_name": None,
@@ -815,7 +820,7 @@ class DemoStore:
             "closed": False, "notified": False, "score": None,
             "score_detail": {}, "status": "new", "notes": "",
             "application_updated_at": None, "recent_company_application_at": None,
-            "deadline": None, "queue_position": None,
+            "deadline": None, "queue_position": None, "board_position": None,
             "liveness_status": None, "liveness_checked_at": None,
             "liveness_evidence": None, "applied_at": None,
             "resume_document_id": None, "resume_name": None,
@@ -905,6 +910,8 @@ class DemoStore:
                     row.update(archived_by_rule=None, rule_action_id=None)
                 if effective_status != "queued":
                     row["queue_position"] = None
+                if effective_status != previous_status:
+                    row["board_position"] = None
                 if effective_status == "applied" and row.get("applied_at") is None:
                     row["applied_at"] = dt.datetime.now(dt.timezone.utc)
                     self._upsert_demo_followup(row)
@@ -929,6 +936,19 @@ class DemoStore:
         for row in self.rows:
             if row["dedupe_key"] in positions:
                 row["queue_position"] = positions[row["dedupe_key"]]
+        return dedupe_keys
+
+    def reorder_board(self, status: str, dedupe_keys: list[str]) -> list[str]:
+        if status not in database.BOARD_STATUSES:
+            raise ValueError(f"not a board column: {status}")
+        if len(dedupe_keys) != len(set(dedupe_keys)):
+            raise ValueError("board order contains duplicates or too many jobs")
+        column = [row for row in self.rows if row["status"] == status]
+        if not set(dedupe_keys) <= {row["dedupe_key"] for row in column}:
+            raise ValueError("board order must only contain jobs in that column")
+        positions = {key: index for index, key in enumerate(dedupe_keys)}
+        for row in column:
+            row["board_position"] = positions.get(row["dedupe_key"])
         return dedupe_keys
 
     def start_session(self) -> dict:
@@ -959,6 +979,8 @@ class DemoStore:
             if row["dedupe_key"] != key:
                 continue
             now = dt.datetime.now(dt.timezone.utc)
+            if row["status"] != "applied":
+                row["board_position"] = None
             row.update(
                 status="applied", application_updated_at=now, applied_at=now,
                 queue_position=None, resume_document_id=document_id,
@@ -2039,6 +2061,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't reorder the queue. Retry shortly.")
                 return
             self._json({"dedupe_keys": order})
+            return
+        if parsed.path == "/api/v1/tracker/board-order":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                status = payload.get("status")
+                dedupe_keys = payload.get("dedupe_keys")
+                if not isinstance(status, str):
+                    raise ValueError("status must be a board column")
+                if not isinstance(dedupe_keys, list) or not all(isinstance(key, str) for key in dedupe_keys):
+                    raise ValueError("dedupe_keys must be a list of job keys")
+                order = self.app.store.reorder_board(status, dedupe_keys)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not reorder the board")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't reorder the board. Retry shortly.")
+                return
+            self._json({"status": status, "dedupe_keys": order})
             return
         if parsed.path not in {"/api/v1/profile", "/api/v1/profile/context"}:
             self._error(HTTPStatus.NOT_FOUND, "not found")
