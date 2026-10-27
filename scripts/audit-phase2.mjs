@@ -885,7 +885,7 @@ try {
   if (auditApplySession && !applySession?.summary.includes("applied to 1 role")) failures.push("session summary did not record the application");
   if (auditTracker && tracker?.table.applications < 1) failures.push("tracker table has no applications");
   if (auditTracker && tracker?.table.insights !== 4) failures.push("tracker insights are incomplete");
-  if (auditTracker && (tracker?.table.columns.length !== 8 || tracker?.table.columns[2] !== "Status")) failures.push("tracker table status controls are incomplete");
+  if (auditTracker && (tracker?.table.columns.length !== 9 || tracker?.table.columns[2] !== "Status" || tracker?.table.columns[8] !== "Actions")) failures.push("tracker table status controls are incomplete");
   if (auditTracker && tracker?.board.columns !== 5) failures.push("tracker board columns are incomplete");
   if (auditTracker && tracker?.board.cards !== tracker?.board.alternatives) failures.push("board drag cards lack keyboard alternatives");
   if (auditTracker && !tracker?.board.canRequeue) failures.push("board cards cannot return to the queue");

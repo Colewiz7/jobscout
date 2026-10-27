@@ -1,6 +1,6 @@
 "use strict";
 
-import { toggleMenu } from "./action-menu.js";
+import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
@@ -59,6 +59,7 @@ const icons = {
   external: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5m0-5-9 9M19 14v5H5V5h5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
+  more: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5h.01M12 12h.01M12 18.5h.01" stroke-width="3"/></svg>',
 };
 
 const pages = {
@@ -402,6 +403,7 @@ function jobRowMarkup(entry) {
     ${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}
     <span class="job-row-copy"><span class="job-row-title">${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
+    <span class="row-more" data-menu-trigger aria-hidden="true">${icons.more}</span>
     ${bulkSelected ? '<span class="selection-check" aria-label="Selected">✓</span>' : ""}
   </button>`;
 }
@@ -1017,7 +1019,7 @@ function queueCard(job, index, count) {
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
     <button class="queue-drag-handle interactive" type="button" draggable="true" aria-label="Reorder ${escapeHtml(job.title)}" title="Drag to reorder">${icons.queue}</button>
     <div class="queue-card-copy"><h2>${escapeHtml(job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
-    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} earlier" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} later" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button></div>
+    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} earlier" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move ${escapeHtml(job.title)} later" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
   </article>`;
 }
 
@@ -1056,8 +1058,14 @@ function statusMarkup(status) {
   return `<span class="status-word status-${escapeHtml(status)}"><span aria-hidden="true">${symbols[status] || "•"}</span>${escapeHtml(statusLabel(status))}</span>`;
 }
 
+const statusOptions = ["new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"];
+
+function moreButtonMarkup(name) {
+  return `<button class="icon-button interactive more-button" type="button" data-menu-trigger aria-haspopup="menu" aria-expanded="false" aria-label="More actions for ${escapeHtml(name)}" aria-keyshortcuts="Shift+F10">${icons.more}</button>`;
+}
+
 function statusSelectMarkup(job, attribute) {
-  const options = ["new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"];
+  const options = statusOptions;
   return `<label class="status-editor"><span class="visually-hidden">Change status for ${escapeHtml(job.title)}</span><select ${attribute}="${escapeHtml(job.dedupe_key)}" aria-label="Change status for ${escapeHtml(job.title)}" ${state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>${options.map((status) => `<option value="${status}" ${status === job.status ? "selected" : ""}>${escapeHtml(statusLabel(status))}</option>`).join("")}</select></label>`;
 }
 
@@ -1126,24 +1134,24 @@ function reminderMarkup() {
     return !Number.isNaN(effective.valueOf()) && effective <= now;
   });
   if (!due.length) return "";
-  return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title">Follow-ups due</h2><p>${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.</p></div></div><div class="reminder-list">${due.map((reminder) => `<article class="reminder-row"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span></div><time datetime="${escapeHtml(reminder.snoozed_until || reminder.due_at)}">${escapeHtml(formatDate(reminder.snoozed_until || reminder.due_at))}</time><div><button class="text-button interactive" type="button" data-reminder-action="snooze" data-reminder-id="${reminder.id}">Snooze 3d</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button></div></article>`).join("")}</div></section>`;
+  return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title">Follow-ups due</h2><p>${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.</p></div></div><div class="reminder-list">${due.map((reminder) => `<article class="reminder-row" data-reminder-id="${reminder.id}"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span></div><time datetime="${escapeHtml(reminder.snoozed_until || reminder.due_at)}">${escapeHtml(formatDate(reminder.snoozed_until || reminder.due_at))}</time><div><button class="text-button interactive" type="button" data-reminder-action="snooze" data-reminder-id="${reminder.id}">Snooze 3d</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button>${moreButtonMarkup(`${reminder.company} follow-up`)}</div></article>`).join("")}</div></section>`;
 }
 
 function interviewsMarkup(applications) {
   const upcoming = (state.trackerData?.interviews || []).filter((item) => new Date(item.starts_at) >= new Date());
   const options = applications.map((job) => `<option value="${escapeHtml(job.dedupe_key)}">${escapeHtml(job.company)} — ${escapeHtml(job.title)}</option>`).join("");
-  return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title">Interviews</h2><p>${upcoming.length ? `${upcoming.length} upcoming.` : "Keep interview details with the application."}</p></div>${upcoming.length ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map((item) => `<article><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time><div><strong>${escapeHtml(item.company)}</strong><span>${escapeHtml(item.title)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</span></div><a class="text-button interactive" href="/api/v1/interviews.ics?id=${item.id}">.ics</a></article>`).join("")}</div>` : ""}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
+  return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title">Interviews</h2><p>${upcoming.length ? `${upcoming.length} upcoming.` : "Keep interview details with the application."}</p></div>${upcoming.length ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map((item) => `<article data-interview-id="${item.id}"><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time><div><strong>${escapeHtml(item.company)}</strong><span>${escapeHtml(item.title)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</span></div><div class="row-actions"><a class="text-button interactive" href="/api/v1/interviews.ics?id=${item.id}">.ics</a>${moreButtonMarkup(`${item.company} interview`)}</div></article>`).join("")}</div>` : ""}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
 }
 
 function trackerTableMarkup(applications) {
   if (!applications.length) return '<div class="empty-state"><h2>No applications match.</h2><p>Change the Tracker filters or apply to a role from Queue.</p><a class="tonal-button interactive" href="/queue" data-route>Open queue</a></div>';
-  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th></tr></thead><tbody>${applications.map((job) => `<tr><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td><div class="tracker-status-cell">${statusMarkup(job.status)}${statusSelectMarkup(job, "data-tracker-status-select")}</div></td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "")}</td><td>${escapeHtml(sourceList(job).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${applications.map((job) => `<tr data-tracker-key="${escapeHtml(job.dedupe_key)}"><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td><div class="tracker-status-cell">${statusMarkup(job.status)}${statusSelectMarkup(job, "data-tracker-status-select")}</div></td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "")}</td><td>${escapeHtml(sourceList(job).join(", "))}</td><td class="row-menu-cell">${moreButtonMarkup(job.title)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function trackerBoardMarkup(applications) {
   return `<div class="tracker-board" aria-label="Applications by status">${boardStatuses.map((status) => {
     const jobs = applications.filter((job) => job.status === status);
-    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}</article>`).join("")}</div></section>`;
+    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}${moreButtonMarkup(job.title)}</article>`).join("")}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1247,9 +1255,9 @@ function companyListMarkup(companies) {
   return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route>${companyLogoMarkup(company.name, "company-monogram")}<div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
 }
 
-function contactMarkup(contact) {
+function contactMarkup(contact, index) {
   const detail = [contact.title, contact.source === "linkedin_csv" ? "LinkedIn connection" : "Manual contact"].filter(Boolean).join(" · ");
-  return `<article class="contact-row"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div>${contact.linkedin_url ? `<a class="text-button interactive" href="${escapeHtml(contact.linkedin_url)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}</article>`;
+  return `<article class="contact-row" data-contact-index="${index}"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div><div class="row-actions">${contact.linkedin_url ? `<a class="text-button interactive" href="${escapeHtml(contact.linkedin_url)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}${moreButtonMarkup(contact.name)}</div></article>`;
 }
 
 function companyDetailMarkup(company) {
@@ -1260,7 +1268,7 @@ function companyDetailMarkup(company) {
   return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><div class="company-title-row">${companyLogoMarkup(company.name, "company-monogram")}<h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1></div><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
     <section class="company-section" aria-labelledby="company-applications-title"><h2 id="company-applications-title">Applications</h2>${company.applications.length ? `<div class="company-application-list">${company.applications.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${job.applied_at ? `Applied ${escapeHtml(formatDate(job.applied_at))}` : escapeHtml(formatDate(job.application_updated_at))}</span></div>${statusMarkup(job.status)}</article>`).join("")}</div>` : '<p class="muted-copy">No applications at this company yet.</p>'}</section>
     <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2><div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
-    <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map(contactMarkup).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
+    <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map((contact, index) => contactMarkup(contact, index)).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
   </main><aside>
     <section class="company-section"><h2>Notes</h2><label class="company-notes"><span class="visually-hidden">Notes about ${escapeHtml(company.name)}</span><textarea id="company-note" rows="8" maxlength="20000" placeholder="Interview context, referrals, or follow-up notes">${escapeHtml(company.note?.body || "")}</textarea><small id="company-note-state">Saved automatically</small></label></section>
     <section class="company-section"><h2>ATS account</h2>${accountMarkup}</section>
@@ -2808,6 +2816,19 @@ async function queueSelection() {
   await performDecision("queued", "Queued", eligible.map((job) => job.dedupe_key), { note });
 }
 
+function dismissSelectedCompanies() {
+  const { companies, targets } = companyDismissTargets(state.jobs, state.selectedKeys);
+  const where = companyLabel(companies);
+  if (!targets.length) { showSnackbar(`No unapplied roles to dismiss at ${where}.`); return; }
+  performDecision("archived", "Dismissed", targets.map((job) => job.dedupe_key), { scope: ` at ${where}` });
+}
+
+function applyToJob(job) {
+  if (jobHasActiveBlocker(job)) { showSnackbar("Override the eligibility verdict before applying."); return; }
+  window.open(applicationUrl(job), "_blank", "noopener");
+  performDecision("applying", "Opened", [job.dedupe_key]);
+}
+
 async function undoLastDecision() {
   const undo = state.undo;
   if (!undo) return;
@@ -2920,6 +2941,133 @@ function showSnackbar(message, { action = "", onAction = null, duration = 4000 }
   bar?.addEventListener("mouseenter", pause); bar?.addEventListener("mouseleave", start); bar?.addEventListener("focusin", pause); bar?.addEventListener("focusout", start);
   bar?.querySelector("[data-snackbar-action]")?.addEventListener("click", () => { dismiss(); onAction?.(); });
   start();
+}
+
+// --- object menus ---
+// keeps later actions out of handlers
+
+const trackerItems = [
+  { label: "Open company", run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
+  { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
+  ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
+];
+
+function trackerContext(el, table) {
+  const key = el.dataset.trackerKey;
+  const job = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
+  return job && { el, key, job, table };
+}
+
+const objectMenus = [
+  {
+    selector: ".job-row[data-job-key]", keyAttr: "data-job-key", fallback: "#job-list-layer .job-row[tabindex='0'], .inbox-list h1",
+    label: (c) => c.bulk ? `${new Intl.NumberFormat().format(state.selectedKeys.size)} selected jobs` : `${c.job.title}, ${c.job.company}`,
+    context(el) {
+      const key = el.dataset.jobKey;
+      const job = state.jobs.find((item) => item.dedupe_key === key);
+      if (!job) return null;
+      const bulk = state.selectedKeys.size > 1 && state.selectedKeys.has(key);
+      return { el, key, job, bulk };
+    },
+    items: [
+      { label: "Open", when: (c) => !c.bulk, run: (c) => selectJob(c.key, { focusDetail: true }) },
+      { label: "Apply now", shortcut: "a", when: (c) => !c.bulk && applicationUrl(c.job), disabled: (c) => jobHasActiveBlocker(c.job), run: (c) => applyToJob(c.job) },
+      { label: "Open original posting", when: (c) => !c.bulk && c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Save", shortcut: "s", divider: true, when: (c) => c.bulk || c.job.status !== "saved", run: (c) => performDecision("saved", "Saved", c.bulk ? null : [c.key]) },
+      { label: "Queue", shortcut: "q", when: (c) => c.bulk || c.job.status !== "queued", disabled: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => c.bulk ? queueSelection() : performDecision("queued", "Queued", [c.key]) },
+      { label: "Dismiss", shortcut: "x", when: (c) => c.bulk || c.job.status !== "archived", run: (c) => performDecision("archived", "Dismissed", c.bulk ? null : [c.key]) },
+      { label: "Dismiss company", when: (c) => c.bulk, run: () => dismissSelectedCompanies() },
+      { label: "Copy", divider: true, run: (c) => copyInboxJobs(c.bulk ? filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)) : [c.job]) },
+      { label: (c) => state.selectedKeys.has(c.key) ? "Deselect" : "Select", run: (c) => { if (state.selectedKeys.has(c.key)) state.selectedKeys.delete(c.key); else state.selectedKeys.add(c.key); syncVisibleJobSelection(); } },
+    ],
+  },
+  {
+    selector: ".queue-card[data-queue-key]", keyAttr: "data-queue-key", fallback: "#queue-title, .empty-state h2",
+    label: (c) => `${c.job.title}, ${c.job.company}`,
+    context(el) {
+      const jobs = queueJobs();
+      const index = jobs.findIndex((job) => job.dedupe_key === el.dataset.queueKey);
+      return index < 0 ? null : { key: jobs[index].dedupe_key, job: jobs[index], index, count: jobs.length };
+    },
+    items: [
+      { label: "Move earlier", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, c.index - 1) },
+      { label: "Move later", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.index + 1) },
+      { label: "Open original posting", when: (c) => c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Save for later", divider: true, run: (c) => removeFromQueue(c.key) },
+    ],
+  },
+  {
+    selector: ".board-card[data-tracker-key]", keyAttr: "data-tracker-key", fallback: "#tracker-title",
+    label: (c) => `${c.job.title}, ${c.job.company}`, context: (el) => trackerContext(el, false), items: trackerItems,
+  },
+  {
+    selector: ".tracker-table tr[data-tracker-key]", keyAttr: "data-tracker-key", fallback: "#tracker-title",
+    label: (c) => `${c.job.title}, ${c.job.company}`, context: (el) => trackerContext(el, true), items: trackerItems,
+  },
+  {
+    selector: ".reminder-row[data-reminder-id]", keyAttr: "data-reminder-id", fallback: "#tracker-title",
+    label: (c) => `${c.reminder.company} follow-up`,
+    context(el) {
+      const reminder = state.trackerData?.reminders?.find((item) => String(item.id) === el.dataset.reminderId);
+      return reminder && { reminder };
+    },
+    items: [
+      { label: "Snooze 3 days", run: (c) => updateReminder(c.reminder.id, "snooze") },
+      { label: "Done", run: (c) => updateReminder(c.reminder.id, "done") },
+      { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.reminder.company)}`) },
+    ],
+  },
+  {
+    selector: ".interview-list article[data-interview-id]", keyAttr: "data-interview-id", fallback: "#interviews-title",
+    label: (c) => `${c.interview.company} interview`,
+    context(el) {
+      const interview = state.trackerData?.interviews?.find((item) => String(item.id) === el.dataset.interviewId);
+      return interview && { interview };
+    },
+    items: [
+      { label: "Export .ics", run: (c) => { window.location.href = `/api/v1/interviews.ics?id=${c.interview.id}`; } },
+      { label: "Open company", run: (c) => navigate(`/companies/${encodeURIComponent(c.interview.company)}`) },
+    ],
+  },
+  {
+    selector: ".contact-row[data-contact-index]", keyAttr: "data-contact-index", fallback: "#company-contacts-title",
+    label: (c) => c.contact.name,
+    context(el) {
+      const contact = state.companiesData?.company?.contacts?.[Number(el.dataset.contactIndex)];
+      return contact && { contact };
+    },
+    items: [
+      { label: "Email", when: (c) => c.contact.email, run: (c) => { window.location.href = `mailto:${encodeURIComponent(c.contact.email)}`; } },
+      { label: "Open LinkedIn", when: (c) => safeHttpsUrl(c.contact.linkedin_url), run: (c) => window.open(safeHttpsUrl(c.contact.linkedin_url), "_blank", "noopener") },
+    ],
+  },
+];
+
+function resolveObjectMenu(target) {
+  if (!(target instanceof Element)) return null;
+  for (const type of objectMenus) {
+    const el = target.closest(type.selector);
+    if (!el) continue;
+    const context = type.context(el);
+    if (!context) return null;
+    const items = type.items.filter((item) => !item.when || item.when(context)).map((item) => ({
+      label: typeof item.label === "function" ? item.label(context) : item.label,
+      shortcut: item.shortcut, divider: item.divider,
+      checked: item.checked?.(context), disabled: Boolean(item.disabled?.(context)),
+      run: () => item.run(context),
+    }));
+    const value = el.getAttribute(type.keyAttr);
+    const focusTarget = (node) => node.matches(".job-row") ? node : node.querySelector("button[data-menu-trigger]");
+    const inside = el.contains(document.activeElement) && document.activeElement !== document.body ? document.activeElement : null;
+    // the object may rerender or leave
+    const refocus = () => {
+      const again = document.querySelector(`${type.selector}[${type.keyAttr}="${CSS.escape(value)}"]`) || document.querySelector(type.selector);
+      (again ? focusTarget(again) : document.querySelector(type.fallback))?.focus({ preventScroll: true });
+    };
+    const trigger = el.querySelector("[data-menu-trigger]");
+    return { label: type.label(context), items, anchor: trigger || el, align: trigger ? "end" : "start", returnTo: inside || focusTarget(el), refocus };
+  }
+  return null;
 }
 
 function shortcutScopeAllows(event) {
@@ -3063,12 +3211,7 @@ document.addEventListener("click", (event) => {
     if (bulk.dataset.bulkAction === "queued") { queueSelection(); return; }
     const labels = { saved: "Saved", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return;
   }
-  if (event.target.closest("[data-dismiss-company]")) {
-    const { companies, targets } = companyDismissTargets(state.jobs, state.selectedKeys);
-    const where = companyLabel(companies);
-    if (!targets.length) { showSnackbar(`No unapplied roles to dismiss at ${where}.`); return; }
-    performDecision("archived", "Dismissed", targets.map((job) => job.dedupe_key), { scope: ` at ${where}` }); return;
-  }
+  if (event.target.closest("[data-dismiss-company]")) { dismissSelectedCompanies(); return; }
   if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
   const tab = event.target.closest("[data-status-tab]");
   if (tab) { state.status = tab.dataset.statusTab; state.scrollTop = 0; state.selectedKeys.clear(); syncInboxUrl(); renderInbox(); return; }
@@ -3237,6 +3380,7 @@ for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog
 }
 
 bindQuickFillSurface(quickFillSheet);
+bindObjectMenus(resolveObjectMenu);
 
 window.addEventListener("popstate", (event) => { state.scrollTop = Number(event.state?.inboxScroll) || 0; renderRoute({ focus: true }); });
 window.addEventListener("resize", () => { if (filterDialog.open) filterDialog.close(); if (routeRoot() === "inbox") renderVirtualRows(); });
