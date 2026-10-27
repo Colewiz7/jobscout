@@ -29,6 +29,26 @@ export class UndoStack {
   }
 
   has(id) { return this.entries.some((entry) => entry.id === id); }
+
+  // failed saves leave nothing to undo
+  remove(id) {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((entry) => entry.id !== id);
+    return this.entries.length < before;
+  }
+}
+
+// merges restore their own action
+export function mergeSnackbar(item, next) {
+  const step = { message: next.message, action: next.action, onAction: next.onAction, undoId: next.undoId };
+  return { ...step, history: [...(item.history || []), step] };
+}
+
+// the newest move that still undoes
+export function withdrawSnackbar(item, undoId, undoable) {
+  if (item.undoId !== undoId) return null;
+  const fallback = (item.history || []).filter((step) => step.undoId !== undoId && undoable(step.undoId)).at(-1);
+  return fallback ? { ...fallback } : { action: "", onAction: null, undoId: 0 };
 }
 
 export const SNACKBAR = { short: 4000, long: 6000, action: 10000, minResume: 2000, minShown: 2000 };

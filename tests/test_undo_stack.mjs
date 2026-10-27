@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Countdown, SNACKBAR, UndoStack, exitDelay, snackbarDuration } from "../src/jobscout/static/undo-stack.js";
+import { Countdown, SNACKBAR, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "../src/jobscout/static/undo-stack.js";
 
 const labels = (taken) => taken && [taken.entry.label, ...taken.dropped.map((entry) => entry.label)];
 
@@ -153,4 +153,44 @@ test("Countdown ignores a release it never held", () => {
   clock.start(0);
   assert.equal(clock.release("focus", 100), -1);
   assert.equal(clock.deadline, 10000);
+});
+
+test("remove drops one entry and leaves later ones alone", () => {
+  const stack = new UndoStack();
+  const first = stack.push({ keys: ["a"] });
+  const second = stack.push({ keys: ["a"] });
+  assert.equal(stack.remove(first), true);
+  assert.equal(stack.remove(first), false);
+  assert.equal(stack.has(second), true);
+  assert.equal(stack.size, 1);
+});
+
+const move = (undoId) => ({ message: `Moved ${undoId}.`, action: "Undo", onAction: () => undoId, undoId });
+
+test("withdrawing the shown move falls back to the newest undoable one", () => {
+  let item = mergeSnackbar({}, move(1));
+  item = { ...item, ...mergeSnackbar(item, move(2)) };
+  item = { ...item, ...mergeSnackbar(item, move(3)) };
+  const live = new Set([1, 3]);
+  const patch = withdrawSnackbar(item, 3, (id) => live.has(id));
+  assert.equal(patch.undoId, 1);
+  assert.equal(patch.message, "Moved 1.");
+  assert.equal(patch.action, "Undo");
+  assert.equal(withdrawSnackbar(item, 2, () => true), null); // not the one shown
+});
+
+test("withdrawing the only move drops the action", () => {
+  const item = mergeSnackbar({}, move(1));
+  assert.deepEqual(withdrawSnackbar(item, 1, () => false), { action: "", onAction: null, undoId: 0 });
+});
+
+test("a merge after a withdrawal brings the action back", () => {
+  let item = mergeSnackbar({}, move(1));
+  item = { ...item, ...withdrawSnackbar(item, 1, () => false) };
+  assert.equal(item.action, "");
+  item = { ...item, ...mergeSnackbar(item, move(2)) };
+  assert.equal(item.action, "Undo");
+  assert.equal(item.undoId, 2);
+  assert.equal(item.onAction(), 2);
+  assert.deepEqual(item.history.map((step) => step.undoId), [1, 2]);
 });

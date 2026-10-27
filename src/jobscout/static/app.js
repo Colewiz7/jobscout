@@ -4,7 +4,9 @@ import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
-import { Countdown, UndoStack, exitDelay, snackbarDuration } from "./undo-stack.js";
+import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
+import { flip, placeNodes } from "./drag.js";
+import { createLoadGate, createOrderSaver, moveAnnouncement, moveKey, restoreOrder } from "./drag-logic.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -19,6 +21,7 @@ const remoteFilter = document.querySelector("#remote-filter");
 const savedViewName = document.querySelector("#saved-view-name");
 const snackbarRegion = document.querySelector("#snackbar-region");
 const assertiveRegion = document.querySelector("#assertive-region");
+const reorderRegion = document.querySelector("#reorder-region");
 const quickFillTrigger = document.querySelector("#quick-fill-trigger");
 const quickFillSheet = document.querySelector("#quick-fill-sheet");
 const captureDialog = document.querySelector("#capture-dialog");
@@ -97,7 +100,7 @@ const state = {
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
-  queueSaving: false, queueDraggedKey: "", sessionStarting: false, statusSaving: new Set(),
+  queueDraggedKey: "", sessionStarting: false, statusSaving: new Set(),
   applySession: null, sessionTimer: null,
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
@@ -1334,6 +1337,7 @@ async function submitRule(form) {
       body: JSON.stringify(payload),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule could not be saved.");
+    jobsWriteLanded();
     state.rules = [...(state.rules || []), (await response.json()).rule];
     form.reset(); renderProfile();
     state.loaded = false; await loadInbox();
@@ -1349,6 +1353,7 @@ async function toggleRule(id, enabled) {
       body: JSON.stringify({ enabled }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule could not be updated.");
+    jobsWriteLanded();
     const saved = (await response.json()).rule;
     state.rules = (state.rules || []).map((rule) => rule.id === saved.id ? saved : rule);
     renderProfile(); state.loaded = false; await loadInbox();
@@ -1364,6 +1369,7 @@ async function undoRuleAction(id) {
       body: JSON.stringify({}),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The rule action could not be undone.");
+    jobsWriteLanded();
     const job = state.jobs.find((item) => item.rule_action_id === Number(id));
     if (job) Object.assign(job, { status: "new", archived_by_rule: null, rule_action_id: null });
     renderInbox({ focus: true }); showSnackbar("Rule archive undone.");
@@ -1597,41 +1603,116 @@ async function submitContact(form) {
   } catch (error) { showSnackbar(error instanceof Error ? error.message : "The contact could not be saved."); }
 }
 
-async function persistQueueOrder(keys, previous) {
-  state.queueSaving = true;
-  try {
+const queueSaver = createOrderSaver({
+  send: async (keys) => {
     const response = await fetch("/api/v1/queue/order", {
       method: "PUT", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
       body: JSON.stringify({ dedupe_keys: keys }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The queue order could not be saved.");
-    showSnackbar("Queue order saved.");
+  },
+  onLanded: () => jobsWriteLanded(),
+  // another tab may have reordered
+  onRevert: (keys, error) => {
+    reloadJobs();
+    showSnackbar(`${error.message.replace(/\.?$/, ".")} Reloading the queue.`);
+  },
+});
+
+const jobLoads = createLoadGate();
+
+function adoptJobs(jobs) {
+  state.jobs = Array.isArray(jobs) ? jobs : [];
+  for (const job of state.jobs) {
+    job.pay ||= state.descriptions.get(job.dedupe_key)?.value?.pay || "";
+    job.pay_checked ||= Boolean(state.descriptions.get(job.dedupe_key)?.value?.description_text);
+  }
+  // this read predates the save
+  if (!queueSaver.unsaved) return;
+  const queued = new Set(state.jobs.filter((job) => job.status === "queued").map((job) => job.dedupe_key));
+  queueSaver.prune((key) => queued.has(key));
+  applyQueueOrder(queueSaver.unsaved);
+}
+
+async function reloadJobs() {
+  const read = jobLoads.start();
+  try {
+    const response = await fetch("/api/v1/jobs", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The job list did not respond.");
+    const payload = await response.json();
+    if (!jobLoads.current(read)) return;
+    adoptJobs(payload.jobs);
+    refreshJobView();
   } catch (error) {
-    previous.forEach(({ key, position }) => {
-      const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
-      if (job) job.queue_position = position;
-    });
-    renderQueue();
-    showSnackbar(`${error.message} Order restored.`);
+    if (jobLoads.current(read)) showSnackbar(error instanceof Error ? error.message : "The job list did not respond.");
   } finally {
-    state.queueSaving = false;
+    jobLoads.finish(read);
+  }
+}
+
+// older reads miss this write
+function jobsWriteLanded() {
+  if (jobLoads.invalidate()) reloadJobs();
+}
+
+function announce(message) {
+  // same text twice wouldnt be read
+  reorderRegion.textContent = reorderRegion.textContent === message ? `${message}\u00a0` : message;
+}
+
+function applyQueueOrder(keys) {
+  keys.forEach((key, position) => {
+    const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
+    if (job && job.status === "queued") job.queue_position = position;
+  });
+}
+
+// rebuilding the list loses focus
+function arrangeQueue(anchorKey = "") {
+  const list = document.querySelector(".queue-list");
+  if (!list || routeRoot() !== "queue" || window.location.pathname.startsWith("/queue/session/")) return;
+  const jobs = queueJobs();
+  const cards = new Map([...list.querySelectorAll(":scope > .queue-card[data-queue-key]")].map((card) => [card.dataset.queueKey, card]));
+  if (cards.size !== jobs.length || jobs.some((job) => !cards.has(job.dedupe_key))) { renderQueue(); return; }
+  const nodes = jobs.map((job) => cards.get(job.dedupe_key));
+  const active = document.activeElement;
+  flip(nodes.filter((node) => !node.classList.contains("is-lifted")), () => placeNodes(list, nodes, cards.get(anchorKey) || null));
+  nodes.forEach((card, index) => {
+    card.querySelector('[data-queue-move="up"]').disabled = index === 0;
+    card.querySelector('[data-queue-move="down"]').disabled = index === nodes.length - 1;
+  });
+  if (active instanceof HTMLElement && list.contains(active) && (active !== document.activeElement || active.disabled)) {
+    const card = active.closest(".queue-card");
+    const other = active.matches("[data-queue-move]") ? card.querySelector(`[data-queue-move="${active.dataset.queueMove === "up" ? "down" : "up"}"]`) : null;
+    (active.disabled ? (other && !other.disabled ? other : card.querySelector(".queue-drag-handle")) : active).focus({ preventScroll: true });
   }
 }
 
 function reorderQueue(key, targetIndex) {
-  if (state.queueSaving) return;
-  const jobs = queueJobs();
-  const from = jobs.findIndex((job) => job.dedupe_key === key);
-  const to = Math.max(0, Math.min(jobs.length - 1, targetIndex));
+  const keys = queueJobs().map((job) => job.dedupe_key);
+  const from = keys.indexOf(key);
+  const to = Math.max(0, Math.min(keys.length - 1, targetIndex));
   if (from < 0 || from === to) return;
-  const previous = jobs.map((job) => ({ key: job.dedupe_key, position: job.queue_position }));
-  const [moved] = jobs.splice(from, 1);
-  jobs.splice(to, 0, moved);
-  jobs.forEach((job, position) => { job.queue_position = position; });
-  renderQueue();
-  requestAnimationFrame(() => document.querySelector(`[data-queue-key="${CSS.escape(key)}"] .queue-drag-handle`)?.focus());
-  persistQueueOrder(jobs.map((job) => job.dedupe_key), previous);
+  if (!queueSaver.busy) queueSaver.reset(keys);
+  const order = moveKey(keys, key, to);
+  const touched = keys.slice(Math.min(from, to), Math.max(from, to) + 1);
+  applyQueueOrder(order);
+  arrangeQueue(key);
+  offerMoveSnackbar(moveAnnouncement(to, order.length), "queue-move", { message: "Queue move", keys: touched, run: () => undoQueueMove(keys, touched) }, queueSaver.save(order));
+}
+
+// a full restore undoes later moves
+function undoQueueMove(previous, touched) {
+  const current = queueJobs().map((job) => job.dedupe_key);
+  const slots = current.map((key, index) => touched.includes(key) ? index : -1).filter((index) => index >= 0);
+  const restored = restoreOrder(previous.filter((key) => touched.includes(key)), current.filter((key) => touched.includes(key)));
+  const order = [...current];
+  slots.forEach((slot, index) => { order[slot] = restored[index]; });
+  if (!queueSaver.busy) queueSaver.reset(current);
+  applyQueueOrder(order);
+  arrangeQueue();
+  queueSaver.save(order).then((error) => { if (!error) showSnackbar("Queue move undone."); }); // failures report themselves
 }
 
 async function removeFromQueue(key) {
@@ -1834,6 +1915,7 @@ async function verifySessionJob(key) {
       body: JSON.stringify({ dedupe_key: key }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't check this posting.");
+    jobsWriteLanded(); // a closed posting gets archived
     const result = await response.json();
     if (state.applySession !== session || session.keys[session.index] !== key) return;
     const job = state.jobs.find((item) => item.dedupe_key === key);
@@ -1914,6 +1996,7 @@ async function markSessionApplied() {
       body: JSON.stringify({ document_id: documentId }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The application could not be saved.");
+    jobsWriteLanded();
     const snapshot = (await response.json()).snapshot;
     const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
     if (job) Object.assign(job, { status: "applied", applied_at: snapshot.captured_at, resume_document_id: snapshot.resume_document_id, resume_name: snapshot.resume_name, queue_position: null });
@@ -1979,6 +2062,7 @@ async function loadInbox() {
     if (routeRoot() === "inbox") renderInbox();
     else if (routeRoot() === "queue") renderRoute();
   }, 300);
+  const read = jobLoads.start();
   try {
     const session = navigator.onLine ? await refreshSession({ force: true }) : { csrf_token: "", features: {} };
     state.csrf = session.csrf_token || "";
@@ -2009,11 +2093,7 @@ async function loadInbox() {
     state.companyIconKeys = new Set(Array.isArray(iconKeys.keys) ? iconKeys.keys : []);
     const wait = state.skeletonAt ? Math.max(0, 500 - (performance.now() - state.skeletonAt)) : 0;
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
-    state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
-    for (const job of state.jobs) {
-      job.pay ||= state.descriptions.get(job.dedupe_key)?.value?.pay || "";
-      job.pay_checked ||= Boolean(state.descriptions.get(job.dedupe_key)?.value?.description_text);
-    }
+    if (jobLoads.current(read) || !state.loaded) adoptJobs(payload.jobs); // a queue reload already won
     state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
@@ -2034,6 +2114,7 @@ async function loadInbox() {
       inboxRetryTimer = setTimeout(() => { inboxRetryTimer = null; loadInbox(); }, 15000);
     }
   } finally {
+    jobLoads.finish(read);
     clearTimeout(loadingTimer);
     state.loading = false;
     renderRoute();
@@ -2696,6 +2777,7 @@ async function submitCapture() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "The posting could not be added.");
+    jobsWriteLanded();
     captureDialog.close();
     state.status = "all";
     state.selectedKey = result.job.dedupe_key;
@@ -2751,13 +2833,14 @@ function handleRowSelection(row, event) {
   state.selectedKeys.clear(); state.rangeAnchor = index; syncVisibleJobSelection(); selectJob(key);
 }
 
-async function patchJob(job, status, notes = job.notes || "") {
+async function patchJob(job, status, notes = job.notes || "", { notesOnly = false } = {}) {
   const response = await secureWrite(`/api/v1/jobs/${encodeURIComponent(job.dedupe_key)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ status, notes }),
   });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The change could not be saved.");
+  if (!notesOnly) jobsWriteLanded(); // notes dont move jobs
   return response.json();
 }
 
@@ -2854,7 +2937,7 @@ async function saveNotes(key, value) {
   const notesState = document.querySelector("#notes-state");
   if (notesState) notesState.textContent = "Saving…";
   try {
-    await patchJob(job, job.status || "new", value);
+    await patchJob(job, job.status || "new", value, { notesOnly: true });
     if (state.selectedKey === key && document.querySelector("#notes-state")) document.querySelector("#notes-state").textContent = "Saved automatically";
   } catch (error) {
     job.notes = oldNotes; assertiveRegion.textContent = `${error.message} Note restored.`; showSnackbar(`${error.message} Note restored.`);
@@ -2937,20 +3020,31 @@ async function restoreSavedView(view) {
 // --- snackbars and undo ---
 // carrel timing, wcag 2.2.1
 
-function showSnackbar(message, { action = "", onAction = null, undoId = 0 } = {}) {
+function showSnackbar(message, { action = "", onAction = null, undoId = 0, merge = "" } = {}) {
   const now = performance.now();
   if (snackbarCurrent && !action && !snackbarCurrent.action && snackbarCurrent.message === message) { armSnackbar(snackbarCurrent, new Countdown(snackbarDuration(message, false)), now); return; }
-  snackbarQueue.push({ message, action, onAction, undoId });
+  // carrel merges same kind messages
+  const next = { message, action, onAction, undoId };
+  if (merge && snackbarCurrent?.merge === merge && !snackbarCurrent.leaving) {
+    Object.assign(snackbarCurrent, mergeSnackbar(snackbarCurrent, next));
+    syncSnackbar(snackbarCurrent);
+    armSnackbar(snackbarCurrent, new Countdown(snackbarDuration(message, Boolean(action))), now);
+    return;
+  }
+  const queued = merge && snackbarQueue.find((item) => item.merge === merge);
+  if (queued) { Object.assign(queued, mergeSnackbar(queued, next)); return; }
+  snackbarQueue.push({ ...mergeSnackbar({}, next), merge });
   if (!snackbarCurrent) showNextSnackbar(); else if (!snackbarCurrent.leaving) scheduleSnackbarExit(snackbarCurrent);
 }
 
 function showNextSnackbar() {
   const next = snackbarQueue.shift();
   if (!next) { snackbarCurrent = null; return; }
-  snackbarRegion.innerHTML = `<div class="snackbar" role="status"><span class="snackbar-message">${escapeHtml(next.message)}</span>${next.action ? `<button class="snackbar-action" type="button" data-snackbar-action aria-keyshortcuts="${ariaKeyshortcuts(["Mod+Z", "u"])}" title="${escapeHtml(next.action)} (${formatShortcut("Mod+Z")})">${escapeHtml(next.action)}</button>` : ""}<button class="snackbar-close" type="button" data-snackbar-close aria-label="Dismiss">${icons.close}</button></div>`;
+  snackbarRegion.innerHTML = `<div class="snackbar" role="status"><span class="snackbar-message">${escapeHtml(next.message)}</span><button class="snackbar-close" type="button" data-snackbar-close aria-label="Dismiss">${icons.close}</button></div>`;
   const bar = snackbarRegion.firstElementChild;
   const item = { ...next, bar, shownAt: performance.now(), timer: 0, clock: null };
   snackbarCurrent = item;
+  syncSnackbar(item);
   const clock = new Countdown(snackbarDuration(next.message, Boolean(next.action)));
   if (document.hidden) clock.hold("hidden", item.shownAt);
   if (!document.hasFocus()) clock.hold("blur", item.shownAt);
@@ -2958,9 +3052,24 @@ function showNextSnackbar() {
   bar.addEventListener("mouseleave", () => holdSnackbar("hover", false));
   bar.addEventListener("focusin", () => holdSnackbar("focus", true));
   bar.addEventListener("focusout", (event) => { if (!bar.contains(event.relatedTarget)) holdSnackbar("focus", false); });
-  bar.querySelector("[data-snackbar-action]")?.addEventListener("click", () => { exitSnackbar(item); next.onAction?.(); });
   bar.querySelector("[data-snackbar-close]").addEventListener("click", () => exitSnackbar(item));
   armSnackbar(item, clock, item.shownAt);
+}
+
+// merges and withdrawals change both
+function syncSnackbar(item) {
+  if (!item.bar) return;
+  const text = item.bar.querySelector(".snackbar-message");
+  text.textContent = item.message;
+  const button = item.bar.querySelector("[data-snackbar-action]");
+  if (!item.action) { button?.remove(); return; }
+  if (button) { button.textContent = item.action; return; }
+  const added = document.createElement("button");
+  Object.assign(added, { className: "snackbar-action", type: "button", textContent: item.action, title: `${item.action} (${formatShortcut("Mod+Z")})` });
+  added.dataset.snackbarAction = "";
+  added.setAttribute("aria-keyshortcuts", ariaKeyshortcuts(["Mod+Z", "u"]));
+  added.addEventListener("click", () => { exitSnackbar(item); item.onAction?.(); });
+  text.after(added);
 }
 
 function armSnackbar(item, clock, now) {
@@ -2995,6 +3104,26 @@ function exitSnackbar(item) {
   item.bar.classList.add("leaving");
   const reduce = document.documentElement.dataset.motion === "reduce";
   setTimeout(() => { if (item.bar.isConnected) item.bar.remove(); showNextSnackbar(); }, reduce ? 100 : 150);
+}
+
+// undo works now, the bar waits
+function offerMoveSnackbar(message, merge, entry, saved) {
+  const undoId = undoStack.push(entry);
+  saved.then((error) => {
+    if (error) { withdrawUndo(undoId); return; }
+    if (undoStack.has(undoId)) showSnackbar(message, { action: "Undo", undoId, merge, onAction: () => runUndo(undoStack.take(undoId)) });
+  });
+}
+
+// a reverted move cant be undone
+function withdrawUndo(undoId) {
+  undoStack.remove(undoId);
+  for (const item of [snackbarCurrent, ...snackbarQueue]) {
+    const patch = item && withdrawSnackbar(item, undoId, (id) => undoStack.has(id));
+    if (!patch) continue;
+    Object.assign(item, patch);
+    syncSnackbar(item);
+  }
 }
 
 // lets undo spot stale entries
