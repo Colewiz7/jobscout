@@ -9,6 +9,7 @@ const SHELL = [
   "/static/app.js",
   "/static/highlight-terms.js",
   "/static/copy-text.js",
+  "/static/selection.js",
   "/static/fonts/rubik-latin.woff2",
   "/static/fonts/newsreader-latin.woff2",
   "/static/icons/jobseer-fan-192.png",

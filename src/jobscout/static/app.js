@@ -2,6 +2,7 @@
 
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
+import { eligibilityVerdict, loadLatest, splitEligible } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
@@ -858,18 +859,21 @@ async function saveManualDescription() {
 }
 
 async function loadEligibility(key, { force = false } = {}) {
-  if (!state.quickFillEnabled || !key || (!force && state.eligibility.has(key))) return;
-  state.eligibility.set(key, { loading: true, value: null, error: "" });
+  if (!state.quickFillEnabled || !key) return;
+  const written = await loadLatest(state.eligibility, key, fetchEligibility, force);
+  if (written && routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+}
+
+async function fetchEligibility(key) {
   try {
     const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/eligibility`, {
       credentials: "same-origin", headers: { Accept: "application/json" },
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Eligibility did not respond.");
-    state.eligibility.set(key, { loading: false, value: (await response.json()).eligibility, error: "" });
+    return { loading: false, value: (await response.json()).eligibility, error: "" };
   } catch (error) {
-    state.eligibility.set(key, { loading: false, value: null, error: error instanceof Error ? error.message : "Eligibility did not respond." });
+    return { loading: false, value: null, error: error instanceof Error ? error.message : "Eligibility did not respond." };
   }
-  if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
 }
 
 async function overrideEligibility() {
@@ -2744,7 +2748,7 @@ function nextKeyAfter(keys) {
   return remaining[Math.min(current, remaining.length - 1)]?.dedupe_key || "";
 }
 
-async function performDecision(status, label, targets = null) {
+async function performDecision(status, label, targets = null, note = "") {
   const keys = targets || (state.selectedKeys.size ? [...state.selectedKeys] : [state.selectedKey]);
   const jobs = keys.map((key) => state.jobs.find((job) => job.dedupe_key === key)).filter(Boolean);
   if (!jobs.length || jobs.some((job) => state.pending.has(job.dedupe_key))) return;
@@ -2774,10 +2778,20 @@ async function performDecision(status, label, targets = null) {
     const noun = jobs.length === 1 ? "role" : `${new Intl.NumberFormat().format(jobs.length)} roles`;
     const closed = results.filter((result) => result.status === "fulfilled" && result.value.status === "archived" && result.value.liveness?.status === "closed").length;
     const message = closed ? `${closed === 1 ? "Posting" : `${closed} postings`} closed and skipped.` : `${label} ${noun}.`;
-    showSnackbar(message, { action: "Undo", onAction: undoLastDecision, duration: 6000 });
+    showSnackbar(note ? `${message} ${note}` : message, { action: "Undo", onAction: undoLastDecision, duration: 6000 });
   }
   jobs.forEach((job) => state.pending.delete(job.dedupe_key));
   if (routeRoot() === "inbox") renderInbox();
+}
+
+async function queueSelection() {
+  const jobs = state.jobs.filter((job) => state.selectedKeys.has(job.dedupe_key));
+  await Promise.all(jobs.map((job) => loadEligibility(job.dedupe_key, { force: Boolean(state.eligibility.get(job.dedupe_key)?.error) })));
+  const { eligible, blocked, unknown } = splitEligible(jobs, (job) => eligibilityVerdict(state.eligibility.get(job.dedupe_key), state.quickFillEnabled));
+  const format = (value) => new Intl.NumberFormat().format(value);
+  const note = [blocked.length ? `Skipped ${format(blocked.length)} that failed the eligibility check.` : "", unknown.length ? `Skipped ${format(unknown.length)} that couldn't be checked.` : ""].filter(Boolean).join(" ");
+  if (!eligible.length) { showSnackbar(`Nothing queued. ${note}`); return; }
+  await performDecision("queued", "Queued", eligible.map((job) => job.dedupe_key), note);
 }
 
 async function undoLastDecision() {
@@ -3041,7 +3055,10 @@ document.addEventListener("click", (event) => {
     return;
   }
   const bulk = event.target.closest("[data-bulk-action]");
-  if (bulk) { const labels = { saved: "Saved", queued: "Queued", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return; }
+  if (bulk) {
+    if (bulk.dataset.bulkAction === "queued") { queueSelection(); return; }
+    const labels = { saved: "Saved", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return;
+  }
   if (event.target.closest("[data-dismiss-company]")) {
     const selected = state.jobs.filter((job) => state.selectedKeys.has(job.dedupe_key));
     const companies = new Set(selected.map((job) => job.company));
