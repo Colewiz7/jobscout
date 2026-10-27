@@ -2274,8 +2274,9 @@ dialog[open]::backdrop {
 }
 
 .queue-card {
+  --handle-size: 40px;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: var(--handle-size) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-4);
   min-height: 112px;
@@ -2345,8 +2346,8 @@ dialog[open]::backdrop {
 
 .queue-drag-handle {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: var(--handle-size);
+  height: var(--handle-size);
   place-items: center;
   border-radius: var(--r-full);
   background: transparent;
@@ -2356,6 +2357,12 @@ dialog[open]::backdrop {
   user-select: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
+}
+
+@media (pointer: coarse) {
+  .queue-card {
+    --handle-size: 48px; /* carrel touch target */
+  }
 }
 
 .queue-drag-handle svg {
@@ -4394,7 +4401,7 @@ body.quick-fill-popout {
   }
 
   .queue-card {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: var(--handle-size) minmax(0, 1fr);
     gap: var(--s-3);
   }
 
