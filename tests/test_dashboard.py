@@ -1311,6 +1311,61 @@ def test_a_stale_merge_undo_cannot_clobber_later_changes(dashboard):
     assert undo(merged, expected_revision="x").status_code == 400
 
 
+def test_company_links_are_added_edited_removed_and_restored(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    other, other_token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    add = "/api/v1/companies/datadog/links"
+    assert httpx.post(f"{base}{add}", json={"url": "https://x.example"}, timeout=2).status_code == 401
+    assert client.post(add, json={"url": "https://x.example"}).status_code == 403
+    for body, error in [
+        ({}, "A link needs a URL. Add one and save again."),
+        ({"url": "http://careers.example"}, "Link URL must be an https:// address under 2,000 characters"),
+        ({"url": "javascript:alert(1)"}, "Link URL must be an https:// address under 2,000 characters"),
+        ({"url": "https://"}, "Link URL must be an https:// address under 2,000 characters"),
+        ({"url": "https://x.example", "label": "x" * 201}, "Link label must be text under 200 characters"),
+        ({"url": "https://x.example", "kind": "blog"}, "kind can't be edited"),
+    ]:
+        response = client.post(add, headers=headers, json=body)
+        assert (response.status_code, response.json()["error"]) == (400, error)
+    assert client.post("/api/v1/companies/nobody/links", headers=headers, json={"url": "https://x.example"}).status_code == 404
+
+    added = client.post(add, headers=headers, json={"label": " Careers ", "url": " https://careers.datadoghq.example "})
+    assert added.status_code == 201
+    link = added.json()["link"]
+    assert (link["label"], link["url"]) == ("Careers", "https://careers.datadoghq.example")
+    assert _company(client, "Datadog")["saved_links"] == [link]
+    assert _index(client)["datadog"]["saved_links_count"] == 1
+
+    path = f"/api/v1/company-links/{link['id']}"
+    assert client.patch(path, json={"label": "x"}).status_code == 403
+    assert client.patch(path, headers=headers, json={}).json()["error"] == "Change the label or URL, then save"
+    assert client.patch(path, headers=headers, json={"url": "ftp://x"}).status_code == 400
+    assert client.patch("/api/v1/company-links/99", headers=headers, json={"label": "x"}).status_code == 404
+    assert client.delete("/api/v1/company-links/abc", headers=headers).status_code == 400
+    edited = client.patch(path, headers=headers, json={"label": "Jobs"}).json()
+    assert (edited["link"]["label"], edited["previous"]["label"]) == ("Jobs", "Careers")
+    other.patch(path, headers={"X-CSRF-Token": other_token}, json={"label": "Other tab"})
+    stale = client.patch(path, headers=headers, json={"label": "Careers", "expected_revision": edited["link"]["revision"]})
+    assert stale.status_code == 409
+    assert (stale.json()["error"], stale.json()["link"]["label"]) == ("This link changed in another tab.", "Other tab")
+
+    assert client.delete(path, headers=headers).json() == {"ok": True}
+    assert _company(client, "Datadog")["saved_links"] == []
+    assert client.delete(path, headers=headers).status_code == 404
+    assert client.post(f"{path}/restore", headers=headers).json()["link"]["label"] == "Other tab"
+    assert client.post(f"{path}/restore", headers=headers).status_code == 404
+
+    # links follow a merge and its undo
+    merged = client.post("/api/v1/companies/datadog/merge", headers=headers, json={"target": "cloudflare"}).json()
+    assert merged["moved"]["links"] == 1
+    assert [item["id"] for item in _company(client, "Cloudflare")["saved_links"]] == [link["id"]]
+    client.post(f"/api/v1/company-merges/{merged['merge_id']}/undo", headers=headers, json={})
+    assert [item["id"] for item in _company(client, "Datadog")["saved_links"]] == [link["id"]]
+    assert _company(client, "Cloudflare")["saved_links"] == []
+
+
 def test_inbox_rules_archive_tag_boost_and_undo(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

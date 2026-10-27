@@ -182,6 +182,30 @@ def _company_name(payload: dict) -> str:
     return name.strip()
 
 
+def _link_fields(payload: dict, *, partial: bool = False) -> dict:
+    unknown = sorted(set(payload) - {"label", "url"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    fields = {}
+    if "label" in payload or not partial:
+        label = payload.get("label", "")
+        if not isinstance(label, str) or len(label.strip()) > 200:
+            raise ValueError("Link label must be text under 200 characters")
+        fields["label"] = label.strip()
+    if "url" in payload or not partial:
+        url = payload.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("A link needs a URL. Add one and save again.")
+        url = url.strip()
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or len(url) > 2_000:
+            raise ValueError("Link URL must be an https:// address under 2,000 characters")
+        fields["url"] = url
+    if not fields:
+        raise ValueError("Change the label or URL, then save")
+    return fields
+
+
 def _merge_target(payload: dict) -> str:
     target = payload.get("target")
     if not isinstance(target, str) or not target.strip():
@@ -706,6 +730,30 @@ class PostgresStore:
             database.require_schema(conn)
             return database.undo_company_merge(conn, merge_id, expected)
 
+    def add_company_link(self, key: str, payload: dict) -> dict | None:
+        fields = _link_fields(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.add_company_link(conn, key, fields["label"], fields["url"])
+
+    def update_link(self, link_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _link_fields(payload, partial=True)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_company_link(conn, link_id, changes, expected)
+
+    def delete_link(self, link_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_company_link(conn, link_id)
+
+    def restore_link(self, link_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.restore_company_link(conn, link_id)
+
     def save_company_note(self, name: str, body: str) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
@@ -1034,6 +1082,7 @@ class DemoStore:
         self._company_notes: dict[str, dict] = {}
         self._companies: dict[str, dict] = {}
         self._merges: list[dict] = []
+        self._links: list[dict] = []
         self._next_reminder_id = 1
         self._next_interview_id = 1
         self._next_contact_id = 1
@@ -1483,6 +1532,10 @@ class DemoStore:
         for key, note in self._company_notes.items():
             if note["body"].strip():
                 counts.setdefault(key, {})["note"] = True
+        for link in self._links:
+            if not link.get("deleted"):
+                entry = counts.setdefault(link["company_key"], {})
+                entry["links"] = entry.get("links", 0) + 1
         return counts
 
     def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
@@ -1501,6 +1554,7 @@ class DemoStore:
             **company,
             "contacts": copy.deepcopy(contacts),
             "note": copy.deepcopy(note),
+            "saved_links": [self._public_link(link) for link in self._links if link["company_key"] == key and not link.get("deleted")],
             "account": copy.deepcopy(account),
             "account_protected": not include_account,
         }}
@@ -1600,7 +1654,52 @@ class DemoStore:
                 "moved": {"contacts": len(moved), "links": len(links)}}
 
     def _move_links(self, source: str, target: str, ids: list[int] | None = None) -> list[int]:
-        return []
+        moved = [link for link in self._links if link["company_key"] == source and (ids is None or link["id"] in ids)]
+        for link in moved:
+            link["company_key"] = target
+        return [link["id"] for link in moved]
+
+    @staticmethod
+    def _public_link(link: dict) -> dict:
+        return copy.deepcopy({key: value for key, value in link.items() if key not in {"deleted", "company_key"}})
+
+    def _live_link(self, link_id: int, *, deleted: bool = False) -> dict | None:
+        return next((item for item in self._links if item["id"] == link_id and bool(item.get("deleted")) == deleted), None)
+
+    def add_company_link(self, key: str, payload: dict) -> dict | None:
+        fields = _link_fields(payload)
+        if self._canonical(key) is None:
+            return None
+        now = dt.datetime.now(dt.timezone.utc)
+        link = {"id": len(self._links) + 1, "company_key": key, **fields, "revision": 0, "created_at": now, "updated_at": now}
+        self._links.append(link)
+        return self._public_link(link)
+
+    def update_link(self, link_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _link_fields(payload, partial=True)
+        link = self._live_link(link_id)
+        if link is None:
+            return None
+        previous = self._public_link(link)
+        if expected is not None and link["revision"] != expected:
+            raise database.RecordConflict(previous)
+        link.update(changes, revision=link["revision"] + 1, updated_at=dt.datetime.now(dt.timezone.utc))
+        return {"link": self._public_link(link), "previous": previous}
+
+    def delete_link(self, link_id: int) -> bool:
+        link = self._live_link(link_id)
+        if link is not None:
+            link["deleted"] = True
+        return link is not None
+
+    def restore_link(self, link_id: int) -> dict | None:
+        link = self._live_link(link_id, deleted=True)
+        if link is None:
+            return None
+        link["deleted"] = False
+        return self._public_link(link)
 
     def merge_target(self, merge_id: int) -> str | None:
         return next((merge["target"] for merge in self._merges if merge["id"] == merge_id), None)
@@ -2365,7 +2464,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             action, key = "rename", path[len(prefix):]
         elif path.startswith(prefix) and path.count("/") == 5 and method == "POST":
             key, action = path[len(prefix):].split("/")
-            if action not in {"hide", "restore", "merge"}:
+            if action not in {"hide", "restore", "merge", "links"}:
                 return False
         else:
             return False
@@ -2388,6 +2487,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = store.rename_company(key, payload)
             elif action == "merge":
                 result = store.merge_company(key, payload)
+            elif action == "links":
+                link = store.add_company_link(key, payload)
+                if link is not None:
+                    self._json({"link": link}, HTTPStatus.CREATED)
+                    return True
+                result = None
             else:
                 company = store.hide_company(key, action == "hide")
                 result = company and {"company": company}
@@ -2411,7 +2516,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return True
 
     def _record_route(self, path: str, method: str) -> bool:
-        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/")):
+        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/"), ("link", "/api/v1/company-links/")):
             if not path.startswith(prefix):
                 continue
             rest = path.removeprefix(prefix)

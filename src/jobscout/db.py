@@ -2149,7 +2149,12 @@ def company_records(conn: psycopg.Connection, name: str) -> dict:
             (key,),
         )
         note = cur.fetchone()
-    return {"contacts": contacts, "note": note or {"body": "", "updated_at": None}}
+        cur.execute(
+            f"select {_LINK_COLUMNS} from company_links where company_key = %s and deleted_at is null order by id",
+            (key,),
+        )
+        links = cur.fetchall()
+    return {"contacts": contacts, "note": note or {"body": "", "updated_at": None}, "saved_links": links}
 
 
 def company_counts(conn: psycopg.Connection) -> dict[str, dict]:
@@ -2166,6 +2171,11 @@ def company_counts(conn: psycopg.Connection) -> dict[str, dict]:
         cur.execute("select company_key from company_notes where btrim(body) <> ''")
         for row in cur.fetchall():
             counts.setdefault(row["company_key"], {})["note"] = True
+        cur.execute(
+            "select company_key, count(*)::integer as links from company_links where deleted_at is null group by company_key"
+        )
+        for row in cur.fetchall():
+            counts.setdefault(row["company_key"], {})["links"] = row["links"]
     return counts
 
 
@@ -2383,7 +2393,76 @@ def merge_companies(conn: psycopg.Connection, source: str, target: str) -> dict 
 
 
 def _move_links(cur, source: str, target: str, ids: list[int] | None = None) -> list[int]:
-    return []
+    # deleted ones too, so undo restores there
+    cur.execute(
+        f"update company_links set company_key = %s where company_key = %s {'and id = any(%s)' if ids is not None else ''} returning id",
+        (target, source, *([ids] if ids is not None else [])),
+    )
+    return [row["id"] for row in cur.fetchall()]
+
+
+_LINK_COLUMNS = "id, label, url, revision, created_at, updated_at"
+
+
+def add_company_link(conn: psycopg.Connection, key: str, label: str, url: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("select key from companies where key = %s and merged_into is null for share", (key,))
+        if cur.fetchone() is None:
+            conn.rollback()
+            return None
+        cur.execute(
+            f"insert into company_links (company_key, label, url) values (%s, %s, %s) returning {_LINK_COLUMNS}",
+            (key, label, url),
+        )
+        link = cur.fetchone()
+    conn.commit()
+    return link
+
+
+def update_company_link(conn: psycopg.Connection, link_id: int, changes: dict, expected: int | None = None) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(f"select {_LINK_COLUMNS} from company_links where id = %s and deleted_at is null for update", (link_id,))
+        previous = cur.fetchone()
+        if previous is None:
+            return None
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        merged = {**previous, **changes}
+        cur.execute(
+            f"""
+            update company_links set label = %s, url = %s, revision = revision + 1, updated_at = now()
+             where id = %s returning {_LINK_COLUMNS}
+            """,
+            (merged["label"], merged["url"], link_id),
+        )
+        link = cur.fetchone()
+    conn.commit()
+    return {"link": link, "previous": previous}
+
+
+def delete_company_link(conn: psycopg.Connection, link_id: int) -> bool:
+    with conn.cursor() as cur:
+        # undo only lasts a moment
+        cur.execute("delete from company_links where deleted_at < now() - interval '1 day'")
+        cur.execute(
+            "update company_links set deleted_at = now() where id = %s and deleted_at is null returning id",
+            (link_id,),
+        )
+        deleted = cur.fetchone() is not None
+    conn.commit()
+    return deleted
+
+
+def restore_company_link(conn: psycopg.Connection, link_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"update company_links set deleted_at = null where id = %s and deleted_at is not null returning {_LINK_COLUMNS}",
+            (link_id,),
+        )
+        link = cur.fetchone()
+    conn.commit()
+    return link
 
 
 def merge_target(conn: psycopg.Connection, merge_id: int) -> str | None:

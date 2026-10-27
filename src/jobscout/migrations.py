@@ -510,6 +510,23 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        22,
+        "company_links",
+        """
+        create table if not exists company_links (
+            id          bigserial primary key,
+            company_key text not null references companies(key) on delete cascade,
+            label       text not null default '',
+            url         text not null,
+            revision    integer not null default 0,
+            created_at  timestamptz not null default now(),
+            updated_at  timestamptz not null default now(),
+            deleted_at  timestamptz
+        );
+        create index if not exists company_links_company_idx on company_links (company_key, id);
+        """,
+    ),
 )
 
 

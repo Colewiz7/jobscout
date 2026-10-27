@@ -36,6 +36,7 @@ def conn():
         cur.execute("drop table if exists eligibility_overrides")
         cur.execute("drop table if exists contacts")
         cur.execute("drop table if exists company_notes")
+        cur.execute("drop table if exists company_links")
         cur.execute("drop table if exists company_merges")
         cur.execute("drop table if exists companies")
         cur.execute("drop table if exists application_snapshots")
@@ -97,6 +98,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 19, "name": "interview_cancel_and_delete"},
             {"version": 20, "name": "contact_deletes"},
             {"version": 21, "name": "company_edits"},
+            {"version": 22, "name": "company_links"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1352,6 +1354,29 @@ def test_a_stale_merge_undo_is_refused(conn):
     with pytest.raises(database.EditConflict, match="company changed"):
         database.undo_company_merge(conn, second["merge_id"], second["company"]["revision"])
     assert database.company_records(conn, "Initech")["note"]["body"] == "Written after the merge."
+
+
+def test_company_links_soft_delete_and_follow_a_merge(conn):
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    assert database.add_company_link(conn, "nobody", "", "https://x.example") is None
+    kept = database.add_company_link(conn, "globex", "Careers", "https://globex.example/careers")
+    dropped = database.add_company_link(conn, "globex", "", "https://globex.example/blog")
+    edited = database.update_company_link(conn, kept["id"], {"label": "Jobs"})
+    assert (edited["link"]["label"], edited["previous"]["label"]) == ("Jobs", "Careers")
+    with pytest.raises(database.RecordConflict):
+        database.update_company_link(conn, kept["id"], {"label": "x"}, expected=kept["revision"])
+    assert database.delete_company_link(conn, dropped["id"]) is True
+    assert database.delete_company_link(conn, dropped["id"]) is False
+    assert [link["id"] for link in database.company_records(conn, "Globex")["saved_links"]] == [kept["id"]]
+    assert database.company_counts(conn)["globex"]["links"] == 1
+
+    merged = database.merge_companies(conn, "globex", "acme")
+    assert merged["moved"]["links"] == 2
+    assert database.restore_company_link(conn, dropped["id"])["url"] == "https://globex.example/blog"
+    assert [link["id"] for link in database.company_records(conn, "Acme")["saved_links"]] == [kept["id"], dropped["id"]]
+    database.undo_company_merge(conn, merged["merge_id"])
+    assert [link["id"] for link in database.company_records(conn, "Globex")["saved_links"]] == [kept["id"], dropped["id"]]
+    assert database.company_records(conn, "Acme")["saved_links"] == []
 
 
 def test_eligibility_overrides_are_append_only_evidence_records(conn):
