@@ -4,7 +4,7 @@ PYTHON ?= .venv/bin/python
 
 test:
 	$(PYTHON) -m pytest -q
-	node --test tests/test_highlights.mjs tests/test_copy_text.mjs tests/test_motion.mjs tests/test_theme.mjs tests/test_selection.mjs
+	node --test tests/test_highlights.mjs tests/test_copy_text.mjs tests/test_motion.mjs tests/test_theme.mjs tests/test_selection.mjs tests/test_shortcuts.mjs
 
 test-pg:
 	PYTHON="$(PYTHON)" ./scripts/test-pg.sh
