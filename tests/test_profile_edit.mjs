@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adoptIds, applyOp, eligibilityWarning, fieldKey, limitReason, newId, opKeys, referenceWarning, renameOverrides, withOrder } from "../src/jobscout/static/profile-edit.js";
+import { adoptIds, applyOp, eligibilityWarning, fieldKey, limitReason, newId, opKeys, referenceWarning, renameOverrides, restoredMessage, withOrder } from "../src/jobscout/static/profile-edit.js";
 
 const profile = () => ({
   fields: [{ key: "email", label: "Email", group: "Contact" }, { key: "degree", label: "Degree", group: "Education" }],
@@ -113,10 +113,16 @@ test("renameOverrides moves one key and keeps orphans", () => {
 
 test("warnings name what a delete affects", () => {
   assert.equal(referenceWarning(0), "");
-  assert.match(referenceWarning(1), /^1 application records this/);
-  assert.match(referenceWarning(3), /^3 applications record this/);
+  assert.match(referenceWarning(1), /^1 application lists this.*It keeps/);
+  assert.match(referenceWarning(3), /^3 applications list this.*They keep/);
   assert.equal(eligibilityWarning("email", { degree: ["Degree"] }), "");
   assert.match(eligibilityWarning("degree", { degree: ["Degree"] }), /use this field: Degree\./);
   assert.equal(limitReason("fields", 99), "");
   assert.match(limitReason("fields", 100), /up to 100 fields/);
+});
+
+test("restoredMessage owns up to lost links", () => {
+  assert.equal(restoredMessage(0), "Document restored.");
+  assert.equal(restoredMessage(1), "Document restored. Its link from 1 application wasn't restored.");
+  assert.equal(restoredMessage(4), "Document restored. Its links from 4 applications weren't restored.");
 });

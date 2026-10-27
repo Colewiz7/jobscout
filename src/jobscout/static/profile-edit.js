@@ -142,8 +142,15 @@ export function renameOverrides(overrides, from, to) {
 
 export function referenceWarning(count) {
   if (!count) return "";
-  const noun = count === 1 ? "application records" : "applications record";
-  return `${new Intl.NumberFormat().format(count)} ${noun} this as the resume sent. They will keep the name but lose the link.`;
+  if (count === 1) return "1 application lists this as the resume sent. It keeps the resume name but loses the link.";
+  return `${new Intl.NumberFormat().format(count)} applications list this as the resume sent. They keep the resume name but lose the link.`;
+}
+
+// the server already cleared those links
+export function restoredMessage(count) {
+  if (!count) return "Document restored.";
+  if (count === 1) return "Document restored. Its link from 1 application wasn't restored.";
+  return `Document restored. Its links from ${new Intl.NumberFormat().format(count)} applications weren't restored.`;
 }
 
 export function eligibilityWarning(key, checks) {

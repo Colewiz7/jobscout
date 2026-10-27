@@ -180,6 +180,12 @@
     <p class="capture-bookmarklet">From another site: <a id="capture-bookmarklet" href="#" draggable="true">drag “Add to JobSeer” to your bookmarks bar</a>.</p>
   </dialog>
 
+  <dialog class="confirm-dialog" id="confirm-dialog" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="capture-actions"><button class="text-button interactive" type="button" data-confirm-cancel>Cancel</button><button class="filled-button danger-button interactive" type="button" data-confirm-accept>Delete</button></div>
+  </dialog>
+
   <p class="offline-state" id="offline-state" role="status" hidden>Offline · showing cached data</p>
 
   <div class="snackbar-region" id="snackbar-region" aria-live="polite" aria-atomic="true"></div>

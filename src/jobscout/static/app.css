@@ -4050,7 +4050,8 @@ body.quick-fill-popout {
   stroke-width: 1.8;
 }
 
-.capture-dialog {
+.capture-dialog,
+.confirm-dialog {
   width: min(100% - var(--s-8), 520px);
   max-height: min(90vh, 760px);
   padding: var(--s-6);
@@ -4061,7 +4062,8 @@ body.quick-fill-popout {
   overflow-y: auto;
 }
 
-.capture-dialog::backdrop {
+.capture-dialog::backdrop,
+.confirm-dialog::backdrop {
   background: var(--scrim);
 }
 
@@ -4075,6 +4077,23 @@ body.quick-fill-popout {
   color: var(--on-surface-variant);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog p {
+  margin: var(--s-3) 0 0;
+  color: var(--on-surface-variant);
+  line-height: 1.5;
+}
+
+.danger-button {
+  background: var(--error);
+  color: var(--on-error);
 }
 
 .capture-field {

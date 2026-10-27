@@ -7,7 +7,7 @@ import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js"
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
-import { adoptIds, applyOp, itemId, limitReason, newId, opKeys, PROFILE_KINDS, renameOverrides, withOrder } from "./profile-edit.js";
+import { adoptIds, applyOp, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
@@ -27,6 +27,7 @@ const reorderRegion = document.querySelector("#reorder-region");
 const quickFillTrigger = document.querySelector("#quick-fill-trigger");
 const quickFillSheet = document.querySelector("#quick-fill-sheet");
 const captureDialog = document.querySelector("#capture-dialog");
+const confirmDialog = document.querySelector("#confirm-dialog");
 const captureForm = document.querySelector("#capture-form");
 const captureError = document.querySelector("#capture-error");
 const offlineState = document.querySelector("#offline-state");
@@ -2330,6 +2331,12 @@ function templateMarkup(template) {
   return profileItemMarkup("answer_templates", template, `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Name", template.name || "", `data-profile-rename="answer_templates" data-profile-id="${escapeHtml(itemId("answer_templates", template))}" data-profile-property="name" maxlength="120"`)}${editorField("Template", template.body || "", profileAttrs("answer_templates", template, "body"), { multiline: true })}<small>${count}</small></details>`);
 }
 
+function documentMarkup(document) {
+  const name = `data-profile-rename="documents" data-profile-id="${escapeHtml(itemId("documents", document))}" data-profile-property="name" maxlength="160"`;
+  const badge = document.default ? '<span class="profile-badge">Default resume</span>' : "";
+  return profileItemMarkup("documents", document, `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}${badge}</summary>${editorField("Name", document.name || "", name)}${editorField("Date", document.date || "", profileAttrs("documents", document, "date"), { type: "date" })}${editorField("Path or URL", document.url || "", `${profileAttrs("documents", document, "url")} maxlength="2000"`, { inputmode: "url", spellcheck: "false", autocapitalize: "off" })}</details>`);
+}
+
 function quickFillEditorMarkup(scope = "docked") {
   const profile = state.quickFillProfile || {};
   const job = currentJob();
@@ -2338,12 +2345,12 @@ function quickFillEditorMarkup(scope = "docked") {
     { multiline: String(field.value || "").length > 120 || String(field.value || "").includes("\n") },
   )).join("");
   const templates = profileSectionMarkup("answer_templates", "Short answers", (profile.answer_templates || []).map(templateMarkup), "No templates yet.", profileAddMarkup("answer_templates", scope, { label: "New template", button: "Add template", placeholder: "Why this company", maxlength: 120 }));
-  const documents = (profile.documents || []).map((document) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}</summary>${editorField("Name", document.name || "", profileAttrs("documents", document, "name"))}${editorField("Date", document.date || "", profileAttrs("documents", document, "date"))}${editorField("Path or URL", document.url || "", profileAttrs("documents", document, "url"))}</details>`).join("");
+  const documents = profileSectionMarkup("documents", "Documents", (profile.documents || []).map(documentMarkup), "No documents yet. Add a resume version to pick it when you mark an application.", profileAddMarkup("documents", scope, { label: "New document", button: "Add document", placeholder: "Platform resume", maxlength: 160 }));
   const stories = profileSectionMarkup("stories", "Story bank", (profile.stories || []).map(storyMarkup), "No stories yet.", profileAddMarkup("stories", scope, { label: "New story", button: "Add story", placeholder: "Stabilized a failing service", maxlength: 160 }));
   const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
   const account = profile.company_account || {};
   const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
-  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section>${templates}${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section>${documents}${templates}${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
@@ -2590,12 +2597,19 @@ function changeProfile(op, { message, undone, focus = null, flip: animate = fals
   }
   state.quickFillProfileError = null;
   rerenderProfile({ focus, animate: animate && focus?.surface });
-  offerMoveSnackbar(message, `profile-${kind}`, { message, keys, run: () => undoProfileChange(result.inverse, undone, focus?.surface) }, saveProfileChange());
+  const entry = { message, keys, run: () => undoProfileChange(result.inverse, undone, focus?.surface, entry) };
+  offerMoveSnackbar(message, `profile-${kind}`, entry, saveProfileChange());
   return true;
 }
 
-function undoProfileChange(inverse, undone, surface) {
+async function undoProfileChange(inverse, undone, surface, entry) {
   if (!state.quickFillProfile) return;
+  const doomed = inverse.type === "remove" && findProfileItem(inverse.kind, inverse.id);
+  if (doomed) {
+    const trigger = surface && [...surface.querySelectorAll(".profile-item[data-profile-ref]")].find((node) => canonicalRef(node.dataset.profileRef) === canonicalRef(`${inverse.kind}:${inverse.id}`))?.querySelector("[data-menu-trigger]");
+    // cancelled, so keep the undo
+    if (!await confirmRemoval(inverse.kind, doomed, trigger)) { if (entry) undoStack.push(entry); return; }
+  }
   const result = applyProfileOp(inverse);
   if (result.noop) return;
   if (result.error) { showSnackbar(`Couldn't undo. ${result.error}`); return; }
@@ -2670,6 +2684,7 @@ function newProfileItem(kind, text, root) {
   const taken = (state.quickFillProfile?.[kind] || []).map((row) => itemId(kind, row));
   if (kind === "stories") return { id: newId("story", taken), title: text, situation: "", task: "", action: "", result: "", reflection: "", competencies: [] };
   if (kind === "answer_templates") return { id: newId("new-template", taken), name: text, body: "" }; // the server assigns the real id
+  if (kind === "documents") return { id: newId("new-document", taken), name: text, date: "", url: "", default: false };
   return null;
 }
 
@@ -2697,6 +2712,7 @@ const profileFirstInput = { stories: '[data-profile-property="situation"]', answ
 
 const renameCopy = {
   "answer_templates:name": { empty: "A template needs a name.", message: "Template renamed.", undone: "Rename undone." },
+  "documents:name": { empty: "A document needs a name.", message: "Document renamed.", undone: "Rename undone." },
 };
 
 // one undo entry per rename
@@ -2740,13 +2756,73 @@ function moveProfileItem(c, to, { role = "[data-menu-trigger]", pointer = false 
   return moved;
 }
 
-function deleteProfileItem(c) {
+// the loaded count may be stale
+async function documentReferences(id) {
+  const wanted = String(state.quickFillAliases[id] ?? id);
+  if (!(state.quickFillSavedProfile?.documents || []).some((row) => String(row.id) === wanted)) return 0; // unsaved, nothing points here
+  const response = await fetch("/api/v1/profile", { credentials: "same-origin", headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error("Couldn't check which applications use this document.");
+  const latest = (await response.json()).profile;
+  return Number(latest.documents?.find((row) => String(row.id) === wanted)?.application_count) || 0;
+}
+
+async function removalWarning(kind, item) {
+  if (kind === "documents") {
+    const count = await documentReferences(itemId(kind, item));
+    return { count, text: referenceWarning(count) };
+  }
+  return { count: 0, text: "" };
+}
+
+// other records change, so carrel confirms
+async function confirmRemoval(kind, item, trigger) {
+  let warning;
+  try {
+    warning = await removalWarning(kind, item);
+  } catch (error) {
+    showSnackbar(`${error.message} Nothing was deleted.`);
+    return null;
+  }
+  if (warning.text && !await confirmDelete({ title: `Delete “${profileNames[kind](item) || PROFILE_KINDS[kind].one}”?`, body: warning.text, trigger })) return null;
+  return warning;
+}
+
+async function deleteProfileItem(c) {
+  const checked = await confirmRemoval(c.kind, c.item, c.el.querySelector("[data-menu-trigger]"));
+  if (!checked) return;
+  const item = findProfileItem(c.kind, c.id);
+  if (!item) return; // a reload removed it first
   const rows = state.quickFillProfile[c.kind];
-  const next = rows[c.index + 1] || rows[c.index - 1];
+  const index = rows.indexOf(item);
+  const next = rows[index + 1] || rows[index - 1];
   const noun = `${PROFILE_KINDS[c.kind].one.slice(0, 1).toUpperCase()}${PROFILE_KINDS[c.kind].one.slice(1)}`;
   // carrel: next item, else add box
   const focus = c.surface && (next ? { surface: c.surface, ref: `${c.kind}:${itemId(c.kind, next)}`, role: "[data-menu-trigger]" } : { surface: c.surface, add: c.kind });
-  changeProfile({ type: "remove", kind: c.kind, id: c.id }, { message: `${noun} deleted.`, undone: `${noun} restored.`, focus });
+  const undone = c.kind === "documents" ? restoredMessage(checked.count) : `${noun} restored.`;
+  changeProfile({ type: "remove", kind: c.kind, id: c.id }, { message: `${noun} deleted.`, undone, focus });
+}
+
+function setDefaultDocument(c, id) {
+  const focus = c.surface && { surface: c.surface, ref: `documents:${c.id}`, role: "[data-menu-trigger]" };
+  const copy = id == null
+    ? { message: "No default resume. Apply sessions start with none picked.", undone: "Default resume restored." }
+    : { message: `${c.name} is now the default resume.`, undone: "Default resume change undone." };
+  changeProfile({ type: "default", id }, { ...copy, focus });
+}
+
+let confirmResolve = null;
+
+// cancel is the default focus
+function confirmDelete({ title, body, action = "Delete", trigger }) {
+  if (confirmDialog.open) return Promise.resolve(false);
+  confirmDialog.querySelector("#confirm-title").textContent = title;
+  confirmDialog.querySelector("#confirm-body").textContent = body;
+  confirmDialog.querySelector("[data-confirm-accept]").textContent = action;
+  confirmDialog.returnValue = "";
+  rememberDialogTrigger(trigger);
+  confirmDialog.showModal();
+  confirmDialog.querySelector("[data-confirm-cancel]").focus();
+  return new Promise((resolve) => { confirmResolve = resolve; });
 }
 
 function openProfileItem(c, role) {
@@ -3490,6 +3566,9 @@ const profileMenuItems = [
   { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => moveProfileItem(c, 0) },
   { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => moveProfileItem(c, c.count - 1) },
   { label: "Edit", divider: true, when: (c) => c.kind === "stories", run: (c) => openProfileItem(c, '[data-profile-property="title"]') },
+  { label: "Edit", divider: true, when: (c) => c.kind === "documents", run: (c) => openProfileItem(c, '[data-profile-property="name"]') },
+  { label: "Use as default resume", when: (c) => c.kind === "documents" && !c.item.default, run: (c) => setDefaultDocument(c, c.id) },
+  { label: "Stop using as default", when: (c) => c.kind === "documents" && c.item.default, run: (c) => setDefaultDocument(c, null) },
   { label: "Rename", divider: true, when: (c) => c.kind === "answer_templates", run: (c) => openProfileItem(c, '[data-profile-property="name"]') },
   { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
 ];
@@ -3619,6 +3698,7 @@ function shortcutScopeAllows(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (confirmDialog.open) return; // escape must reach the dialog
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
   if (matchShortcut(event, "Mod+Z") && shortcutScopeAllows(event)) { event.preventDefault(); runUndo(undoStack.pop()); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -4048,7 +4128,15 @@ commandInput.addEventListener("keydown", (event) => {
   else if (event.key === "Enter" && commandMatches[commandSelection]) { event.preventDefault(); runCommand(commandMatches[commandSelection].id); }
 });
 
-for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog]) {
+confirmDialog.querySelector("[data-confirm-cancel]").addEventListener("click", () => confirmDialog.close());
+confirmDialog.querySelector("[data-confirm-accept]").addEventListener("click", () => confirmDialog.close("confirm"));
+confirmDialog.addEventListener("close", () => {
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  resolve?.(confirmDialog.returnValue === "confirm");
+});
+
+for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog, confirmDialog]) {
   dialog.addEventListener("close", restoreDialogTrigger);
   dialog.addEventListener("click", (event) => {
     if (event.target !== dialog) return;
