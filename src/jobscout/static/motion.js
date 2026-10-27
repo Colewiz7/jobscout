@@ -22,7 +22,7 @@ export const springTokens = {
 };
 
 // x0 is offset from target
-// frame rate cant change it
+// closed form, no per frame drift
 export function solve(k, c, m, x0, v0, t) {
   const w0 = Math.sqrt(k / m);
   const z = c / (2 * Math.sqrt(k * m));
@@ -56,8 +56,7 @@ export class Spring {
     return { value: this.target + s.x, velocity: s.v };
   }
 
-  // starts from whats on screen
-  // keeps velocity unless one is passed
+  // retargets mid-flight without a snap
   setTarget(target, now, velocity) {
     const { value, velocity: v } = this.sample(now);
     this.from = value; this.v0 = velocity ?? v; this.t0 = now; this.target = target;
