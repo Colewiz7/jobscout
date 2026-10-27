@@ -119,6 +119,37 @@ def _posting_edit(payload: dict) -> tuple[dict[str, str], Any]:
     return fields, description
 
 
+def _expected_revision(payload: dict) -> int | None:
+    expected = payload.pop("expected_revision", None)
+    if expected is not None and (type(expected) is not int or expected < 0):
+        raise ValueError("expected_revision must be a whole number")
+    return expected
+
+
+def _interview_changes(payload: dict) -> dict:
+    unknown = sorted(set(payload) - {"starts_at", "ends_at", "location", "notes", "cancelled"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    changes: dict[str, Any] = {}
+    if "starts_at" in payload:
+        changes["starts_at"] = _parse_client_datetime(payload["starts_at"], "interview start")
+    if "ends_at" in payload:
+        changes["ends_at"] = _parse_client_datetime(payload["ends_at"], "interview end", optional=True)
+    for name, limit in (("location", 500), ("notes", 20_000)):
+        if name not in payload:
+            continue
+        if not isinstance(payload[name], str) or len(payload[name]) > limit:
+            raise ValueError(f"{name} must be text under {limit:,} characters")
+        changes[name] = payload[name].strip()
+    if "cancelled" in payload:
+        if not isinstance(payload["cancelled"], bool):
+            raise ValueError("cancelled must be true or false")
+        changes["cancelled"] = payload["cancelled"]
+    if not changes:
+        raise ValueError("Change the time, location or notes, then save")
+    return changes
+
+
 def _company_groups(jobs: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     tracked = {"applying", "applied", "interviewing", "offer", "rejected"}
@@ -237,6 +268,7 @@ def _calendar_text(interviews: list[dict]) -> str:
             f"SUMMARY:{clean(summary)}",
             f"LOCATION:{clean(interview.get('location'))}",
             f"DESCRIPTION:{clean(interview.get('notes'))}",
+            *(["STATUS:CANCELLED"] if interview.get("cancelled_at") else []),
             "END:VEVENT",
         ])
     lines.append("END:VCALENDAR")
@@ -492,6 +524,29 @@ class PostgresStore:
                 location=str(payload.get("location") or ""),
                 notes=str(payload.get("notes") or ""),
             )
+
+    def interview_key(self, interview_id: int) -> str | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.interview_key(conn, interview_id)
+
+    def update_interview(self, interview_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _interview_changes(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_interview(conn, interview_id, changes, expected)
+
+    def delete_interview(self, interview_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_interview(conn, interview_id)
+
+    def restore_interview(self, interview_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.restore_interview(conn, interview_id)
 
     def save_next_step(self, key: str, value: str) -> bool:
         with database.connect(self.dsn) as conn:
@@ -1149,7 +1204,8 @@ class DemoStore:
                 if reminder["status"] != "done" and reminder["dedupe_key"] in visible
             ]),
             "interviews": copy.deepcopy(sorted(
-                (self._named(item) for item in self._interviews if item["dedupe_key"] in visible),
+                (self._named(item) for item in self._interviews
+                 if item["dedupe_key"] in visible and not item.get("deleted")),
                 key=lambda item: item["starts_at"],
             )),
             "history": [],
@@ -1158,7 +1214,47 @@ class DemoStore:
     def _named(self, item: dict) -> dict:
         row = next(row for row in self.rows if row["dedupe_key"] == item["dedupe_key"])
         named = self._with_override(row)
-        return {**item, "company": named["company"], "title": named["title"]}
+        public = {key: value for key, value in item.items() if key != "deleted"}
+        return {**public, "company": named["company"], "title": named["title"]}
+
+    def _live_interview(self, interview_id: int, *, deleted: bool = False) -> dict | None:
+        return next((item for item in self._interviews
+                     if item["id"] == interview_id and bool(item.get("deleted")) == deleted), None)
+
+    def interview_key(self, interview_id: int) -> str | None:
+        return next((item["dedupe_key"] for item in self._interviews if item["id"] == interview_id), None)
+
+    def update_interview(self, interview_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _interview_changes(payload)
+        interview = self._live_interview(interview_id)
+        if interview is None:
+            return None
+        previous = self._named(interview)
+        if expected is not None and interview["revision"] != expected:
+            raise database.RecordConflict(previous)
+        cancelled = changes.pop("cancelled", None)
+        merged = {**interview, **changes}
+        if merged["ends_at"] is not None and merged["ends_at"] <= merged["starts_at"]:
+            raise ValueError("interview end must be after its start")
+        if cancelled is not None:
+            merged["cancelled_at"] = (interview.get("cancelled_at") or dt.datetime.now(dt.timezone.utc)) if cancelled else None
+        interview.update(merged, revision=interview["revision"] + 1)
+        return {"interview": self._named(interview), "previous": previous}
+
+    def delete_interview(self, interview_id: int) -> bool:
+        interview = self._live_interview(interview_id)
+        if interview is not None:
+            interview["deleted"] = True
+        return interview is not None
+
+    def restore_interview(self, interview_id: int) -> dict | None:
+        interview = self._live_interview(interview_id, deleted=True)
+        if interview is None:
+            return None
+        interview["deleted"] = False
+        return self._named(interview)
 
     def update_reminder(self, reminder_id: int, action: str) -> dict | None:
         if action not in {"done", "snooze"}:
@@ -1188,7 +1284,7 @@ class DemoStore:
             raise ValueError("job not found")
         interview = {
             "id": self._next_interview_id, "dedupe_key": row["dedupe_key"],
-            "starts_at": starts_at, "ends_at": ends_at,
+            "starts_at": starts_at, "ends_at": ends_at, "cancelled_at": None, "revision": 0,
             "location": str(payload.get("location") or "")[:500],
             "notes": str(payload.get("notes") or "")[:20_000],
             "company": row["company"], "title": row["title"],
@@ -1909,8 +2005,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._edited_json(result, edit_id=result["edit_id"])
 
+    # every interview write checks its job
+    def _interview_write(self, raw_id: str, action: str) -> None:
+        if not self._require_write_security():
+            return
+        try:
+            interview_id = int(raw_id)
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, "invalid interview")
+            return
+        try:
+            key = self.app.store.interview_key(interview_id)
+            if key is None:
+                self._error(HTTPStatus.NOT_FOUND, "interview not found")
+                return
+            if self._reject_hidden(key):
+                return
+            if action == "edit":
+                result = self.app.store.update_interview(interview_id, self._read_json())
+            elif action == "delete":
+                result = {"ok": True} if self.app.store.delete_interview(interview_id) else None
+            else:
+                restored = self.app.store.restore_interview(interview_id)
+                result = restored and {"interview": restored}
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except database.RecordConflict as conflict:
+            self._json({"error": "This interview changed in another tab.", "interview": conflict.record}, HTTPStatus.CONFLICT)
+            return
+        except Exception:
+            log.exception("could not change interview")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the interview. Retry shortly.")
+            return
+        if result is None:
+            self._error(HTTPStatus.NOT_FOUND, "interview not found")
+            return
+        self._json(result)
+
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        interview_prefix = "/api/v1/interviews/"
+        if parsed.path.startswith(interview_prefix):
+            self._interview_write(parsed.path.removeprefix(interview_prefix), "edit")
+            return
         prefix = "/api/v1/jobs/"
         posting_suffix = "/posting"
         if parsed.path.startswith(prefix) and parsed.path.endswith(posting_suffix):
@@ -2153,6 +2291,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "job not found")
                 return
             self._json({"eligibility": result}, HTTPStatus.CREATED)
+            return
+        if parsed.path.startswith("/api/v1/interviews/") and parsed.path.endswith("/restore"):
+            self._interview_write(parsed.path[len("/api/v1/interviews/"):-len("/restore")], "restore")
             return
         if parsed.path == "/api/v1/interviews":
             if not self._require_write_security():
@@ -2460,6 +2601,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path.startswith("/api/v1/interviews/"):
+            self._interview_write(parsed.path.removeprefix("/api/v1/interviews/"), "delete")
+            return
         prefix = "/api/v1/saved-views/"
         if not parsed.path.startswith(prefix):
             self._error(HTTPStatus.NOT_FOUND, "not found")

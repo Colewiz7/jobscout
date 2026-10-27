@@ -93,6 +93,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 16, "name": "document_default_and_order"},
             {"version": 17, "name": "hidden_jobs"},
             {"version": 18, "name": "posting_edits"},
+            {"version": 19, "name": "interview_cancel_and_delete"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1022,6 +1023,46 @@ def test_hiding_an_edited_job_also_hides_its_edited_title(conn):
     database.upsert_open(conn, [_p(source="lever", title="Robotics Intern",
                                    url="https://jobs.lever.co/acme/00000000-0000-0000-0000-000000000009")])
     assert _visible(conn) == []
+
+
+def test_interviews_are_edited_cancelled_and_soft_deleted(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    starts_at = dt.datetime(2026, 11, 10, 14, tzinfo=dt.timezone.utc)
+    interview = database.add_interview(conn, dedupe_key=posting.dedupe_key, starts_at=starts_at,
+                                       ends_at=None, location="Video call", notes="")
+    assert database.interview_key(conn, interview["id"]) == posting.dedupe_key
+    assert database.update_interview(conn, 999, {"notes": "x"}) is None
+    with pytest.raises(ValueError, match="end must be after"):
+        database.update_interview(conn, interview["id"], {"ends_at": starts_at - dt.timedelta(hours=1)})
+
+    edited = database.update_interview(conn, interview["id"], {"notes": "Bring examples", "cancelled": True})
+    assert edited["previous"]["notes"] == "" and edited["previous"]["cancelled_at"] is None
+    assert edited["interview"]["notes"] == "Bring examples" and edited["interview"]["company"] == "Acme"
+    cancelled_at = edited["interview"]["cancelled_at"]
+    again = database.update_interview(conn, interview["id"], {"cancelled": True, "location": "Onsite"})
+    assert again["interview"]["cancelled_at"] == cancelled_at
+    assert database.update_interview(conn, interview["id"], {"cancelled": False})["interview"]["cancelled_at"] is None
+
+    with pytest.raises(database.RecordConflict) as conflict:
+        database.update_interview(conn, interview["id"], {"notes": "stale"}, expected=1)
+    assert conflict.value.record["notes"] == "Bring examples"
+    revision = again["interview"]["revision"] + 1
+    assert database.update_interview(conn, interview["id"], {"notes": "kept"}, expected=revision)["interview"]["revision"] == revision + 1
+
+    assert database.delete_interview(conn, interview["id"]) is True
+    assert database.delete_interview(conn, interview["id"]) is False
+    assert database.tracker_support(conn)["interviews"] == []
+    assert database.update_interview(conn, interview["id"], {"notes": "x"}) is None
+    assert database.restore_interview(conn, interview["id"])["location"] == "Onsite"
+    assert database.restore_interview(conn, interview["id"]) is None
+    with conn.cursor() as cur:
+        cur.execute("update interviews set deleted_at = now() - interval '2 days'")
+        conn.commit()
+    other = database.add_interview(conn, dedupe_key=posting.dedupe_key, starts_at=starts_at,
+                                   ends_at=None, location="", notes="")
+    database.delete_interview(conn, other["id"])
+    assert database.interview_key(conn, interview["id"]) is None  # purged
 
 
 def test_eligibility_overrides_are_append_only_evidence_records(conn):

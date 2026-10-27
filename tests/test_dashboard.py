@@ -253,8 +253,15 @@ def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
     store.rows[0]["status"] = "applied"
     client, token = authenticated_client(base)
     headers = {"X-CSRF-Token": token}
+    interview = client.post("/api/v1/interviews", headers=headers,
+                            json={"dedupe_key": "demo:1", "starts_at": "2026-11-01T15:00:00Z"}).json()["interview"]
+    store.rows[0]["status"] = "applied"
+    before = dict(store.rows[0])
     client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1"]}, headers=headers)
     writes = [
+        ("PATCH", f"/api/v1/interviews/{interview['id']}", {"notes": "stale"}),
+        ("DELETE", f"/api/v1/interviews/{interview['id']}", None),
+        ("POST", f"/api/v1/interviews/{interview['id']}/restore", None),
         ("PATCH", "/api/v1/jobs/demo%3A1", {"status": "saved", "notes": "stale"}),
         ("PUT", "/api/v1/applications/demo%3A1/next-step", {"next_step": "stale"}),
         ("POST", "/api/v1/applications/demo%3A1/applied", {}),
@@ -272,8 +279,8 @@ def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
         response = client.request(method, path, json=body, headers=headers)
         assert (path, response.status_code) == (path, 410)
         assert response.json()["error"] == "This job is hidden, so it can't change."
-    row = store.rows[0]
-    assert (row["status"], row["notes"], row.get("next_step", "")) == ("applied", "Mention the homelab incident response story.", "")
+    assert store.rows[0] == before
+    assert store._interviews[0]["notes"] == "" and not store._interviews[0].get("deleted")
     assert client.patch("/api/v1/jobs/demo%3A2", json={"status": "saved"}, headers=headers).status_code == 200
 
 
@@ -876,6 +883,79 @@ def test_tracker_followup_interview_calendar_and_next_step(dashboard):
     assert after.json()["reminders"] == []
     assert "BEGIN:VCALENDAR" in calendar.text
     assert "Video call" in calendar.text
+
+
+def test_interviews_are_edited_cancelled_deleted_and_restored(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    interview = client.post("/api/v1/interviews", headers=headers, json={
+        "dedupe_key": "demo:2", "starts_at": "2026-11-10T14:00:00Z",
+        "ends_at": "2026-11-10T15:00:00Z", "location": "Video call", "notes": "System design",
+    }).json()["interview"]
+    path = f"/api/v1/interviews/{interview['id']}"
+    assert httpx.patch(f"{base}{path}", json={"notes": "x"}).status_code == 401
+    assert client.patch(path, json={"notes": "x"}).status_code == 403
+    assert client.delete(path).status_code == 403
+    for body, error in [
+        ({"starts_at": "soon"}, "interview start must be a valid date and time"),
+        ({"ends_at": "2026-11-10T13:00:00Z"}, "interview end must be after its start"),
+        ({"cancelled": "yes"}, "cancelled must be true or false"),
+        ({"kind": "phone"}, "kind can't be edited"),
+        ({}, "Change the time, location or notes, then save"),
+    ]:
+        response = client.patch(path, json=body, headers=headers)
+        assert (response.status_code, response.json()["error"]) == (400, error)
+    assert client.patch("/api/v1/interviews/99", json={"notes": "x"}, headers=headers).status_code == 404
+    assert client.patch("/api/v1/interviews/abc", json={"notes": "x"}, headers=headers).status_code == 400
+
+    edited = client.patch(path, headers=headers, json={"location": "Onsite", "starts_at": "2026-11-10T14:30:00Z"}).json()
+    assert (edited["interview"]["location"], edited["previous"]["location"]) == ("Onsite", "Video call")
+    previous = edited["previous"]
+    undone = client.patch(path, headers=headers, json={
+        key: previous[key] for key in ("starts_at", "ends_at", "location", "notes")
+    }).json()["interview"]
+    assert (undone["location"], undone["starts_at"]) == ("Video call", "2026-11-10T14:00:00+00:00")
+
+    cancelled = client.patch(path, headers=headers, json={"cancelled": True}).json()["interview"]
+    assert cancelled["cancelled_at"]
+    assert client.get("/api/v1/tracker").json()["interviews"][0]["cancelled_at"] == cancelled["cancelled_at"]
+    assert "STATUS:CANCELLED" in client.get("/api/v1/interviews.ics").text
+    assert client.patch(path, headers=headers, json={"cancelled": False}).json()["interview"]["cancelled_at"] is None
+
+    assert client.delete(path, headers=headers).json() == {"ok": True}
+    assert client.get("/api/v1/tracker").json()["interviews"] == []
+    assert client.delete(path, headers=headers).status_code == 404
+    assert client.patch(path, json={"notes": "x"}, headers=headers).status_code == 404
+    restored = client.post(f"{path}/restore", headers=headers)
+    assert restored.json()["interview"]["location"] == "Video call"
+    assert client.post(f"{path}/restore", headers=headers).status_code == 404
+    assert [item["id"] for item in client.get("/api/v1/tracker").json()["interviews"]] == [interview["id"]]
+
+
+def test_interview_undo_is_refused_after_another_tab_edits(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    other, other_token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    interview = client.post("/api/v1/interviews", headers=headers, json={
+        "dedupe_key": "demo:2", "starts_at": "2026-11-10T14:00:00Z", "notes": "A",
+    }).json()["interview"]
+    path = f"/api/v1/interviews/{interview['id']}"
+    assert interview["revision"] == 0
+    edited = client.patch(path, headers=headers, json={"notes": "B"}).json()
+    assert edited["interview"]["revision"] == 1
+    assert client.patch(path, headers=headers, json={"notes": "x", "expected_revision": True}).status_code == 400
+    undone = client.patch(path, headers=headers, json={"notes": "A", "expected_revision": 1})
+    assert undone.json()["interview"]["revision"] == 2
+
+    redone = client.patch(path, headers=headers, json={"notes": "B"}).json()["interview"]
+    other.patch(path, headers={"X-CSRF-Token": other_token}, json={"notes": "C"})
+    stale = client.patch(path, headers=headers, json={"notes": "A", "expected_revision": redone["revision"]})
+    assert stale.status_code == 409
+    assert stale.json()["error"] == "This interview changed in another tab."
+    assert (stale.json()["interview"]["notes"], stale.json()["interview"]["revision"]) == ("C", 4)
+    assert client.get("/api/v1/tracker").json()["interviews"][0]["notes"] == "C"
 
 
 def test_company_notes_contacts_and_matched_connections(dashboard):

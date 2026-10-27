@@ -471,6 +471,15 @@ MIGRATIONS = (
         create index if not exists posting_edits_key_idx on posting_edits (dedupe_key, id);
         """,
     ),
+    Migration(
+        19,
+        "interview_cancel_and_delete",
+        """
+        alter table interviews add column if not exists cancelled_at timestamptz;
+        alter table interviews add column if not exists deleted_at timestamptz;
+        alter table interviews add column if not exists revision integer not null default 0;
+        """,
+    ),
 )
 
 

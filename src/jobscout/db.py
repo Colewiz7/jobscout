@@ -1811,6 +1811,19 @@ def contact_counts(conn: psycopg.Connection) -> dict[str, int]:
         return {row["company_key"]: row["count"] for row in cur.fetchall()}
 
 
+_INTERVIEWS = """
+    select i.id, i.dedupe_key, i.starts_at, i.ends_at, i.location, i.notes, i.cancelled_at, i.revision,
+           coalesce(min(o.company), min(p.company)) as company,
+           coalesce(min(o.title), min(p.title)) as title
+      from interviews i
+      join postings p on p.dedupe_key = i.dedupe_key
+      left join posting_overrides o on o.dedupe_key = i.dedupe_key
+     where p.hidden_by is null and {where}
+     group by i.id
+     order by i.starts_at, i.id
+"""
+
+
 def tracker_support(conn: psycopg.Connection) -> dict:
     with conn.cursor() as cur:
         cur.execute(
@@ -1827,19 +1840,7 @@ def tracker_support(conn: psycopg.Connection) -> dict:
             """
         )
         reminders = cur.fetchall()
-        cur.execute(
-            """
-            select i.id, i.dedupe_key, i.starts_at, i.ends_at, i.location, i.notes,
-                   coalesce(min(o.company), min(p.company)) as company,
-                   coalesce(min(o.title), min(p.title)) as title
-              from interviews i
-              join postings p on p.dedupe_key = i.dedupe_key
-              left join posting_overrides o on o.dedupe_key = i.dedupe_key
-             where p.hidden_by is null
-             group by i.id
-             order by i.starts_at, i.id
-            """
-        )
+        cur.execute(_INTERVIEWS.format(where="i.deleted_at is null"))
         interviews = cur.fetchall()
         cur.execute(
             """
@@ -1946,6 +1947,86 @@ def add_interview(
             """,
             (dedupe_key,),
         )
+    conn.commit()
+    return interview
+
+
+def interview_key(conn: psycopg.Connection, interview_id: int) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from interviews where id = %s", (interview_id,))
+        row = cur.fetchone()
+    return row["dedupe_key"] if row else None
+
+
+def _interview(cur, interview_id: int) -> dict | None:
+    cur.execute(_INTERVIEWS.format(where="i.id = %s and i.deleted_at is null"), (interview_id,))
+    return cur.fetchone()
+
+
+class RecordConflict(Exception):
+    """The record changed since the client read it."""
+
+    def __init__(self, record: dict):
+        super().__init__("record changed")
+        self.record = record
+
+
+def update_interview(conn: psycopg.Connection, interview_id: int, changes: dict, expected: int | None = None) -> dict | None:
+    """Apply validated changes; returns the row before and after."""
+    with conn.cursor() as cur:
+        cur.execute("select id from interviews where id = %s and deleted_at is null for update", (interview_id,))
+        if cur.fetchone() is None:
+            return None
+        previous = _interview(cur, interview_id)
+        if previous is None:
+            return None
+        # undo must not undo another tab
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        merged = {**previous, **changes}
+        if merged["ends_at"] is not None and merged["ends_at"] <= merged["starts_at"]:
+            raise ValueError("interview end must be after its start")
+        cancelled = changes.get("cancelled")
+        cur.execute(
+            """
+            update interviews
+               set starts_at = %s, ends_at = %s, location = %s, notes = %s, revision = revision + 1,
+                   cancelled_at = case
+                       when %s::boolean is null then cancelled_at
+                       when %s::boolean then coalesce(cancelled_at, now())
+                       else null
+                   end
+             where id = %s
+            """,
+            (merged["starts_at"], merged["ends_at"], merged["location"][:500], merged["notes"][:20_000],
+             cancelled, cancelled, interview_id),
+        )
+        interview = _interview(cur, interview_id)
+    conn.commit()
+    return {"interview": interview, "previous": previous}
+
+
+def delete_interview(conn: psycopg.Connection, interview_id: int) -> bool:
+    with conn.cursor() as cur:
+        # undo only lasts a moment
+        cur.execute("delete from interviews where deleted_at < now() - interval '1 day'")
+        cur.execute(
+            "update interviews set deleted_at = now() where id = %s and deleted_at is null returning id",
+            (interview_id,),
+        )
+        deleted = cur.fetchone() is not None
+    conn.commit()
+    return deleted
+
+
+def restore_interview(conn: psycopg.Connection, interview_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "update interviews set deleted_at = null where id = %s and deleted_at is not null returning id",
+            (interview_id,),
+        )
+        interview = _interview(cur, interview_id) if cur.fetchone() else None
     conn.commit()
     return interview
 
