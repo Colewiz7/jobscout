@@ -868,7 +868,7 @@ dialog[open]::backdrop {
 .status-tabs {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
   gap: var(--s-1);
 }
 

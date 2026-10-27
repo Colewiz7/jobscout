@@ -356,7 +356,7 @@ function buildEntries(jobs) {
 
 function visibleStatusTabs() {
   const counts = statusCounts();
-  const tabs = [["new", "New"], ["saved", "Saved"], ["queued", "Queued"], ["all", "All"]];
+  const tabs = [["new", "New"], ["saved", "Saved"], ["queued", "Queued"], ["archived", "Archived"], ["all", "All"]];
   return tabs.map(([value, label]) => `<button class="status-tab interactive" type="button" role="tab" data-status-tab="${value}" aria-selected="${state.status === value}" tabindex="${state.status === value ? "0" : "-1"}"><span>${label}</span><span class="count">${new Intl.NumberFormat().format(counts[value] || 0)}</span></button>`).join("");
 }
 
@@ -449,6 +449,8 @@ function renderVirtualRows() {
 }
 
 function emptyListMarkup() {
+  const archive = state.status === "archived" && !state.query && !state.source && !state.remote;
+  if (archive) return '<div class="list-empty"><h2>Nothing archived.</h2><p>Roles you dismiss wait here in case you change your mind.</p></div>';
   const filtered = Boolean(state.query || state.source || state.remote || state.status !== "new");
   return `<div class="list-empty"><h2>${filtered ? "No roles match this view." : "Your inbox is clear."}</h2><p>${filtered ? "Change or clear the active filters." : "New roles will appear here when the scout finds them."}</p>${filtered ? '<button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button>' : ""}</div>`;
 }
@@ -673,7 +675,14 @@ function bulkBarMarkup() {
   const count = state.selectedKeys.size;
   if (state.copySelectionMode) return `<div class="bulk-bar copy-selection-bar" aria-label="Copy selection"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected · Click jobs, or Shift-click for a range</span><button class="tonal-button interactive" type="button" data-copy-selected ${count ? "" : "disabled"}>Copy selected</button><button class="text-button interactive" type="button" data-cancel-copy-selection>Cancel</button></div>`;
   if (!count) return "";
-  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+  const actions = selectionArchived()
+    ? '<button class="text-button interactive" type="button" data-bulk-restore>Restore</button>'
+    : `${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button>`;
+  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+}
+
+function selectionArchived() {
+  return state.selectedKeys.size > 0 && [...state.selectedKeys].every((key) => state.jobs.find((job) => job.dedupe_key === key)?.status === "archived");
 }
 
 function copyMenuMarkup() {
@@ -3618,6 +3627,7 @@ const objectMenus = [
       { label: "Queue", shortcut: "q", when: (c) => c.bulk || c.job.status !== "queued", disabled: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => c.bulk ? queueSelection() : performDecision("queued", "Queued", [c.key]) },
       { label: "Dismiss", shortcut: "x", when: (c) => c.bulk || c.job.status !== "archived", run: (c) => performDecision("archived", "Dismissed", c.bulk ? null : [c.key]) },
       { label: "Dismiss company", when: (c) => c.bulk, run: () => dismissSelectedCompanies() },
+      { label: "Restore", when: (c) => c.bulk ? selectionArchived() : c.job.status === "archived", run: (c) => performDecision("new", "Restored", c.bulk ? null : [c.key]) },
       { label: "Copy", divider: true, run: (c) => copyInboxJobs(c.bulk ? filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)) : [c.job]) },
       { label: (c) => state.selectedKeys.has(c.key) ? "Deselect" : "Select", run: (c) => { if (state.selectedKeys.has(c.key)) state.selectedKeys.delete(c.key); else state.selectedKeys.add(c.key); syncVisibleJobSelection(); } },
     ],
@@ -3858,6 +3868,7 @@ document.addEventListener("click", (event) => {
     const labels = { saved: "Saved", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return;
   }
   if (event.target.closest("[data-dismiss-company]")) { dismissSelectedCompanies(); return; }
+  if (event.target.closest("[data-bulk-restore]")) { performDecision("new", "Restored"); return; }
   if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
   const tab = event.target.closest("[data-status-tab]");
   if (tab) { state.status = tab.dataset.statusTab; state.scrollTop = 0; state.selectedKeys.clear(); syncInboxUrl(); renderInbox(); return; }
