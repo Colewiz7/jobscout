@@ -194,7 +194,13 @@ def hide_jobs(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[dict]:
             if not rows or any(row["hidden_by"] is not None for row in rows):
                 continue
             keys = sorted({key} | {row["fallback_key"] for row in rows if row["fallback_key"]})
-            titles = sorted({title for row in rows if (title := title_key(row["company"], row["title"]))})
+            cur.execute("select company, title from posting_overrides where dedupe_key = %s", (key,))
+            override = cur.fetchone()
+            named = [*rows, *([{
+                "company": override["company"] or rows[0]["company"],
+                "title": override["title"] or rows[0]["title"],
+            }] if override else [])]
+            titles = sorted({title for row in named if (title := title_key(row["company"], row["title"]))})
             reqs = sorted({req for row in rows if (req := workday_req_from_url(row["url"]))})
             cur.execute(
                 """
@@ -571,7 +577,8 @@ def pending_taglines(conn: psycopg.Connection, keys: list[str], prompt_hash: str
 
     A changed prompt regenerates everything, so tuning the prompt is an edit and
     a rerun. Failures back off for ten minutes and stop after three attempts.
-    Postings whose description has not been fetched yet are left for later.
+    Postings whose description has not been fetched yet are left for later,
+    unless the description was corrected by hand.
     """
     if not keys:
         return []
@@ -580,8 +587,10 @@ def pending_taglines(conn: psycopg.Connection, keys: list[str], prompt_hash: str
             """select k.key
                  from unnest(%s::text[]) with ordinality as k(key, position)
                  left join posting_taglines t on t.dedupe_key = k.key
-                where exists (select 1 from postings p
-                               where p.dedupe_key = k.key and p.description_fetched_at is not null)
+                where (exists (select 1 from postings p
+                                where p.dedupe_key = k.key and p.description_fetched_at is not null)
+                       or exists (select 1 from posting_overrides o
+                                   where o.dedupe_key = k.key and o.description_text is not null))
                   and (t.dedupe_key is null
                        or t.prompt_hash <> %s
                        or (t.tagline is null and t.attempts < 3 and t.available_at <= now()))
@@ -737,9 +746,10 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                           and h.to_status = 'applied'
                    )
             )
-            select g.dedupe_key, g.company, g.title, g.terms, g.age_days,
-                   g.first_seen, g.last_seen, coalesce(g.url, '') as url,
-                   g.sources, g.closed, g.notified, g.score, g.deadline,
+            select g.dedupe_key, coalesce(o.company, g.company) as company,
+                   coalesce(o.title, g.title) as title, g.terms, g.age_days,
+                   g.first_seen, g.last_seen, coalesce(o.url, g.url, '') as url,
+                   g.sources, g.closed, g.notified, g.score, case when o.description_text is not null then o.deadline else g.deadline end as deadline,
                    g.liveness_status, g.liveness_checked_at, g.liveness_evidence,
                    coalesce(g.score_detail, '{}'::jsonb) as score_detail,
                    coalesce(s.status, 'new') as status,
@@ -753,7 +763,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                        select max(e.changed_at)
                          from application_events e
                          join postings other on other.dedupe_key = e.dedupe_key
-                        where lower(other.company) = lower(g.company)
+                        where lower(other.company) = lower(coalesce(o.company, g.company))
                           and other.dedupe_key <> g.dedupe_key
                           and other.hidden_by is null
                           and e.changed_at >= now() - interval '30 days'
@@ -763,6 +773,7 @@ def dashboard_postings(conn: psycopg.Connection, include_closed: bool = False) -
                       from unnest(string_to_array(g.locations_raw, ';')) as part
                      where btrim(part) <> '') as location
               from grouped g
+              left join posting_overrides o on o.dedupe_key = g.dedupe_key
               left join application_states s on s.dedupe_key = g.dedupe_key
               left join lateral (
                   select a.id, r.name
@@ -786,11 +797,13 @@ def queued_description_texts(conn: psycopg.Connection) -> dict[str, str]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            select distinct on (p.dedupe_key) p.dedupe_key, p.description_text
+            select distinct on (p.dedupe_key) p.dedupe_key,
+                   coalesce(o.description_text, p.description_text) as description_text
               from postings p
               join application_states s on s.dedupe_key = p.dedupe_key
-             where s.status = 'queued' and p.description_text is not null
-             order by p.dedupe_key, p.description_fetched_at desc nulls last
+              left join posting_overrides o on o.dedupe_key = p.dedupe_key
+             where s.status = 'queued' and coalesce(o.description_text, p.description_text) is not null
+             order by p.dedupe_key, (p.description_text is not null) desc, p.description_fetched_at desc nulls last
             """
         )
         return {row["dedupe_key"]: row["description_text"] for row in cur.fetchall()}
@@ -1294,7 +1307,26 @@ def cached_description(conn: psycopg.Connection, dedupe_key: str) -> dict | None
             """,
             (dedupe_key,),
         )
-        return cur.fetchone()
+        fetched = cur.fetchone()
+        cur.execute(
+            """
+            select description_text, coalesce(description_sections, '[]'::jsonb) as sections,
+                   deadline, deadline_source, updated_at
+              from posting_overrides where dedupe_key = %s and description_text is not null
+            """,
+            (dedupe_key,),
+        )
+        corrected = cur.fetchone()
+    if corrected is None:
+        return fetched
+    # provider fetches land underneath
+    fetched = fetched or {}
+    return {
+        **fetched, "description_html": None, "description_text": corrected["description_text"],
+        "sections": corrected["sections"], "description_fetched_at": corrected["updated_at"],
+        "description_error": None,
+        "deadline": corrected["deadline"], "deadline_source": corrected["deadline_source"],
+    }
 
 
 def save_description(
@@ -1333,14 +1365,142 @@ def save_description(
             (html, text, Json(list(sections)), error, deadline, deadline_source, posting_id),
         )
         if previous and previous["description_text"] != text:
-            cur.execute(
-                """update overview_jobs set status = 'queued', items = null, source = null,
-                          source_hash = null, attempts = 0, error = null,
-                          available_at = now(), requested_at = now(), updated_at = now()
-                     where dedupe_key = %s and status = 'ready'""",
-                (previous["dedupe_key"],),
-            )
+            _requeue_overview(cur, previous["dedupe_key"])
     conn.commit()
+
+
+def _requeue_overview(cur, dedupe_key: str) -> None:
+    cur.execute(
+        """update overview_jobs set status = 'queued', items = null, source = null,
+                  source_hash = null, attempts = 0, error = null,
+                  available_at = now(), requested_at = now(), updated_at = now()
+             where dedupe_key = %s and status = 'ready'""",
+        (dedupe_key,),
+    )
+
+
+class EditConflict(Exception):
+    """A later change would be lost by this undo."""
+
+
+POSTING_EDIT_FIELDS = ("company", "title", "url")
+OVERRIDE_COLUMNS = (*POSTING_EDIT_FIELDS, "description_text", "description_sections", "deadline", "deadline_source")
+
+
+def _lock_job(cur, dedupe_key: str) -> bool:
+    # first edits have no override row
+    cur.execute("select id from postings where dedupe_key = %s order by id for update", (dedupe_key,))
+    return bool(cur.fetchall())
+
+
+def edit_posting(conn: psycopg.Connection, dedupe_key: str, fields: dict[str, str], description=None) -> dict | None:
+    """Override a job's identity fields and correct its description.
+
+    Returns ``{"id": None}`` when nothing changed and None for an unknown job.
+    """
+    with conn.cursor() as cur:
+        if not _lock_job(cur, dedupe_key):
+            conn.rollback()
+            return None
+        cur.execute(
+            """
+            select min(company) as company, min(title) as title,
+                   coalesce(min(url) filter (where url <> ''), '') as url
+              from postings where dedupe_key = %s
+            """,
+            (dedupe_key,),
+        )
+        base = cur.fetchone()
+        # scout refreshes rewrite postings rows
+        cur.execute(f"select {', '.join(OVERRIDE_COLUMNS)} from posting_overrides where dedupe_key = %s", (dedupe_key,))
+        override = cur.fetchone()
+        values = dict(override) if override else dict.fromkeys(OVERRIDE_COLUMNS)
+        current = {name: values[name] or base[name] for name in POSTING_EDIT_FIELDS}
+        changed = {name: value for name, value in fields.items() if value != current[name]}
+        values.update(changed)
+        described = description is not None and (
+            (cached_description(conn, dedupe_key) or {}).get("description_text") != description.text
+        )
+        if described:
+            values.update(
+                description_text=description.text, description_sections=list(description.sections),
+                deadline=description.deadline, deadline_source=description.deadline_source,
+            )
+        if not changed and not described:
+            conn.rollback()
+            return {"id": None}
+        _write_override(cur, dedupe_key, values)
+        if "company" in changed and company_key(changed["company"]):
+            cur.execute(
+                "insert into companies (key, name) values (%s, %s) on conflict (key) do nothing",
+                (company_key(changed["company"]), changed["company"]),
+            )
+        if described:
+            _description_changed(cur, dedupe_key)
+        before = {"override": {
+            name: value.isoformat() if isinstance(value, dt.date) else value for name, value in override.items()
+        } if override else None}
+        cur.execute(
+            "insert into posting_edits (dedupe_key, before) values (%s, %s) returning id",
+            (dedupe_key, Json(before)),
+        )
+        edit = cur.fetchone()
+    conn.commit()
+    return {"id": edit["id"]}
+
+
+def _description_changed(cur, dedupe_key: str) -> None:
+    _requeue_overview(cur, dedupe_key)
+    # a blank hash reads as pending
+    cur.execute(
+        "update posting_taglines set prompt_hash = '', attempts = 0, available_at = now() where dedupe_key = %s",
+        (dedupe_key,),
+    )
+
+
+def _write_override(cur, dedupe_key: str, values: dict | None) -> None:
+    if values is None or all(values.get(name) is None for name in OVERRIDE_COLUMNS):
+        cur.execute("delete from posting_overrides where dedupe_key = %s", (dedupe_key,))
+        return
+    sections = values.get("description_sections")
+    cur.execute(
+        f"""
+        insert into posting_overrides (dedupe_key, {', '.join(OVERRIDE_COLUMNS)})
+        values (%s, {', '.join(['%s'] * len(OVERRIDE_COLUMNS))})
+        on conflict (dedupe_key) do update set
+            {', '.join(f"{name} = excluded.{name}" for name in OVERRIDE_COLUMNS)}, updated_at = now()
+        """,
+        (dedupe_key, *(Json(sections) if name == "description_sections" and sections is not None else values.get(name)
+                       for name in OVERRIDE_COLUMNS)),
+    )
+
+
+def undo_posting_edit(conn: psycopg.Connection, edit_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from posting_edits where id = %s", (edit_id,))
+        found = cur.fetchone()
+        if found is None:
+            return None
+        _lock_job(cur, found["dedupe_key"])
+        cur.execute("select id, dedupe_key, before, undone_at from posting_edits where id = %s", (edit_id,))
+        edit = cur.fetchone()
+        cur.execute(
+            "select max(id) as id from posting_edits where dedupe_key = %s and undone_at is null",
+            (edit["dedupe_key"],),
+        )
+        # an older undo would drop newer edits
+        if edit["undone_at"] is not None or cur.fetchone()["id"] != edit_id:
+            conn.rollback()
+            raise EditConflict("This posting changed after that edit, so it can't be undone.")
+        cur.execute("select description_text from posting_overrides where dedupe_key = %s", (edit["dedupe_key"],))
+        shown = (cur.fetchone() or {}).get("description_text")
+        restored = edit["before"]["override"]
+        _write_override(cur, edit["dedupe_key"], restored)
+        if shown != (restored or {}).get("description_text"):
+            _description_changed(cur, edit["dedupe_key"])
+        cur.execute("update posting_edits set undone_at = now() where id = %s", (edit_id,))
+    conn.commit()
+    return {"id": edit_id, "dedupe_key": edit["dedupe_key"]}
 
 
 def save_application_state(
@@ -1542,6 +1702,12 @@ def mark_application_applied(
         posting = cur.fetchone()
         if posting is None:
             return None
+        cur.execute(f"select {', '.join(OVERRIDE_COLUMNS)} from posting_overrides where dedupe_key = %s", (dedupe_key,))
+        override = cur.fetchone() or {}
+        posting.update({name: override[name] for name in POSTING_EDIT_FIELDS if override.get(name) is not None})
+        # a correction owns its deadline
+        if override.get("description_text") is not None:
+            posting.update({name: override[name] for name in ("description_text", "description_sections", "deadline")})
         document = None
         if document_id is not None:
             cur.execute(
@@ -1650,9 +1816,11 @@ def tracker_support(conn: psycopg.Connection) -> dict:
         cur.execute(
             """
             select r.id, r.dedupe_key, r.kind, r.due_at, r.status,
-                   r.snoozed_until, min(p.company) as company, min(p.title) as title
+                   r.snoozed_until, coalesce(min(o.company), min(p.company)) as company,
+                   coalesce(min(o.title), min(p.title)) as title
               from reminders r
               join postings p on p.dedupe_key = r.dedupe_key
+              left join posting_overrides o on o.dedupe_key = r.dedupe_key
              where r.status <> 'done' and p.hidden_by is null
              group by r.id
              order by coalesce(r.snoozed_until, r.due_at), r.id
@@ -1662,9 +1830,11 @@ def tracker_support(conn: psycopg.Connection) -> dict:
         cur.execute(
             """
             select i.id, i.dedupe_key, i.starts_at, i.ends_at, i.location, i.notes,
-                   min(p.company) as company, min(p.title) as title
+                   coalesce(min(o.company), min(p.company)) as company,
+                   coalesce(min(o.title), min(p.title)) as title
               from interviews i
               join postings p on p.dedupe_key = i.dedupe_key
+              left join posting_overrides o on o.dedupe_key = i.dedupe_key
              where p.hidden_by is null
              group by i.id
              order by i.starts_at, i.id

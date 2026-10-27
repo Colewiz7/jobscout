@@ -26,7 +26,7 @@ from . import db as database
 from .config import Config
 from .filters import keep as keep_posting
 from .models import Posting, workday_req_from_url
-from .capture import PostingCapture, manual_capture
+from .capture import PostingCapture, clean_url, manual_capture
 from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, extract_pay, parse_description, parse_sections
 from .overview import OverviewService
 from .eligibility import ELIGIBILITY_FIELDS, analyze as analyze_eligibility
@@ -37,6 +37,8 @@ log = logging.getLogger("jobscout.dashboard")
 STATIC_ROOT = pathlib.Path(__file__).with_name("static")
 DEFAULT_PROFILE = pathlib.Path(__file__).resolve().parents[2] / "config" / "profile.seed.json"
 MAX_BODY = 64 * 1024
+# 100,000 escaped characters fit
+POSTING_EDIT_BODY = 640 * 1024
 CSRF_COOKIE = "jobseer_csrf"
 APP_ROUTE_ROOTS = frozenset({"inbox", "queue", "tracker", "companies", "profile"})
 HIDDEN_CAPTURE = "You hid this job, so it stays hidden."
@@ -86,6 +88,35 @@ def _parse_client_datetime(value, label: str, *, optional: bool = False) -> dt.d
     if parsed.tzinfo is None:
         raise ValueError(f"{label} must include a timezone")
     return parsed
+
+
+def _posting_edit(payload: dict) -> tuple[dict[str, str], Any]:
+    unknown = sorted(set(payload) - {"company", "title", "url", "description"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    fields = {}
+    for name, label in (("company", "Company"), ("title", "Role title")):
+        if name not in payload:
+            continue
+        value = payload[name]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label} can't be empty. Add one and save again.")
+        if len(value.strip()) > 500:
+            raise ValueError(f"{label} must be under 500 characters")
+        fields[name] = value.strip()
+    if "url" in payload:
+        if not isinstance(payload["url"], str):
+            raise ValueError("Posting URL must be a public HTTPS address")
+        fields["url"], _ = clean_url(payload["url"])
+    description = None
+    if "description" in payload:
+        text = payload["description"].strip() if isinstance(payload["description"], str) else ""
+        if not 40 <= len(text) <= 100_000:
+            raise ValueError("Paste at least 40 and no more than 100,000 characters from the posting")
+        description = parse_description(text)
+    if not fields and description is None:
+        raise ValueError("Change the company, role title, URL or description, then save")
+    return fields, description
 
 
 def _company_groups(jobs: list[dict]) -> list[dict]:
@@ -669,6 +700,35 @@ class PostgresStore:
             )
             return database.cached_description(conn, key)
 
+    def edit_posting(self, key: str, payload: dict) -> dict | None:
+        fields, description = _posting_edit(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            edit = database.edit_posting(conn, key, fields, description)
+        return None if edit is None else {"edit_id": edit["id"], **self._edited(key)}
+
+    def posting_edit_key(self, edit_id: int) -> str | None:
+        with database.connect(self.dsn) as conn, conn.cursor() as cur:
+            database.require_schema(conn)
+            cur.execute("select dedupe_key from posting_edits where id = %s", (edit_id,))
+            row = cur.fetchone()
+        return row["dedupe_key"] if row else None
+
+    def undo_posting_edit(self, edit_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            undone = database.undo_posting_edit(conn, edit_id)
+        return None if undone is None else self._edited(undone["dedupe_key"])
+
+    def _edited(self, key: str) -> dict:
+        job = next((item for item in self.jobs(include_closed=True) if item["dedupe_key"] == key), None)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            detail = database.cached_description(conn, key)
+        if detail and detail.get("description_text"):
+            detail["sections"] = parse_sections(detail.get("description_html") or detail["description_text"])
+        return {"job": job, "description": detail}
+
     def close(self) -> None:
         self._fetcher.__exit__()
 
@@ -756,6 +816,9 @@ class DemoStore:
         self.rows = _demo_rows(count, seed, now) if count > 2 else base_rows[:count]
         self._hidden: dict[str, dict] = {}
         self._next_hidden_id = 1
+        self._overrides: dict[str, dict] = {}
+        self._posting_edits: list[dict] = []
+        self._descriptions: dict[str, dict] = {}
         self._saved_views: list[dict] = []
         self._next_view_id = 1
         self._profile_path = profile_path or DEFAULT_PROFILE
@@ -819,13 +882,17 @@ class DemoStore:
             if contact["source"] == "linkedin_csv":
                 counts[contact["company_key"]] = counts.get(contact["company_key"], 0) + 1
         jobs = [
-            dict(row) for row in self.rows
+            self._with_override(row) for row in self.rows
             if (include_closed or not row["closed"]) and not self._is_hidden(row)
         ]
         for job in jobs:
             job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
             job.setdefault("next_step", "")
         return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    def _with_override(self, row: dict) -> dict:
+        override = self._overrides.get(row["dedupe_key"], {})
+        return {**row, **{name: value for name, value in override.items() if value is not None}}
 
     def _is_hidden(self, row: dict) -> bool:
         title = database.title_key(row["company"], row["title"])
@@ -1082,11 +1149,16 @@ class DemoStore:
                 if reminder["status"] != "done" and reminder["dedupe_key"] in visible
             ]),
             "interviews": copy.deepcopy(sorted(
-                (item for item in self._interviews if item["dedupe_key"] in visible),
+                (self._named(item) for item in self._interviews if item["dedupe_key"] in visible),
                 key=lambda item: item["starts_at"],
             )),
             "history": [],
         }
+
+    def _named(self, item: dict) -> dict:
+        row = next(row for row in self.rows if row["dedupe_key"] == item["dedupe_key"])
+        named = self._with_override(row)
+        return {**item, "company": named["company"], "title": named["title"]}
 
     def update_reminder(self, reminder_id: int, action: str) -> dict | None:
         if action not in {"done", "snooze"}:
@@ -1343,6 +1415,8 @@ class DemoStore:
     def description(self, key: str, *, force: bool = False) -> dict | None:
         if not any(row["dedupe_key"] == key for row in self.rows):
             return None
+        if key in self._descriptions:
+            return copy.deepcopy(self._descriptions[key])
         return {
             "description_text": "Build reliable systems with a thoughtful engineering team.",
             "sections": [
@@ -1361,13 +1435,69 @@ class DemoStore:
     def save_manual_description(self, key: str, text: str) -> dict | None:
         if not any(row["dedupe_key"] == key for row in self.rows):
             return None
-        detail = parse_description(text)
+        self._descriptions[key] = self._demo_detail(parse_description(text))
+        return self.description(key)
+
+    @staticmethod
+    def _demo_detail(detail) -> dict:
         return {
-            "description_text": detail.text, "sections": detail.sections,
+            "description_text": detail.text, "sections": list(detail.sections),
             "description_fetched_at": dt.datetime.now(dt.timezone.utc),
             "description_error": None, "deadline": detail.deadline,
             "deadline_source": detail.deadline_source,
         }
+
+    def edit_posting(self, key: str, payload: dict) -> dict | None:
+        fields, description = _posting_edit(payload)
+        row = next((item for item in self.rows if item["dedupe_key"] == key), None)
+        if row is None:
+            return None
+        override = self._overrides.get(key)
+        current = self._with_override(row)
+        changed = {name: value for name, value in fields.items() if value != current[name]}
+        described = description is not None and description.text != self.description(key)["description_text"]
+        if not changed and not described:
+            return {"edit_id": None, **self._edited(key)}
+        self._posting_edits.append({
+            "id": len(self._posting_edits) + 1, "dedupe_key": key, "undone": False,
+            "changed": bool(changed), "override": copy.deepcopy(override),
+            "described": described, "description": copy.deepcopy(self._descriptions.get(key)),
+        })
+        if changed:
+            self._overrides[key] = {
+                **{name: (override or {}).get(name) for name in database.POSTING_EDIT_FIELDS}, **changed,
+            }
+        if described:
+            self._descriptions[key] = self._demo_detail(description)
+        return {"edit_id": self._posting_edits[-1]["id"], **self._edited(key)}
+
+    def posting_edit_key(self, edit_id: int) -> str | None:
+        return next((edit["dedupe_key"] for edit in self._posting_edits if edit["id"] == edit_id), None)
+
+    def undo_posting_edit(self, edit_id: int) -> dict | None:
+        edit = next((item for item in self._posting_edits if item["id"] == edit_id), None)
+        if edit is None:
+            return None
+        latest = max(item["id"] for item in self._posting_edits
+                     if item["dedupe_key"] == edit["dedupe_key"] and not item["undone"]) if not edit["undone"] else None
+        if latest != edit_id:
+            raise database.EditConflict("This posting changed after that edit, so it can't be undone.")
+        for flag, store, previous in (
+            ("changed", self._overrides, edit["override"]),
+            ("described", self._descriptions, edit["description"]),
+        ):
+            if not edit[flag]:
+                continue
+            if previous is None:
+                store.pop(edit["dedupe_key"], None)
+            else:
+                store[edit["dedupe_key"]] = previous
+        edit["undone"] = True
+        return self._edited(edit["dedupe_key"])
+
+    def _edited(self, key: str) -> dict:
+        job = next((item for item in self.jobs(include_closed=True) if item["dedupe_key"] == key), None)
+        return {"job": job, "description": self.description(key)}
 
     def close(self) -> None:
         pass
@@ -1512,12 +1642,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json(self) -> dict:
+    def _read_json(self, limit: int = MAX_BODY) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as error:
             raise ValueError("invalid content length") from error
-        if length <= 0 or length > MAX_BODY:
+        if length <= 0 or length > limit:
             raise ValueError("invalid request size")
         payload = json.loads(self.rfile.read(length))
         if not isinstance(payload, dict):
@@ -1755,9 +1885,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._error(HTTPStatus.NOT_FOUND, "not found")
 
+    def _edited_json(self, result: dict, **extra) -> None:
+        detail = result.get("description")
+        if detail:
+            detail = {**detail, "pay": extract_pay(detail.get("description_text"))}
+            detail.pop("description_html", None)
+        self._json({**extra, "job": result["job"], "description": detail})
+
+    def _patch_posting(self, key: str) -> None:
+        if not self._require_write_security() or self._reject_hidden(key):
+            return
+        try:
+            result = self.app.store.edit_posting(key, self._read_json(POSTING_EDIT_BODY))
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not edit posting")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the posting. Retry shortly.")
+            return
+        if result is None:
+            self._error(HTTPStatus.NOT_FOUND, "job not found")
+            return
+        self._edited_json(result, edit_id=result["edit_id"])
+
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         prefix = "/api/v1/jobs/"
+        posting_suffix = "/posting"
+        if parsed.path.startswith(prefix) and parsed.path.endswith(posting_suffix):
+            self._patch_posting(urllib.parse.unquote(parsed.path[len(prefix):-len(posting_suffix)].rstrip("/")))
+            return
         if not parsed.path.startswith(prefix):
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return
@@ -1907,6 +2065,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 log.exception("could not change hidden jobs")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
+            return
+        edit_prefix = "/api/v1/posting-edits/"
+        if parsed.path.startswith(edit_prefix) and parsed.path.endswith("/undo"):
+            if not self._require_write_security():
+                return
+            try:
+                edit_id = int(parsed.path[len(edit_prefix):-len("/undo")].rstrip("/"))
+                key = self.app.store.posting_edit_key(edit_id)
+                if key is None:
+                    self._error(HTTPStatus.NOT_FOUND, "edit not found")
+                    return
+                if self._reject_hidden(key):
+                    return
+                result = self.app.store.undo_posting_edit(edit_id)
+            except ValueError as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except database.EditConflict as error:
+                self._error(HTTPStatus.CONFLICT, str(error))
+                return
+            except Exception:
+                log.exception("could not undo posting edit")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't undo the edit. Retry shortly.")
+                return
+            if result is None:
+                self._error(HTTPStatus.NOT_FOUND, "edit not found")
+                return
+            self._edited_json(result)
             return
         rule_action_prefix = "/api/v1/rule-actions/"
         rule_action_suffix = "/undo"

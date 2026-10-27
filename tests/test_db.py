@@ -24,6 +24,8 @@ pytestmark = pytest.mark.skipif(not DSN, reason="JOBSCOUT_TEST_DSN not set")
 def conn():
     connection = database.connect(DSN)
     with connection.cursor() as cur:
+        cur.execute("drop table if exists posting_edits")
+        cur.execute("drop table if exists posting_overrides")
         cur.execute("drop table if exists overview_jobs")
         cur.execute("drop table if exists posting_taglines")
         cur.execute("drop table if exists company_assets")
@@ -90,6 +92,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 15, "name": "profile_revision"},
             {"version": 16, "name": "document_default_and_order"},
             {"version": 17, "name": "hidden_jobs"},
+            {"version": 18, "name": "posting_edits"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -866,6 +869,159 @@ def test_tracker_followups_interviews_and_company_records(conn):
         database.save_contact(conn, {"company": "Unknown", "name": "No One"})
     with pytest.raises(ValueError, match="company not found"):
         database.save_company_note(conn, "Unknown", "Not persisted")
+
+
+def test_posting_edits_survive_a_scout_refresh_and_undo_in_order(conn):
+    from jobscout.descriptions import parse_description
+    posting = _p(source="greenhouse", url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    target = database.description_target(conn, posting.dedupe_key)
+    database.save_description(conn, target["id"], html="<p>Original text from the provider.</p>",
+                              text="Original text from the provider.", sections=())
+    database.add_interview(conn, dedupe_key=posting.dedupe_key, starts_at=dt.datetime.now(dt.timezone.utc),
+                           ends_at=None, location="", notes="")
+    corrected = parse_description("Corrected text that the parser had split badly.\nRequirements\nPython")
+
+    first = database.edit_posting(conn, posting.dedupe_key, {"company": "Acme Robotics", "title": "Robotics Intern"}, corrected)
+    second = database.edit_posting(conn, posting.dedupe_key, {"url": "https://acme.example/robotics"})
+    assert database.edit_posting(conn, posting.dedupe_key, {"url": "https://acme.example/robotics"}) == {"id": None}
+    assert database.edit_posting(conn, "missing", {"title": "x"}) is None
+    database.upsert_open(conn, [posting])  # a refresh keeps the edit
+    [job] = database.dashboard_postings(conn)
+    assert (job["company"], job["title"], job["url"]) == ("Acme Robotics", "Robotics Intern", "https://acme.example/robotics")
+    assert database.tracker_support(conn)["interviews"][0]["company"] == "Acme Robotics"
+    assert database.cached_description(conn, posting.dedupe_key)["description_html"] is None
+    with conn.cursor() as cur:
+        cur.execute("select name from companies where key = 'acme robotics'")
+        assert cur.fetchone() == {"name": "Acme Robotics"}
+
+    with pytest.raises(database.EditConflict):
+        database.undo_posting_edit(conn, first["id"])
+    database.undo_posting_edit(conn, second["id"])
+    assert database.dashboard_postings(conn)[0]["url"] == posting.url
+    assert database.undo_posting_edit(conn, first["id"]) == {"id": first["id"], "dedupe_key": posting.dedupe_key}
+    [job] = database.dashboard_postings(conn)
+    assert (job["company"], job["title"]) == ("Acme", "Cloud Intern")
+    detail = database.cached_description(conn, posting.dedupe_key)
+    assert (detail["description_html"], detail["description_text"]) == ("<p>Original text from the provider.</p>", "Original text from the provider.")
+    with conn.cursor() as cur:
+        cur.execute("select count(*) as n from posting_overrides")
+        assert cur.fetchone()["n"] == 0
+    with pytest.raises(database.EditConflict):
+        database.undo_posting_edit(conn, first["id"])
+    assert database.undo_posting_edit(conn, 999) is None
+
+
+def test_first_posting_edits_wait_for_each_other(conn):
+    import threading
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    blocker = database.connect(DSN)
+    with blocker.cursor() as cur:  # another first edit in flight
+        cur.execute("select id from postings where dedupe_key = %s for update", (posting.dedupe_key,))
+    edits = {}
+
+    def edit():
+        with database.connect(DSN) as other:
+            edits["first"] = database.edit_posting(other, posting.dedupe_key, {"title": "First"})
+
+    thread = threading.Thread(target=edit)
+    thread.start()
+    thread.join(0.5)
+    assert thread.is_alive()
+    blocker.commit()
+    blocker.close()
+    thread.join(5)
+    second = database.edit_posting(conn, posting.dedupe_key, {"company": "Acme Robotics"})
+    database.undo_posting_edit(conn, second["id"])
+    [job] = database.dashboard_postings(conn)
+    assert (job["company"], job["title"]) == ("Acme", "First")
+    with pytest.raises(database.EditConflict):
+        database.undo_posting_edit(conn, second["id"])
+    database.undo_posting_edit(conn, edits["first"]["id"])
+    assert database.dashboard_postings(conn)[0]["title"] == "Cloud Intern"
+
+
+def test_a_corrected_description_survives_a_refetch_and_a_recapture(conn, monkeypatch):
+    from jobscout.capture import CapturedPosting
+    from jobscout.dashboard import PostgresStore
+    from jobscout.descriptions import parse_description
+    monkeypatch.setenv("DATABASE_URL", DSN)
+    store = PostgresStore(DSN)
+    posting = _p(source="manual", url="https://acme.example/jobs/1")
+    provider = parse_description("Provider text that the parser split in the wrong places.")
+    monkeypatch.setattr(store._capture, "capture", lambda payload: CapturedPosting(posting, provider))
+    store.capture({"url": posting.url})
+    corrected = parse_description("Corrected text, written by hand.\nRequirements\nPython\nLinux")
+    edit = database.edit_posting(conn, posting.dedupe_key, {}, corrected)
+    database.save_application_state(conn, posting.dedupe_key, "queued", "")
+
+    store.capture({"url": posting.url})  # a repeat capture
+    assert store.description(posting.dedupe_key)["description_text"] == corrected.text
+    fresh = parse_description("A fresh provider fetch with different words in it.")
+    monkeypatch.setattr(store._descriptions, "fetch", lambda target: fresh)
+    detail = store.description(posting.dedupe_key, force=True)
+    assert detail["description_text"] == corrected.text and detail["description_html"] is None
+    assert [section["key"] for section in detail["sections"]] == [section["key"] for section in corrected.sections]
+    assert database.queued_description_texts(conn) == {posting.dedupe_key: corrected.text}
+
+    database.undo_posting_edit(conn, edit["id"])
+    assert store.description(posting.dedupe_key)["description_text"] == fresh.text
+
+
+def test_a_description_edit_and_its_undo_regenerate_the_tagline(conn):
+    from jobscout.descriptions import parse_description
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    target = database.description_target(conn, posting.dedupe_key)
+    database.save_description(conn, target["id"], html=None, text="Original provider text.", sections=())
+    database.save_tagline(conn, posting.dedupe_key, "Builds things", "hash")
+    pending = lambda: database.pending_taglines(conn, [posting.dedupe_key], "hash", 10)
+    assert pending() == []
+
+    edit = database.edit_posting(conn, posting.dedupe_key, {}, parse_description("Corrected text written by hand for this role."))
+    assert pending() == [posting.dedupe_key]
+    database.save_tagline(conn, posting.dedupe_key, "Corrected", "hash")
+    database.edit_posting(conn, posting.dedupe_key, {"title": "Robotics Intern"})
+    assert pending() == []  # a title edit keeps it
+    database.undo_posting_edit(conn, edit["id"] + 1)
+    database.undo_posting_edit(conn, edit["id"])
+    assert pending() == [posting.dedupe_key]
+
+
+def test_a_hand_written_description_queues_a_tagline_before_any_fetch(conn):
+    from jobscout.descriptions import parse_description
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    assert database.pending_taglines(conn, [posting.dedupe_key], "hash", 10) == []
+    database.edit_posting(conn, posting.dedupe_key, {}, parse_description("Corrected text written by hand for this role."))
+    assert database.pending_taglines(conn, [posting.dedupe_key], "hash", 10) == [posting.dedupe_key]
+    assert database.cached_description(conn, posting.dedupe_key)["description_text"].startswith("Corrected text")
+
+
+def test_a_corrected_description_owns_the_deadline(conn):
+    from jobscout.descriptions import parse_description
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    target = database.description_target(conn, posting.dedupe_key)
+    database.save_description(conn, target["id"], html=None, text="Apply by Dec 1.", sections=(),
+                              deadline=dt.date(2026, 12, 1), deadline_source="provider")
+    edit = database.edit_posting(conn, posting.dedupe_key, {}, parse_description("Corrected text with no closing date at all."))
+    assert database.dashboard_postings(conn)[0]["deadline"] is None
+    detail = database.cached_description(conn, posting.dedupe_key)
+    assert (detail["deadline"], detail["deadline_source"]) == (None, None)
+    database.undo_posting_edit(conn, edit["id"])
+    assert database.dashboard_postings(conn)[0]["deadline"] == dt.date(2026, 12, 1)
+
+
+def test_hiding_an_edited_job_also_hides_its_edited_title(conn):
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    database.edit_posting(conn, posting.dedupe_key, {"title": "Robotics Intern"})
+    database.hide_jobs(conn, [posting.dedupe_key])
+    database.upsert_open(conn, [_p(source="lever", title="Robotics Intern",
+                                   url="https://jobs.lever.co/acme/00000000-0000-0000-0000-000000000009")])
+    assert _visible(conn) == []
 
 
 def test_eligibility_overrides_are_append_only_evidence_records(conn):

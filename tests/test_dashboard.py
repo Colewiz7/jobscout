@@ -266,6 +266,7 @@ def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
         ("PUT", "/api/v1/profile/context", {"dedupe_key": "demo:1", "company": "Cloudflare"}),
         ("PUT", "/api/v1/queue/order", {"dedupe_keys": ["demo:1"]}),
         ("PUT", "/api/v1/tracker/board-order", {"status": "applied", "dedupe_keys": ["demo:1"]}),
+        ("PATCH", "/api/v1/jobs/demo%3A1/posting", {"title": "stale"}),
     ]
     for method, path, body in writes:
         response = client.request(method, path, json=body, headers=headers)
@@ -274,6 +275,72 @@ def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
     row = store.rows[0]
     assert (row["status"], row["notes"], row.get("next_step", "")) == ("applied", "Mention the homelab incident response story.", "")
     assert client.patch("/api/v1/jobs/demo%3A2", json={"status": "saved"}, headers=headers).status_code == 200
+
+
+def test_posting_edits_need_auth_and_csrf_and_undo_in_order(dashboard):
+    base, _ = dashboard
+    path = "/api/v1/jobs/demo%3A2/posting"
+    assert httpx.patch(f"{base}{path}", json={"title": "x"}).status_code == 401
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    assert client.patch(path, json={"title": "x"}).status_code == 403
+    for body, error in [
+        ({"title": "  "}, "Role title can't be empty. Add one and save again."),
+        ({"url": "http://example.com/job"}, "Posting URL must be a public HTTPS address"),
+        ({"description": "too short"}, "Paste at least 40 and no more than 100,000 characters from the posting"),
+        ({"location": "Remote"}, "location can't be edited"),
+        ({}, "Change the company, role title, URL or description, then save"),
+    ]:
+        response = client.patch(path, json=body, headers=headers)
+        assert (response.status_code, response.json()["error"]) == (400, error)
+    assert client.patch("/api/v1/jobs/missing/posting", json={"title": "x"}, headers=headers).status_code == 404
+
+    text = "Build the internal platform with a small team.\nRequirements\nGo\nKubernetes"
+    first = client.patch(path, headers=headers, json={
+        "company": "Datadog, Inc.", "title": "Platform Intern",
+        "url": "https://careers.example.com/platform", "description": text,
+    })
+    assert first.status_code == 200
+    body = first.json()
+    assert body["job"]["company"] == "Datadog, Inc."
+    assert body["job"]["url"] == "https://careers.example.com/platform"
+    assert body["description"]["description_text"].startswith("Build the internal platform")
+    assert "description_html" not in body["description"]
+    second = client.patch(path, headers=headers, json={"title": "Platform Engineering Intern"}).json()
+    assert client.patch(path, headers=headers, json={"title": "Platform Engineering Intern"}).json()["edit_id"] is None
+    titles = lambda: {job["dedupe_key"]: job["title"] for job in client.get("/api/v1/jobs").json()["jobs"]}
+    assert titles()["demo:2"] == "Platform Engineering Intern"
+
+    stale = client.post(f"/api/v1/posting-edits/{body['edit_id']}/undo", headers=headers)
+    assert stale.status_code == 409
+    assert client.post(f"/api/v1/posting-edits/{second['edit_id']}/undo").status_code == 403
+    assert client.post(f"/api/v1/posting-edits/{second['edit_id']}/undo", headers=headers).json()["job"]["title"] == "Platform Intern"
+    restored = client.post(f"/api/v1/posting-edits/{body['edit_id']}/undo", headers=headers).json()
+    assert (restored["job"]["company"], restored["job"]["title"]) == ("Datadog", "Cloud Platform Engineering Intern")
+    assert restored["description"]["description_text"] == "Build reliable systems with a thoughtful engineering team."
+    assert client.post(f"/api/v1/posting-edits/{body['edit_id']}/undo", headers=headers).status_code == 409
+    assert client.post("/api/v1/posting-edits/99/undo", headers=headers).status_code == 404
+
+
+def test_the_longest_description_fits_the_posting_edit_body(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    longest = "\u0001" * 100_000  # escapes to six bytes each
+    response = client.patch("/api/v1/jobs/demo%3A2/posting", json={"description": longest}, headers={"X-CSRF-Token": token})
+    assert response.status_code == 200
+    text = ("Line of posting text\n" * 5000)[:100_000]
+    response = client.patch("/api/v1/jobs/demo%3A2/posting", json={"description": text}, headers={"X-CSRF-Token": token})
+    assert response.status_code == 200
+
+
+def test_undoing_an_edit_to_a_hidden_job_is_refused(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    edit = client.patch("/api/v1/jobs/demo%3A1/posting", json={"title": "Edited"}, headers=headers).json()
+    client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1"]}, headers=headers)
+    response = client.post(f"/api/v1/posting-edits/{edit['edit_id']}/undo", headers=headers)
+    assert (response.status_code, response.json()["error"]) == (410, "This job is hidden, so it can't change.")
 
 
 def test_forged_username_without_outpost_metadata_is_rejected(dashboard):

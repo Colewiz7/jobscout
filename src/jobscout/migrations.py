@@ -446,6 +446,31 @@ MIGRATIONS = (
             where hidden_by is not null;
         """,
     ),
+    Migration(
+        18,
+        "posting_edits",
+        """
+        create table if not exists posting_overrides (
+            dedupe_key           text primary key,
+            company              text,
+            title                text,
+            url                  text,
+            description_text     text,
+            description_sections jsonb,
+            deadline             date,
+            deadline_source      text,
+            updated_at           timestamptz not null default now()
+        );
+        create table if not exists posting_edits (
+            id         bigserial primary key,
+            dedupe_key text not null,
+            before     jsonb not null,
+            created_at timestamptz not null default now(),
+            undone_at  timestamptz
+        );
+        create index if not exists posting_edits_key_idx on posting_edits (dedupe_key, id);
+        """,
+    ),
 )
 
 
