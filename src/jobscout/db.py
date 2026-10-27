@@ -977,15 +977,15 @@ def normalize_profile_data(payload: dict) -> dict:
             raise ValueError(f"answer_templates[{index}] has an invalid or duplicate name/body")
         seen_names.add(name.casefold())
         templates.append({
-            "id": row.get("id", f"template-{index + 1}"), "name": name, "body": body,
+            "id": row.get("id"), "name": name, "body": body,
             "sort_order": int(row.get("sort_order", index * 10)),
         })
 
     documents = []
     for index, row in enumerate(objects("documents", 50)):
         name = str(row.get("name", "")).strip()
-        url = str(row.get("url", ""))
-        date = str(row.get("date", "")).strip() or None
+        url = str(row.get("url") or "")
+        date = str(row.get("date") or "").strip() or None  # null would become "None"
         if not name or len(name) > 160 or len(url) > 2_000:
             raise ValueError(f"documents[{index}] has an invalid name or URL")
         if date:
@@ -994,7 +994,7 @@ def normalize_profile_data(payload: dict) -> dict:
             except ValueError as error:
                 raise ValueError(f"documents[{index}].date must be YYYY-MM-DD") from error
         documents.append({
-            "id": row.get("id", f"document-{index + 1}"),
+            "id": row.get("id"),
             "name": name, "url": url, "date": date,
         })
 
@@ -1026,6 +1026,58 @@ def normalize_profile_data(payload: dict) -> dict:
     return {"fields": fields, "answer_templates": templates, "documents": documents, "stories": stories}
 
 
+def _row_id(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return int(value) if isinstance(value, str) and value.isdigit() else None
+
+
+def _sync_templates(cur, templates: list[dict]) -> None:
+    cur.execute("select id, name from answer_templates")
+    existing = {row["id"]: row["name"] for row in cur.fetchall()}
+    kept = {_row_id(row["id"]) for row in templates} & existing.keys()
+    cur.execute("delete from answer_templates where not (id = any(%s))", (list(kept),))
+    # names are unique, park renames first
+    for row in templates:
+        key = _row_id(row["id"])
+        if key in kept and existing[key] != row["name"]:
+            cur.execute("update answer_templates set name = %s where id = %s", ("\x01%d" % key, key))
+    for row in templates:
+        key = _row_id(row["id"])
+        if key in kept:
+            cur.execute(
+                "update answer_templates set name = %s, body = %s, sort_order = %s, updated_at = now() where id = %s",
+                (row["name"], row["body"], row["sort_order"], key),
+            )
+        else:
+            cur.execute(
+                "insert into answer_templates (name, body, sort_order) values (%s, %s, %s)",
+                (row["name"], row["body"], row["sort_order"]),
+            )
+
+
+def _sync_documents(cur, documents: list[dict]) -> None:
+    cur.execute("select id from documents")
+    existing = {row["id"] for row in cur.fetchall()}
+    kept = {_row_id(row["id"]) for row in documents} & existing
+    # a delete nulls resume references
+    cur.execute("delete from documents where not (id = any(%s))", (list(kept),))
+    for row in documents:
+        key = _row_id(row["id"])
+        if key in kept:
+            cur.execute(
+                "update documents set name = %s, document_date = %s, url = %s where id = %s",
+                (row["name"], row["date"], row["url"], key),
+            )
+        else:
+            cur.execute(
+                "insert into documents (name, document_date, url) values (%s, %s, %s)",
+                (row["name"], row["date"], row["url"]),
+            )
+
+
 def replace_profile_data(conn: psycopg.Connection, payload: dict) -> dict:
     """Atomically replace the feature-gated single-user Quick-fill profile."""
     clean = normalize_profile_data(payload)
@@ -1038,16 +1090,9 @@ def replace_profile_data(conn: psycopg.Connection, payload: dict) -> dict:
             """,
             [(row["key"], row["group"], row["label"], row["value"], row["pinned"], row["sort_order"]) for row in clean["fields"]],
         )
-        cur.execute("delete from answer_templates")
-        cur.executemany(
-            "insert into answer_templates (name, body, sort_order) values (%s, %s, %s)",
-            [(row["name"], row["body"], row["sort_order"]) for row in clean["answer_templates"]],
-        )
-        cur.execute("delete from documents")
-        cur.executemany(
-            "insert into documents (name, document_date, url) values (%s, %s, %s)",
-            [(row["name"], row["date"], row["url"]) for row in clean["documents"]],
-        )
+        # ids are referenced, keep them stable
+        _sync_templates(cur, clean["answer_templates"])
+        _sync_documents(cur, clean["documents"])
         cur.execute("delete from story_bank")
         cur.executemany(
             """

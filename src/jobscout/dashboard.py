@@ -733,6 +733,7 @@ class DemoStore:
         self._next_view_id = 1
         self._profile_path = profile_path or DEFAULT_PROFILE
         self._profile = load_profile(self._profile_path)
+        self._next_profile_id = 0
         self._copied_fields: dict[str, set[str]] = {}
         self._answer_overrides: dict[str, dict[str, str]] = {}
         self._company_accounts: dict[str, dict] = {}
@@ -1191,7 +1192,19 @@ class DemoStore:
         return profile
 
     def save_profile(self, payload: dict) -> dict:
-        self._profile = database.normalize_profile_data(payload)
+        clean = database.normalize_profile_data(payload)
+        # mirrors the id-preserving postgres write
+        for name, prefix in (("documents", "document"), ("answer_templates", "template")):
+            known = {str(row.get("id")) for row in self._profile.get(name, [])}
+            taken = set()
+            for row in clean[name]:
+                if row["id"] is None or str(row["id"]) not in known or str(row["id"]) in taken:
+                    row["id"] = None
+                    while row["id"] is None or row["id"] in known or row["id"] in taken:
+                        self._next_profile_id += 1
+                        row["id"] = "%s-%d" % (prefix, self._next_profile_id)
+                taken.add(str(row["id"]))
+        self._profile = clean
         return self.profile()
 
     def mark_copy(self, dedupe_key: str, target_key: str) -> None:

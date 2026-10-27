@@ -471,6 +471,48 @@ def test_profile_replacement_round_trips_story_bank(conn):
     assert profile["stories"][0]["competencies"] == ["Incident response"]
 
 
+def test_field_only_profile_save_keeps_resume_references(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    profile = database.replace_profile_data(conn, {
+        "fields": [{"key": "email", "group": "Contact", "label": "Email", "value": "old@example.invalid"}],
+        "answer_templates": [{"name": "Why", "body": "Because"}],
+        "documents": [{"name": "Platform resume", "date": "2026-09-01", "url": ""}],
+    })
+    document_id = profile["documents"][0]["id"]
+    template_id = profile["answer_templates"][0]["id"]
+    database.mark_application_applied(conn, posting.dedupe_key, document_id)
+
+    profile["fields"][0]["value"] = "new@example.invalid"
+    saved = database.replace_profile_data(conn, profile)
+
+    assert saved["documents"][0]["id"] == document_id
+    assert saved["answer_templates"][0]["id"] == template_id
+    with conn.cursor() as cur:
+        cur.execute("select resume_document_id from application_states where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone()["resume_document_id"] == document_id
+        cur.execute("select resume_document_id from application_snapshots where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone()["resume_document_id"] == document_id
+
+
+def test_profile_save_updates_inserts_and_deletes_by_id(conn):
+    profile = database.replace_profile_data(conn, {
+        "answer_templates": [{"name": "A", "body": "1"}, {"name": "B", "body": "2"}],
+        "documents": [{"name": "One"}, {"name": "Two"}],
+    })
+    first, second = profile["answer_templates"]
+    # swapped names trip the unique index
+    first["name"], second["name"] = "B", "A"
+    profile["documents"] = [profile["documents"][1], {"id": 999999, "name": "Three"}]
+
+    saved = database.replace_profile_data(conn, profile)
+
+    assert {row["id"]: row["name"] for row in saved["answer_templates"]} == {first["id"]: "B", second["id"]: "A"}
+    assert sorted(row["name"] for row in saved["documents"]) == ["Three", "Two"]
+    assert profile["documents"][0]["id"] in {row["id"] for row in saved["documents"]}
+    assert 999999 not in {row["id"] for row in saved["documents"]}
+
+
 def test_quick_fill_job_context_is_server_backed(conn):
     posting = _p()
     database.upsert_open(conn, [posting])

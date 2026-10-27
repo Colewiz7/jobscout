@@ -23,7 +23,7 @@ Why this company :: TODO customize for each company
     ]
     assert profile["fields"][3]["value"] == "$20/hr"
     assert profile["answer_templates"] == [
-        {"id": "template-1", "name": "Summary", "body": "I build useful systems.", "sort_order": 10}
+        {"id": None, "name": "Summary", "body": "I build useful systems.", "sort_order": 10}
     ]
     assert skipped == ["Why this company"]
 
