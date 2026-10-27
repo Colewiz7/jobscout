@@ -3,7 +3,8 @@
 import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
-import { ariaKeyshortcuts, formatShortcut } from "./shortcuts.js";
+import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
+import { Countdown, UndoStack, exitDelay, snackbarDuration } from "./undo-stack.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -84,7 +85,7 @@ const state = {
   query: "", status: "new", sort: "score", source: "", remote: false, focus: false,
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, copySelectionMode: false, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
-  pending: new Set(), undo: null, notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  pending: new Set(), notesTimer: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
   aiOverviewEnabled: false, overviews: new Map(), overviewCacheAttempted: new Set(), overviewPollTimers: new Map(),
   eligibility: new Map(),
@@ -112,9 +113,9 @@ let commandMatches = commands;
 let dialogTrigger = null;
 let goChordUntil = 0;
 let loadingTimer = null;
-let snackbarTimer = null;
-let snackbarDeadline = 0;
-let snackbarRemaining = 0;
+let snackbarCurrent = null;
+const snackbarQueue = [];
+const undoStack = new UndoStack(20);
 let jobViewTransition = null;
 let sessionCheckedAt = 0;
 let sessionCheckPromise = null;
@@ -1510,11 +1511,10 @@ async function setTrackerStatus(key, status, { offerUndo = true, fallback = null
     await loadTrackerData({ background: true });
     if (routeRoot() === "inbox") renderSelectedJob();
     const offBoard = routeRoot() === "tracker" && state.trackerView === "board" && !boardStatuses.includes(job.status);
-    showSnackbar(job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}${offBoard ? ", off the board" : ""}.`, offerUndo ? {
-      action: "Undo", duration: 6000,
-      // closed postings leave both lists
-      onAction: () => setTrackerStatus(key, previous, { offerUndo: false, fallback: job }),
-    } : {});
+    const message = job.status === "archived" && status === "queued" ? "Posting closed; it cannot be queued." : `Moved to ${statusLabel(job.status)}${offBoard ? ", off the board" : ""}.`;
+    // closed postings leave both lists
+    if (offerUndo) offerUndoSnackbar(message, [key], () => setTrackerStatus(key, previous, { offerUndo: false, fallback: job }));
+    else showSnackbar(message);
   } catch (error) {
     job.status = previous; if (tracked) tracked.status = previous;
     if (routeRoot() === "tracker") renderTracker();
@@ -1643,12 +1643,9 @@ async function removeFromQueue(key) {
   try {
     const result = await patchJob(job, "saved");
     job.status = result.status;
-    showSnackbar("Moved to Saved.", {
-      action: "Undo", duration: 6000,
-      onAction: async () => {
-        try { const restored = await patchJob(job, previous); job.status = restored.status; renderQueue(); }
-        catch (error) { showSnackbar(error.message || "Couldn't restore the queued job."); }
-      },
+    offerUndoSnackbar("Moved to Saved.", [key], async () => {
+      try { const restored = await patchJob(job, previous); job.status = restored.status; refreshJobView(); showSnackbar("Back in the queue."); }
+      catch (error) { showSnackbar(error.message || "Couldn't restore the queued job."); }
     });
   } catch (error) {
     job.status = previous;
@@ -2458,16 +2455,12 @@ async function importQuickFillProfile(file) {
     state.eligibility.clear();
     if (state.selectedKey) loadEligibility(state.selectedKey);
     renderQuickFill();
-    showSnackbar("Quick-fill JSON imported.", {
-      action: "Undo",
-      duration: 6000,
-      onAction: async () => {
-        try {
-          const restored = await persistQuickFillProfile(previous);
-          Object.assign(restored, context);
-          state.quickFillProfile = restored; state.quickFillSavedProfile = cloneJson(restored); renderQuickFill(); showSnackbar("Import undone.");
-        } catch (error) { showSnackbar(error.message || "The import could not be undone."); }
-      },
+    offerUndoSnackbar("Quick-fill JSON imported.", ["quick-fill-profile"], async () => {
+      try {
+        const restored = await persistQuickFillProfile(previous);
+        Object.assign(restored, context);
+        state.quickFillProfile = restored; state.quickFillSavedProfile = cloneJson(restored); renderQuickFill(); showSnackbar("Import undone.");
+      } catch (error) { showSnackbar(error.message || "The import could not be undone."); }
     });
   } catch (error) {
     setQuickFillSaveState("Import failed");
@@ -2801,11 +2794,11 @@ async function performDecision(status, label, targets = null, { note = "", scope
         liveness_checked_at: new Date().toISOString(),
       });
     });
-    state.undo = { previous, next: jobs.map((job) => ({ key: job.dedupe_key, status: job.status })) };
+    const undo = { previous, next: jobs.map((job) => ({ key: job.dedupe_key, status: job.status })) };
     const noun = jobs.length === 1 ? "role" : `${new Intl.NumberFormat().format(jobs.length)} roles`;
     const closed = results.filter((result) => result.status === "fulfilled" && result.value.status === "archived" && result.value.liveness?.status === "closed").length;
     const message = closed ? `${closed === 1 ? "Posting" : `${closed} postings`} closed and skipped.` : `${label} ${noun}${scope}.`;
-    showSnackbar(note ? `${message} ${note}` : message, { action: "Undo", onAction: undoLastDecision, duration: 6000 });
+    offerUndoSnackbar(note ? `${message} ${note}` : message, previous.map((snapshot) => snapshot.key), () => undoDecision(undo));
   }
   jobs.forEach((job) => state.pending.delete(job.dedupe_key));
   if (routeRoot() === "inbox") renderInbox();
@@ -2834,17 +2827,22 @@ function applyToJob(job) {
   performDecision("applying", "Opened", [job.dedupe_key]);
 }
 
-async function undoLastDecision() {
-  const undo = state.undo;
-  if (!undo) return;
-  state.undo = null;
+// undo can fire from any view
+function refreshJobView() {
+  if (routeRoot() === "inbox") renderInbox();
+  else if (routeRoot() === "queue" && !window.location.pathname.startsWith("/queue/session/")) renderQueue();
+  else if (routeRoot() === "tracker") loadTrackerData({ background: true });
+}
+
+async function undoDecision(undo) {
   const snapshots = undo.previous;
   snapshots.forEach((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); if (job) job.status = snapshot.status; });
-  state.selectedKey = snapshots[0]?.key || state.selectedKey; syncInboxUrl(); renderInbox();
+  if (routeRoot() === "inbox") { state.selectedKey = snapshots[0]?.key || state.selectedKey; syncInboxUrl(); }
+  refreshJobView();
   const results = await Promise.allSettled(snapshots.map((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); return job ? patchJob(job, snapshot.status, snapshot.notes) : Promise.resolve(); }));
   if (results.some((result) => result.status === "rejected")) {
     undo.next.forEach((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); if (job) job.status = snapshot.status; });
-    showSnackbar("Couldn't undo. The original change remains."); renderInbox();
+    showSnackbar("Couldn't undo. The original change remains."); refreshJobView();
   } else showSnackbar("Decision undone.");
 }
 
@@ -2918,7 +2916,7 @@ async function deleteSavedView(viewId) {
     const target = document.querySelectorAll("[data-saved-view]")[Math.min(index, state.savedViews.length - 1)] || document.querySelector("[data-open-filters]");
     target?.focus();
   });
-  showSnackbar("Saved view deleted.", { action: "Undo", onAction: () => restoreSavedView(removed), duration: 6000 });
+  offerUndoSnackbar("Saved view deleted.", [`view:${removed?.name}`], () => restoreSavedView(removed));
 }
 
 async function restoreSavedView(view) {
@@ -2931,21 +2929,88 @@ async function restoreSavedView(view) {
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be restored.");
     state.savedViews.push((await response.json()).saved_view);
-    renderInbox(); showSnackbar("Saved view restored.");
+    if (routeRoot() === "inbox") renderInbox();
+    showSnackbar("Saved view restored.");
   } catch (error) { showSnackbar(error instanceof Error ? error.message : "The view could not be restored."); }
 }
 
-function showSnackbar(message, { action = "", onAction = null, duration = 4000 } = {}) {
-  clearTimeout(snackbarTimer);
-  snackbarRemaining = duration;
-  snackbarRegion.innerHTML = `<div class="snackbar" role="status"><span>${escapeHtml(message)}</span>${action ? `<button type="button" data-snackbar-action>${escapeHtml(action)}</button>` : ""}</div>`;
+// --- snackbars and undo ---
+// carrel timing, wcag 2.2.1
+
+function showSnackbar(message, { action = "", onAction = null, undoId = 0 } = {}) {
+  const now = performance.now();
+  if (snackbarCurrent && !action && !snackbarCurrent.action && snackbarCurrent.message === message) { armSnackbar(snackbarCurrent, new Countdown(snackbarDuration(message, false)), now); return; }
+  snackbarQueue.push({ message, action, onAction, undoId });
+  if (!snackbarCurrent) showNextSnackbar(); else if (!snackbarCurrent.leaving) scheduleSnackbarExit(snackbarCurrent);
+}
+
+function showNextSnackbar() {
+  const next = snackbarQueue.shift();
+  if (!next) { snackbarCurrent = null; return; }
+  snackbarRegion.innerHTML = `<div class="snackbar" role="status"><span class="snackbar-message">${escapeHtml(next.message)}</span>${next.action ? `<button class="snackbar-action" type="button" data-snackbar-action aria-keyshortcuts="${ariaKeyshortcuts(["Mod+Z", "u"])}" title="${escapeHtml(next.action)} (${formatShortcut("Mod+Z")})">${escapeHtml(next.action)}</button>` : ""}<button class="snackbar-close" type="button" data-snackbar-close aria-label="Dismiss">${icons.close}</button></div>`;
   const bar = snackbarRegion.firstElementChild;
-  const dismiss = () => { snackbarRegion.innerHTML = ""; snackbarTimer = null; };
-  const start = () => { snackbarDeadline = performance.now() + Math.max(2000, snackbarRemaining); snackbarTimer = setTimeout(dismiss, Math.max(2000, snackbarRemaining)); };
-  const pause = () => { if (!snackbarTimer) return; clearTimeout(snackbarTimer); snackbarTimer = null; snackbarRemaining = Math.max(2000, snackbarDeadline - performance.now()); };
-  bar?.addEventListener("mouseenter", pause); bar?.addEventListener("mouseleave", start); bar?.addEventListener("focusin", pause); bar?.addEventListener("focusout", start);
-  bar?.querySelector("[data-snackbar-action]")?.addEventListener("click", () => { dismiss(); onAction?.(); });
-  start();
+  const item = { ...next, bar, shownAt: performance.now(), timer: 0, clock: null };
+  snackbarCurrent = item;
+  const clock = new Countdown(snackbarDuration(next.message, Boolean(next.action)));
+  if (document.hidden) clock.hold("hidden", item.shownAt);
+  if (!document.hasFocus()) clock.hold("blur", item.shownAt);
+  bar.addEventListener("mouseenter", () => holdSnackbar("hover", true));
+  bar.addEventListener("mouseleave", () => holdSnackbar("hover", false));
+  bar.addEventListener("focusin", () => holdSnackbar("focus", true));
+  bar.addEventListener("focusout", (event) => { if (!bar.contains(event.relatedTarget)) holdSnackbar("focus", false); });
+  bar.querySelector("[data-snackbar-action]")?.addEventListener("click", () => { exitSnackbar(item); next.onAction?.(); });
+  bar.querySelector("[data-snackbar-close]").addEventListener("click", () => exitSnackbar(item));
+  armSnackbar(item, clock, item.shownAt);
+}
+
+function armSnackbar(item, clock, now) {
+  clearTimeout(item.timer);
+  for (const reason of item.clock?.holds || []) clock.hold(reason, now);
+  item.clock = clock;
+  clock.start(now);
+  scheduleSnackbarExit(item);
+}
+
+// a reader holding it keeps it
+function scheduleSnackbarExit(item) {
+  clearTimeout(item.timer);
+  const { clock } = item;
+  const wait = exitDelay({ shownAt: item.shownAt, resumedAt: clock.resumedAt, deadline: clock.deadline, queued: snackbarQueue.length > 0, held: clock.holds.size > 0 }, performance.now());
+  if (wait >= 0) item.timer = setTimeout(() => exitSnackbar(item), wait);
+}
+
+function holdSnackbar(reason, on) {
+  const item = snackbarCurrent;
+  if (!item || item.leaving) return;
+  const now = performance.now();
+  if (on) { if (item.clock.hold(reason, now)) clearTimeout(item.timer); return; }
+  if (item.clock.release(reason, now) >= 0) scheduleSnackbarExit(item);
+}
+
+function exitSnackbar(item) {
+  if (item.leaving || snackbarCurrent !== item) return;
+  item.leaving = true;
+  clearTimeout(item.timer);
+  if (item.bar.contains(document.activeElement)) document.activeElement.blur();
+  item.bar.classList.add("leaving");
+  const reduce = document.documentElement.dataset.motion === "reduce";
+  setTimeout(() => { if (item.bar.isConnected) item.bar.remove(); showNextSnackbar(); }, reduce ? 100 : 150);
+}
+
+// lets undo spot stale entries
+function offerUndoSnackbar(message, keys, run) {
+  const undoId = undoStack.push({ message, keys, run });
+  showSnackbar(message, { action: "Undo", undoId, onAction: () => runUndo(undoStack.take(undoId)) });
+}
+
+function runUndo(taken) {
+  if (!taken) { showSnackbar("Nothing to undo."); return; }
+  // their snackbars are stale now
+  const stale = new Set([taken.entry, ...taken.dropped].map((entry) => entry.id));
+  for (let index = snackbarQueue.length - 1; index >= 0; index -= 1) if (stale.has(snackbarQueue[index].undoId)) snackbarQueue.splice(index, 1);
+  if (stale.has(snackbarCurrent?.undoId)) exitSnackbar(snackbarCurrent);
+  else if (snackbarCurrent && !snackbarCurrent.leaving) scheduleSnackbarExit(snackbarCurrent); // queue may be empty now
+  taken.entry.run();
 }
 
 // --- object menus ---
@@ -3082,10 +3147,11 @@ function shortcutScopeAllows(event) {
 
 function handleGlobalKeydown(event) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && routeRoot() === "inbox" && shortcutScopeAllows(event)) { event.preventDefault(); undoLastDecision(); return; }
+  if (matchShortcut(event, "Mod+Z") && shortcutScopeAllows(event)) { event.preventDefault(); runUndo(undoStack.pop()); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
   if (commandDialog.open || shortcutDialog.open || filterDialog.open || !shortcutScopeAllows(event)) return;
   if (event.key === "?") { event.preventDefault(); openShortcuts(document.activeElement); return; }
+  if (matchShortcut(event, "u")) { event.preventDefault(); runUndo(undoStack.pop()); return; }
   const now = performance.now();
   const key = event.key.toLowerCase();
   if (event.key === "Escape" && state.quickFillOpen) { event.preventDefault(); closeQuickFill(); return; }
@@ -3119,7 +3185,6 @@ function handleGlobalKeydown(event) {
       if (job && applicationUrl(job)) { event.preventDefault(); window.open(applicationUrl(job), "_blank", "noopener"); performDecision("applying", "Opened"); }
       return;
     }
-    if (key === "u") { event.preventDefault(); undoLastDecision(); return; }
   }
   if (key === "g") { goChordUntil = now + 1000; return; }
   if (now <= goChordUntil) {
@@ -3392,10 +3457,12 @@ window.addEventListener("popstate", (event) => { state.scrollTop = Number(event.
 window.addEventListener("resize", () => { if (filterDialog.open) filterDialog.close(); if (routeRoot() === "inbox") renderVirtualRows(); });
 document.addEventListener("keydown", handleGlobalKeydown);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && snackbarTimer) { clearTimeout(snackbarTimer); snackbarTimer = null; snackbarRemaining = Math.max(2000, snackbarDeadline - performance.now()); }
+  holdSnackbar("hidden", document.hidden);
   if (!document.hidden) showSubmissionPrompt();
 });
 window.addEventListener("focus", showSubmissionPrompt);
+window.addEventListener("focus", () => holdSnackbar("blur", false));
+window.addEventListener("blur", () => holdSnackbar("blur", true));
 async function resumeFromIdle() {
   if (document.hidden || !navigator.onLine) return;
   try {

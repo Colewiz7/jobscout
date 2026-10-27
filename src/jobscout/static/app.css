@@ -665,8 +665,20 @@ dialog[open]::backdrop {
   font-size: 14px;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity var(--d-short3) var(--ease-standard-acc),
-              transform var(--d-short3) var(--ease-standard-acc);
+  transition: opacity var(--d-medium1) var(--ease-emph-dec),
+              transform var(--d-medium1) var(--ease-emph-dec);
+}
+
+@starting-style {
+  .snackbar {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+.snackbar-message {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .snackbar button {
@@ -4101,7 +4113,22 @@ body.quick-fill-popout {
 
 .snackbar.leaving {
   opacity: 0;
-  transform: translateY(16px);
+  transform: translateY(8px);
+  transition: opacity var(--d-short3) var(--ease-emph-acc),
+              transform var(--d-short3) var(--ease-emph-acc);
+}
+
+.snackbar .snackbar-close {
+  display: grid;
+  width: 32px;
+  padding: 0;
+  margin-left: calc(var(--s-2) * -1);
+  place-items: center;
+}
+
+.snackbar-close svg {
+  width: 18px;
+  height: 18px;
 }
 
 @container (max-width: 900px) {
@@ -4552,6 +4579,14 @@ body.quick-fill-popout {
   height: 1px;
   margin: var(--s-1) var(--s-2);
   background: var(--outline-variant);
+}
+
+:root[data-motion="reduce"] .snackbar {
+  transition-duration: var(--d-short3) !important;
+}
+
+:root[data-motion="reduce"] .snackbar.leaving {
+  transition-duration: var(--d-short2) !important;
 }
 
 :root[data-motion="reduce"] .action-menu {
