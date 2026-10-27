@@ -2325,6 +2325,11 @@ function storyMarkup(story) {
   return profileItemMarkup("stories", story, `<details class="quick-fill-edit-card"><summary>${escapeHtml(story.title)}</summary>${editorField("Title", story.title || "", attrs("title"))}${editorField("Competencies", (story.competencies || []).join(", "), attrs("competencies"))}${["situation", "task", "action", "result", "reflection"].map((part) => editorField(statusLabel(part), story[part] || "", attrs(part), { multiline: true })).join("")}</details>`);
 }
 
+function templateMarkup(template) {
+  const count = `${new Intl.NumberFormat().format(String(template.body || "").length)} characters before variables are replaced`;
+  return profileItemMarkup("answer_templates", template, `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Name", template.name || "", `data-profile-rename="answer_templates" data-profile-id="${escapeHtml(itemId("answer_templates", template))}" data-profile-property="name" maxlength="120"`)}${editorField("Template", template.body || "", profileAttrs("answer_templates", template, "body"), { multiline: true })}<small>${count}</small></details>`);
+}
+
 function quickFillEditorMarkup(scope = "docked") {
   const profile = state.quickFillProfile || {};
   const job = currentJob();
@@ -2332,13 +2337,13 @@ function quickFillEditorMarkup(scope = "docked") {
     field.label || field.key, field.value || "", profileAttrs("fields", field, "value"),
     { multiline: String(field.value || "").length > 120 || String(field.value || "").includes("\n") },
   )).join("");
-  const templates = (profile.answer_templates || []).map((template) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Template", template.body || "", profileAttrs("answer_templates", template, "body"), { multiline: true })}<small>${new Intl.NumberFormat().format(String(template.body || "").length)} characters before variables are replaced</small></details>`).join("");
+  const templates = profileSectionMarkup("answer_templates", "Short answers", (profile.answer_templates || []).map(templateMarkup), "No templates yet.", profileAddMarkup("answer_templates", scope, { label: "New template", button: "Add template", placeholder: "Why this company", maxlength: 120 }));
   const documents = (profile.documents || []).map((document) => `<details class="quick-fill-edit-card"><summary>${escapeHtml(document.name)}</summary>${editorField("Name", document.name || "", profileAttrs("documents", document, "name"))}${editorField("Date", document.date || "", profileAttrs("documents", document, "date"))}${editorField("Path or URL", document.url || "", profileAttrs("documents", document, "url"))}</details>`).join("");
   const stories = profileSectionMarkup("stories", "Story bank", (profile.stories || []).map(storyMarkup), "No stories yet.", profileAddMarkup("stories", scope, { label: "New story", button: "Add story", placeholder: "Stabilized a failing service", maxlength: 160 }));
   const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
   const account = profile.company_account || {};
   const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
-  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section><section><h3>Short answers</h3>${templates || '<p class="quick-fill-empty">No templates yet.</p>'}</section>${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section><section><h3>Documents</h3>${documents || '<p class="quick-fill-empty">No documents yet.</p>'}</section>${templates}${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
@@ -2409,12 +2414,19 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
   });
   root.addEventListener("change", (event) => {
     if (event.target.matches("select[data-context-kind]")) { updateQuickFillContext(event.target); return; }
+    if (event.target.matches("[data-profile-rename]")) { commitProfileProperty(event.target); return; }
     if (event.target.matches("[data-profile-import]") && event.target.files?.[0]) {
       const [file] = event.target.files; event.target.value = ""; importQuickFillProfile(file);
     }
   });
   root.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches("[data-profile-add-input]")) { event.preventDefault(); addProfileItem(event.target.dataset.profileAddInput, root); return; }
+    if (event.target.matches("input[data-profile-rename]") && (event.key === "Enter" || event.key === "Escape")) {
+      event.preventDefault();
+      if (event.key === "Escape") event.target.value = findProfileItem(event.target.dataset.profileRename, event.target.dataset.profileId)?.[event.target.dataset.profileProperty] ?? event.target.value;
+      else commitProfileProperty(event.target);
+      return;
+    }
     const row = event.target.closest("[data-copy-index]");
     if (!row) return;
     const rows = [...root.querySelectorAll("[data-copy-index]")];
@@ -2657,6 +2669,7 @@ function focusProfileTarget(surface, target) {
 function newProfileItem(kind, text, root) {
   const taken = (state.quickFillProfile?.[kind] || []).map((row) => itemId(kind, row));
   if (kind === "stories") return { id: newId("story", taken), title: text, situation: "", task: "", action: "", result: "", reflection: "", competencies: [] };
+  if (kind === "answer_templates") return { id: newId("new-template", taken), name: text, body: "" }; // the server assigns the real id
   return null;
 }
 
@@ -2681,6 +2694,33 @@ function addProfileItem(kind, root) {
 }
 
 const profileFirstInput = { stories: '[data-profile-property="situation"]', answer_templates: '[data-profile-property="body"]', documents: '[data-profile-property="url"]', fields: '[data-profile-property="value"]' };
+
+const renameCopy = {
+  "answer_templates:name": { empty: "A template needs a name.", message: "Template renamed.", undone: "Rename undone." },
+};
+
+// one undo entry per rename
+function commitProfileProperty(control) {
+  const kind = control.dataset.profileRename;
+  const property = control.dataset.profileProperty;
+  const item = findProfileItem(kind, control.dataset.profileId);
+  const copy = renameCopy[`${kind}:${property}`];
+  if (!item || !copy) return;
+  const value = control.value.trim();
+  if (value === String(item[property] ?? "")) { control.value = value; return; }
+  const surface = control.closest("#quick-fill-sheet, #session-quick-fill");
+  const focus = surface && { surface, ref: `${kind}:${itemId(kind, item)}`, role: `[data-profile-property="${property}"]` };
+  if (!value) {
+    state.quickFillProfileError = { kind, message: copy.empty };
+    rerenderProfile({ focus });
+    return;
+  }
+  const changed = changeProfile({ type: "update", kind, id: itemId(kind, item), patch: { [property]: value } }, { message: typeof copy.message === "function" ? copy.message(value) : copy.message, undone: copy.undone, focus });
+  if (changed || !focus) return;
+  // keep their text beside the error
+  const again = [...surface.querySelectorAll(`[data-profile-rename="${kind}"]`)].find((input) => input.dataset.profileProperty === property && canonicalRef(`${kind}:${input.dataset.profileId}`) === canonicalRef(focus.ref));
+  if (again) { again.value = control.value; again.closest("details")?.setAttribute("open", ""); again.focus(); }
+}
 
 function profileContext(el) {
   const [kind, ...rest] = el.dataset.profileRef.split(":");
@@ -3450,6 +3490,7 @@ const profileMenuItems = [
   { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => moveProfileItem(c, 0) },
   { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => moveProfileItem(c, c.count - 1) },
   { label: "Edit", divider: true, when: (c) => c.kind === "stories", run: (c) => openProfileItem(c, '[data-profile-property="title"]') },
+  { label: "Rename", divider: true, when: (c) => c.kind === "answer_templates", run: (c) => openProfileItem(c, '[data-profile-property="name"]') },
   { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
 ];
 
