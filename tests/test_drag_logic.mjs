@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { autoScrollSpeed, autoScrollStep, columnAt, createLoadGate, createOrderSaver, keyboardTarget, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, settleVelocity, slotIndex, sortedInsertIndex, startGesture } from "../src/jobscout/static/drag-logic.js";
+import { autoScrollSpeed, autoScrollStep, boardUndoOrders, columnAt, columnKeys, createLoadGate, createOrderSaver, manualCompare, placeKey, positionedKeys, keyboardTarget, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, settleVelocity, slotIndex, sortedInsertIndex, startGesture } from "../src/jobscout/static/drag-logic.js";
 import { fromRatio, solve, springTokens } from "../src/jobscout/static/motion.js";
 
 const rows = (...heights) => {
@@ -123,6 +123,67 @@ test("sortedInsertIndex predicts the landing slot under each sort", () => {
 test("announcements are one based", () => {
   assert.equal(moveAnnouncement(2, 12), "Moved to position 3 of 12.");
   assert.match(liftAnnouncement(0, 4), /^Picked up, position 1 of 4\./);
+});
+
+const board = [
+  { dedupe_key: "a", status: "applied", board_position: 1, application_updated_at: "2026-10-01" },
+  { dedupe_key: "b", status: "applied", board_position: null, application_updated_at: "2026-10-20" },
+  { dedupe_key: "c", status: "applied", board_position: 0, application_updated_at: "2026-09-01" },
+  { dedupe_key: "d", status: "applied", board_position: null, application_updated_at: "2026-10-25" },
+  { dedupe_key: "e", status: "offer", board_position: 0, application_updated_at: "2026-10-26" },
+  { dedupe_key: "f", status: "applying", board_position: null, application_updated_at: "2026-08-01" },
+];
+
+test("manual order puts placed cards first, then newest unplaced", () => {
+  assert.deepEqual(columnKeys(board, "applied", "manual"), ["c", "a", "d", "b"]);
+  assert.deepEqual([...board].sort(manualCompare).map((app) => app.dedupe_key), ["f", "c", "a", "d", "b", "e"]);
+  assert.deepEqual(columnKeys(board, "applied", "last_activity"), ["d", "b", "a", "c"]);
+  assert.deepEqual(columnKeys(board, "offer", "manual"), ["e"]);
+});
+
+test("placeKey reorders within a column and inserts from another", () => {
+  assert.deepEqual(placeKey(["c", "a", "d", "b"], ["c", "a", "d", "b"], "b", 0), ["b", "c", "a", "d"]);
+  assert.deepEqual(placeKey(["c", "a", "d", "b"], ["c", "a", "d", "b"], "c", 3), ["a", "d", "b", "c"]);
+  assert.deepEqual(placeKey(["c", "a"], ["c", "a"], "z", 1), ["c", "z", "a"]);
+  assert.deepEqual(placeKey([], [], "z", 0), ["z"]);
+});
+
+test("placeKey keeps filtered out cards where they were", () => {
+  // only c and b match
+  assert.deepEqual(placeKey(["c", "a", "d", "b"], ["c", "b"], "b", 0), ["b", "c", "a", "d"]);
+  assert.deepEqual(placeKey(["c", "a", "d", "b"], ["c", "b"], "c", 1), ["a", "d", "b", "c"]);
+  assert.deepEqual(placeKey(["c", "a", "d"], ["a"], "z", 1), ["c", "a", "z", "d"]);
+  assert.deepEqual(placeKey(["c", "a", "d"], [], "z", 0), ["c", "a", "d", "z"]);
+});
+
+test("positionedKeys lists only placed cards in order", () => {
+  assert.deepEqual(positionedKeys(board, "applied"), ["c", "a"]);
+  assert.deepEqual(positionedKeys(board, "applying"), []);
+});
+
+test("sortedInsertIndex drops the old column position", () => {
+  const moved = { dedupe_key: "e", status: "offer", board_position: 0, application_updated_at: "2026-10-26" };
+  assert.equal(sortedInsertIndex(board.filter((app) => app.status === "applied"), moved, "applied", "manual", "2026-10-27"), 2);
+});
+
+test("boardUndoOrders pins an unpositioned card to its old slot under manual", () => {
+  // unplaced b showed last
+  assert.deepEqual(boardUndoOrders(board, "b", "applied", "offer", "manual"), [
+    { status: "applied", keys: ["c", "a", "d", "b"] },
+    { status: "offer", keys: ["e"] },
+  ]);
+});
+
+test("boardUndoOrders restores exact positions, nulls included, under other sorts", () => {
+  assert.deepEqual(boardUndoOrders(board, "b", "applied", "offer", "company"), [
+    { status: "applied", keys: ["c", "a"] },
+    { status: "offer", keys: ["e"] },
+  ]);
+  assert.deepEqual(boardUndoOrders(board, "f", "applying", "applied", "last_activity"), [
+    { status: "applying", keys: [] },
+    { status: "applied", keys: ["c", "a"] },
+  ]);
+  assert.deepEqual(boardUndoOrders(board, "x", "queued", "offer", "manual"), [{ status: "offer", keys: ["e"] }]);
 });
 
 const deferred = () => {

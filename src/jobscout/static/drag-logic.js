@@ -70,8 +70,20 @@ export function columnAt(columnRects, x) {
   return best;
 }
 
+export const BOARD_STATUSES = ["applying", "applied", "interviewing", "offer", "rejected"];
+
+// status changes null the position
+export function manualCompare(left, right) {
+  const rank = (app) => { const index = BOARD_STATUSES.indexOf(app.status); return index < 0 ? BOARD_STATUSES.length : index; };
+  const place = (app) => Number.isInteger(app.board_position) ? app.board_position : Infinity;
+  return rank(left) - rank(right) || place(left) - place(right)
+    || new Date(right.application_updated_at || 0) - new Date(left.application_updated_at || 0)
+    || String(left.dedupe_key).localeCompare(String(right.dedupe_key));
+}
+
 export function trackerCompare(sort) {
   const time = (value) => new Date(value || 0).valueOf();
+  if (sort === "manual") return manualCompare;
   if (sort === "company") return (left, right) => `${left.company} ${left.title}`.localeCompare(`${right.company} ${right.title}`);
   if (sort === "status") return (left, right) => `${left.status} ${left.company}`.localeCompare(`${right.status} ${right.company}`);
   if (sort === "applied") return (left, right) => time(right.applied_at) - time(left.applied_at);
@@ -81,8 +93,32 @@ export function trackerCompare(sort) {
 // a status change bumps its timestamps
 export function sortedInsertIndex(apps, moved, status, sort, now = new Date().toISOString()) {
   const landed = { ...moved, status, application_updated_at: now, applied_at: status === "applied" ? moved.applied_at || now : moved.applied_at };
+  if (status !== moved.status) landed.board_position = null;
   const others = apps.filter((app) => app.dedupe_key !== moved.dedupe_key);
   return [...others, landed].sort(trackerCompare(sort)).indexOf(landed);
+}
+
+export const columnKeys = (apps, status, sort) => apps.filter((app) => app.status === status).sort(trackerCompare(sort)).map((app) => app.dedupe_key);
+
+// search hides cards that still count
+export function placeKey(keys, visible, key, index) {
+  const rest = keys.filter((item) => item !== key);
+  const shown = visible.filter((item) => item !== key && rest.includes(item));
+  let at = rest.length;
+  if (index < shown.length) at = rest.indexOf(shown[Math.max(0, index)]);
+  else if (shown.length) at = rest.indexOf(shown.at(-1)) + 1;
+  rest.splice(at, 0, key);
+  return rest;
+}
+
+export const positionedKeys = (apps, status) => apps.filter((app) => app.status === status && Number.isInteger(app.board_position)).sort((left, right) => left.board_position - right.board_position).map((app) => app.dedupe_key);
+
+// undo itself bumps activity time
+export function boardUndoOrders(apps, key, from, to, sort) {
+  const writes = [];
+  if (BOARD_STATUSES.includes(from)) writes.push({ status: from, keys: sort === "manual" ? columnKeys(apps, from, "manual") : positionedKeys(apps, from) });
+  if (BOARD_STATUSES.includes(to) && to !== from) writes.push({ status: to, keys: positionedKeys(apps, to).filter((item) => item !== key) });
+  return writes;
 }
 
 export const liftAnnouncement = (index, count) => `Picked up, position ${index + 1} of ${count}. Use the arrow keys to move, Space to drop, Escape to cancel.`;
