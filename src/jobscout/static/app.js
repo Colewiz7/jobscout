@@ -1317,9 +1317,11 @@ function companyListMarkup(companies) {
   return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route>${companyLogoMarkup(company.name, "company-monogram")}<div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
 }
 
-function contactMarkup(contact, index) {
+function contactMarkup(contact) {
   const detail = [contact.title, contact.source === "linkedin_csv" ? "LinkedIn connection" : "Manual contact"].filter(Boolean).join(" · ");
-  return `<article class="contact-row" data-contact-index="${index}"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div><div class="row-actions">${contact.linkedin_url ? `<a class="text-button interactive" href="${escapeHtml(contact.linkedin_url)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}${moreButtonMarkup(contact.name)}</div></article>`;
+  // stored urls predate the check
+  const linkedin = safeHttpsUrl(contact.linkedin_url);
+  return `<article class="contact-row" data-contact-id="${contact.id}"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div><div class="row-actions">${linkedin ? `<a class="text-button interactive" href="${escapeHtml(linkedin)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}${moreButtonMarkup(contact.name)}</div></article>`;
 }
 
 function companyDetailMarkup(company) {
@@ -1330,7 +1332,7 @@ function companyDetailMarkup(company) {
   return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><div class="company-title-row">${companyLogoMarkup(company.name, "company-monogram")}<h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1></div><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
     <section class="company-section" aria-labelledby="company-applications-title"><h2 id="company-applications-title">Applications</h2>${company.applications.length ? `<div class="company-application-list">${company.applications.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${job.applied_at ? `Applied ${escapeHtml(formatDate(job.applied_at))}` : escapeHtml(formatDate(job.application_updated_at))}</span></div>${statusMarkup(job.status)}</article>`).join("")}</div>` : '<p class="muted-copy">No applications at this company yet.</p>'}</section>
     <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2><div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
-    <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map((contact, index) => contactMarkup(contact, index)).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
+    <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title" tabindex="-1">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map(contactMarkup).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
   </main><aside>
     <section class="company-section"><h2>Notes</h2><label class="company-notes"><span class="visually-hidden">Notes about ${escapeHtml(company.name)}</span><textarea id="company-note" rows="8" maxlength="20000" placeholder="Interview context, referrals, or follow-up notes">${escapeHtml(company.note?.body || "")}</textarea><small id="company-note-state">Saved automatically</small></label></section>
     <section class="company-section"><h2>ATS account</h2>${accountMarkup}</section>
@@ -3273,6 +3275,108 @@ async function restoreInterview(id, index) {
   showSnackbar("Interview restored.");
 }
 
+function contactFocus(id) {
+  return recordFocus(`.contact-row[data-contact-id="${id}"]`, "#company-contacts-title");
+}
+
+function companyContacts() {
+  return state.companiesData?.company?.contacts || null;
+}
+
+function editContact(contact) {
+  openEditor({
+    title: `Edit ${contact.name}`,
+    focusBack: contactFocus(contact.id),
+    fields: [
+      { name: "name", label: "Name", value: contact.name, required: true, maxlength: 500 },
+      { name: "title", label: "Role", value: contact.title, optional: true, maxlength: 500 },
+      { name: "email", label: "Email", type: "email", value: contact.email, optional: true, maxlength: 500 },
+      { name: "linkedin_url", label: "LinkedIn URL", type: "url", inputmode: "url", value: contact.linkedin_url, optional: true, maxlength: 2000 },
+    ],
+    save: (changes) => saveContact(contact.id, changes, { message: "Contact updated.", undone: "Contact edit undone." }),
+  });
+}
+
+async function saveContact(id, payload, { message = "", undone = "", offer = true, aliasFrom = null } = {}) {
+  let body;
+  const list = companyContacts();
+  const place = (contact) => {
+    const index = list ? list.findIndex((item) => item.id === id) : -1;
+    if (index >= 0) list[index] = contact;
+    rerenderRecords(contactFocus(id));
+  };
+  try {
+    const response = await secureWrite(`/api/v1/contacts/${id}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify(payload) });
+    body = await response.json().catch(() => ({}));
+    if (response.status === 404) throw new Error("This contact was deleted in another tab.");
+    // show what the other tab saved
+    if (response.status === 409 && body.contact) { place(body.contact); throw new Error("It changed in another tab, so it now shows that version."); }
+    if (!response.ok) throw new Error(body.error || "Couldn't save the contact. Retry shortly.");
+  } catch (error) {
+    return error instanceof Error ? error.message : "Couldn't save the contact. Retry shortly.";
+  }
+  place(body.contact);
+  if (aliasFrom !== null) revisionAliases.set(`contact:${id}@${aliasFrom}`, body.contact.revision);
+  if (offer) {
+    const restore = pickFields(body.previous, Object.keys(payload));
+    const after = body.contact.revision;
+    offerUndoSnackbar(message, [`contact:${id}`], async () => {
+      restore.expected_revision = currentRevision(`contact:${id}`, after);
+      const error = await saveContact(id, restore, { offer: false, aliasFrom: body.previous.revision });
+      showSnackbar(error ? `Couldn't undo. ${error}` : undone);
+    }, { latest: `contact:${id}` });
+  }
+  return "";
+}
+
+// counts come from linkedin rows
+function shiftConnections(contact, delta) {
+  const company = state.companiesData?.company;
+  if (company && contact.source === "linkedin_csv") company.connections_count = Math.max(0, (company.connections_count || 0) + delta);
+  if (contact.source === "linkedin_csv") jobsWriteLanded();
+}
+
+async function deleteContact(contact) {
+  const list = companyContacts();
+  const index = list ? list.findIndex((item) => item.id === contact.id) : -1;
+  if (index < 0) return;
+  const focus = focusAfterRemoval(list.map((item) => String(item.id)), [String(contact.id)], ".contact-row", "data-contact-id", ".contact-add summary");
+  const [removed] = list.splice(index, 1);
+  shiftConnections(removed, -1);
+  rerenderRecords();
+  focus();
+  try {
+    const response = await secureWrite(`/api/v1/contacts/${contact.id}`, { method: "DELETE", headers: { Accept: "application/json" } });
+    // another tab got there first
+    if (response.status === 404) { showSnackbar("Already deleted in another tab."); return; }
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't delete the contact.");
+  } catch (error) {
+    if (companyContacts() === list) list.splice(index, 0, removed);
+    shiftConnections(removed, 1);
+    rerenderRecords(contactFocus(contact.id));
+    assertiveRegion.textContent = `${error.message} Change undone.`;
+    showSnackbar(`${error.message} Change undone.`);
+    return;
+  }
+  offerUndoSnackbar(`${contact.name} deleted.`, [`contact:${contact.id}`], () => restoreContact(removed, index, list));
+}
+
+async function restoreContact(contact, index, list) {
+  try {
+    const response = await secureWrite(`/api/v1/contacts/${contact.id}/restore`, { method: "POST", headers: { Accept: "application/json" } });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "Couldn't restore the contact.");
+    // another company may be open now
+    if (companyContacts() === list && !list.some((item) => item.id === contact.id)) list.splice(Math.min(index, list.length), 0, body.contact);
+  } catch (error) {
+    showSnackbar(`Couldn't undo. ${error instanceof Error ? error.message : ""}`.trim());
+    return;
+  }
+  shiftConnections(contact, 1);
+  rerenderRecords(contactFocus(contact.id));
+  showSnackbar(`${contact.name} restored.`);
+}
+
 function openProfileItem(c, role) {
   if (!c.surface) return;
   focusProfileTarget(c.surface, { ref: `${c.kind}:${c.id}`, role, open: true });
@@ -4121,15 +4225,17 @@ const objectMenus = [
     ],
   },
   {
-    selector: ".contact-row[data-contact-index]", keyAttr: "data-contact-index", fallback: "#company-contacts-title",
+    selector: ".contact-row[data-contact-id]", keyAttr: "data-contact-id", fallback: "#company-contacts-title",
     label: (c) => c.contact.name,
     context(el) {
-      const contact = state.companiesData?.company?.contacts?.[Number(el.dataset.contactIndex)];
+      const contact = state.companiesData?.company?.contacts?.find((item) => String(item.id) === el.dataset.contactId);
       return contact && { contact };
     },
     items: [
       { label: "Email", when: (c) => c.contact.email, run: (c) => { window.location.href = `mailto:${encodeURIComponent(c.contact.email)}`; } },
       { label: "Open LinkedIn", when: (c) => safeHttpsUrl(c.contact.linkedin_url), run: (c) => window.open(safeHttpsUrl(c.contact.linkedin_url), "_blank", "noopener") },
+      { label: "Edit…", divider: true, run: (c) => editContact(c.contact) },
+      { label: "Delete", danger: true, divider: true, run: (c) => deleteContact(c.contact) },
     ],
   },
 ];
