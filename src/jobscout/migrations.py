@@ -412,6 +412,22 @@ MIGRATIONS = (
         insert into profile_meta (id) values (true) on conflict (id) do nothing;
         """,
     ),
+    Migration(
+        16,
+        "document_default_and_order",
+        """
+        alter table documents add column if not exists is_default boolean not null default false;
+        alter table documents add column if not exists sort_order integer not null default 0;
+        create unique index if not exists documents_one_default on documents (is_default) where is_default;
+        update documents d
+           set sort_order = ranked.position * 10
+          from (
+              select id, row_number() over (order by document_date desc nulls last, lower(name), id) - 1 as position
+                from documents
+          ) ranked
+         where d.id = ranked.id;
+        """,
+    ),
 )
 
 

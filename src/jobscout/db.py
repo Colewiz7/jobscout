@@ -794,9 +794,14 @@ def profile_data(
         templates = cur.fetchall()
         cur.execute(
             """
-            select id, name, document_date as date, url
-              from documents
-             order by document_date desc nulls last, lower(name), id
+            select d.id, d.name, d.document_date as date, d.url, d.is_default as "default", d.sort_order,
+                   (select count(*) from (
+                        select dedupe_key from application_states where resume_document_id = d.id
+                        union
+                        select dedupe_key from application_snapshots where resume_document_id = d.id
+                   ) refs) as application_count
+              from documents d
+             order by d.sort_order, d.id
             """
         )
         documents = cur.fetchall()
@@ -1010,8 +1015,11 @@ def normalize_profile_data(payload: dict) -> dict:
                 raise ValueError(f"documents[{index}].date must be YYYY-MM-DD") from error
         documents.append({
             "id": row.get("id"),
-            "name": name, "url": url, "date": date,
+            "name": name, "url": url, "date": date, "default": row.get("default") is True,
+            "sort_order": int(row.get("sort_order", index * 10)),
         })
+    if sum(row["default"] for row in documents) > 1:
+        raise ValueError("only one document can be the default")
 
     stories = []
     seen_story_keys: set[str] = set()
@@ -1091,18 +1099,25 @@ def _sync_documents(cur, documents: list[dict]) -> None:
     kept = {_row_id(row["id"]) for row in documents} & existing
     # a delete nulls resume references
     cur.execute("delete from documents where not (id = any(%s))", (list(kept),))
+    default = None
     for row in documents:
         key = _row_id(row["id"])
         if key in kept:
             cur.execute(
-                "update documents set name = %s, document_date = %s, url = %s where id = %s",
-                (row["name"], row["date"], row["url"], key),
+                "update documents set name = %s, document_date = %s, url = %s, sort_order = %s where id = %s",
+                (row["name"], row["date"], row["url"], row["sort_order"], key),
             )
         else:
             cur.execute(
-                "insert into documents (name, document_date, url) values (%s, %s, %s)",
-                (row["name"], row["date"], row["url"]),
+                "insert into documents (name, document_date, url, sort_order) values (%s, %s, %s, %s) returning id",
+                (row["name"], row["date"], row["url"], row["sort_order"]),
             )
+            key = cur.fetchone()["id"]
+        if row["default"]:
+            default = key
+    # clear first for the unique index
+    cur.execute("update documents set is_default = false where is_default and id is distinct from %s", (default,))
+    cur.execute("update documents set is_default = true where id = %s", (default,))
 
 
 def replace_profile_data(conn: psycopg.Connection, payload: dict, *, revision: int | None = None) -> dict:

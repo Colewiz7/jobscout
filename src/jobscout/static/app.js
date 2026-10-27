@@ -1862,7 +1862,7 @@ function sessionPromptMarkup(job) {
   if (session.awaitingReturn !== "prompt") return `<button class="filled-button interactive" type="button" data-session-apply ${!applicationUrl(job) ? "disabled" : ""}>${job.status === "applying" ? "Reopen application" : "Apply"}</button>`;
   const options = (session.documents || []).map((document) => {
     const date = document.date ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(`${document.date}T00:00:00`)) : "";
-    return `<option value="${escapeHtml(document.id)}">${escapeHtml(document.name)}${date ? ` — ${escapeHtml(date)}` : ""}</option>`;
+    return `<option value="${escapeHtml(document.id)}" ${document.default ? "selected" : ""}>${escapeHtml(document.name)}${date ? ` — ${escapeHtml(date)}` : ""}${document.default ? " (default)" : ""}</option>`;
   }).join("");
   return `<section class="submission-prompt" aria-labelledby="submission-title"><h2 id="submission-title">Did you submit?</h2><label for="session-resume">Resume version <span>(optional)</span></label><select id="session-resume"><option value="">Not recorded</option>${options}</select><div><button class="filled-button interactive" type="button" data-session-applied>Mark applied</button><button class="tonal-button interactive" type="button" data-session-not-yet>Not yet</button><button class="text-button interactive" type="button" data-session-skip>Skip</button></div></section>`;
 }

@@ -87,6 +87,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 13, "name": "posting_taglines"},
             {"version": 14, "name": "board_positions"},
             {"version": 15, "name": "profile_revision"},
+            {"version": 16, "name": "document_default_and_order"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -559,6 +560,26 @@ def test_deleted_template_overrides_return_with_the_name(conn):
 
     assert [row["name"] for row in restored["answer_templates"]] == ["Why"]
     assert database.profile_data(conn, dedupe_key=posting.dedupe_key)["answer_overrides"] == {"Why": "acme why"}
+
+
+def test_one_default_document_survives_reorder_and_clears_on_delete(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    profile = database.replace_profile_data(conn, {"documents": [{"name": "One"}, {"name": "Two", "default": True}]})
+    assert [(row["name"], row["default"]) for row in profile["documents"]] == [("One", False), ("Two", True)]
+    database.mark_application_applied(conn, posting.dedupe_key, profile["documents"][0]["id"])
+
+    one, two = profile["documents"]
+    one["default"], two["default"] = True, False
+    one["sort_order"], two["sort_order"] = 10, 0
+    moved = database.replace_profile_data(conn, profile)
+    assert [(row["name"], row["default"], row["application_count"]) for row in moved["documents"]] == [("Two", False, 0), ("One", True, 1)]
+
+    moved["documents"] = [row for row in moved["documents"] if row["name"] == "Two"]
+    left = database.replace_profile_data(conn, moved)
+    assert [(row["name"], row["default"]) for row in left["documents"]] == [("Two", False)]
+    with pytest.raises(ValueError, match="one document"):
+        database.normalize_profile_data({"documents": [{"name": "A", "default": True}, {"name": "B", "default": True}]})
 
 
 def test_quick_fill_job_context_is_server_backed(conn):

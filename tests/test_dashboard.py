@@ -958,3 +958,18 @@ def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     assert after_rename == {"Why Datadog": "Datadog answer"}
     assert [row["name"] for row in after_restore["answer_templates"]] == ["Why Datadog"]
     assert after_restore["answer_overrides"] == {"Why Datadog": "Datadog answer"}
+
+
+def test_apply_session_offers_the_default_document(quick_fill_dashboard):
+    base, store = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    profile = client.get("/api/v1/profile").json()["profile"]
+    profile["documents"].append({"name": "Platform resume", "default": True})
+    saved = client.put("/api/v1/profile", headers=headers, json={"profile": profile}).json()["profile"]
+    session = client.post("/api/v1/queue/session", headers=headers).json()
+
+    added = saved["documents"][-1]
+    assert added["id"] and added["default"] is True
+    assert [row["name"] for row in session["documents"] if row["default"]] == ["Platform resume"]
+    assert sum(row["default"] for row in saved["documents"]) == 1

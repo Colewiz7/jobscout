@@ -1002,7 +1002,7 @@ class DemoStore:
         return None
 
     def documents(self) -> list[dict]:
-        return copy.deepcopy(self._profile.get("documents", []))
+        return self.profile()["documents"]
 
     def tracker(self) -> dict:
         applications = [
@@ -1186,6 +1186,9 @@ class DemoStore:
     def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
         profile = copy.deepcopy(self._profile)
         profile["revision"] = self._profile_revision
+        for document in profile.get("documents", []):
+            document.setdefault("default", False)
+            document["application_count"] = sum(str(row.get("resume_document_id")) == str(document.get("id")) for row in self.rows)
         profile["copied_fields"] = sorted(self._copied_fields.get(dedupe_key or "", set()))
         profile["answer_overrides"] = copy.deepcopy(self._answer_overrides.get(dedupe_key or "", {}))
         profile["company_account"] = copy.deepcopy(
@@ -1208,6 +1211,10 @@ class DemoStore:
                         self._next_profile_id += 1
                         row["id"] = "%s-%d" % (prefix, self._next_profile_id)
                 taken.add(str(row["id"]))
+        removed = {str(row.get("id")) for row in self._profile.get("documents", [])} - {str(row["id"]) for row in clean["documents"]}
+        for row in self.rows:
+            if str(row.get("resume_document_id")) in removed:
+                row["resume_document_id"] = None  # same as the foreign key
         names = {str(row.get("id")): row["name"] for row in self._profile.get("answer_templates", [])}
         renames = {names[str(row["id"])]: row["name"] for row in clean["answer_templates"] if names.get(str(row["id"]), row["name"]) != row["name"]}
         for overrides in self._answer_overrides.values():
