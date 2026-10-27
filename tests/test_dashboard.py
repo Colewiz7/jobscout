@@ -37,6 +37,21 @@ def dashboard():
     thread.join(timeout=2)
 
 
+@pytest.fixture
+def quick_fill_dashboard():
+    store = DemoStore()
+    try:
+        server = DashboardServer(("127.0.0.1", 0), store, require_auth=True, authentik_user="cole", quick_fill_enabled=True)
+    except PermissionError:
+        pytest.skip("the test sandbox does not permit a loopback listener")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield "http://127.0.0.1:%d" % server.server_address[1], store
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
 def authenticated_client(base):
     client = httpx.Client(base_url=base, headers=AUTH, timeout=2)
     session = client.get("/api/v1/session")
@@ -900,3 +915,23 @@ def test_saved_views_round_trip_on_server_with_csrf(dashboard):
     assert created.status_code == 201
     assert views.json()["saved_views"][0]["name"] == "Remote new"
     assert deleted.status_code == 200
+
+
+def test_profile_save_from_a_stale_revision_is_a_conflict(quick_fill_dashboard):
+    base, _ = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    first_tab = client.get("/api/v1/profile").json()["profile"]
+    second_tab = client.get("/api/v1/profile").json()["profile"]
+    second_tab["fields"][0]["value"] = "Second tab"
+    landed = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": second_tab})
+    first_tab["fields"][0]["value"] = "First tab"
+    stale = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": first_tab})
+    unversioned = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": {"fields": []}})
+
+    assert landed.status_code == 200
+    assert landed.json()["profile"]["revision"] == first_tab["revision"] + 1
+    assert stale.status_code == 409
+    assert stale.json()["profile"]["fields"][0]["value"] == "Second tab"
+    assert stale.json()["profile"]["revision"] == landed.json()["profile"]["revision"]
+    assert unversioned.status_code == 400
+    assert client.get("/api/v1/profile").json()["profile"]["fields"][0]["value"] == "Second tab"

@@ -7,6 +7,7 @@ import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js"
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
+import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -2410,38 +2411,86 @@ function profileContextDocument(profile = state.quickFillProfile) {
   };
 }
 
-async function persistQuickFillProfile(profile) {
-  const response = await fetch("/api/v1/profile", {
-    method: "PUT", credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-    body: JSON.stringify({ profile }),
-  });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Quick-fill could not be saved.");
-  return (await response.json()).profile;
+// --- profile saves ---
+// one in flight, latest revision
+const profileSaves = createSaveQueue({ send: sendProfile, onConflict: reportProfileConflict });
+
+function queueProfileSave() {
+  return profileSaves.save();
+}
+
+function cancelAutosave() {
+  clearTimeout(state.quickFillSaveTimer);
+  state.quickFillSaveTimer = null;
+}
+
+async function sendProfile() {
+  const version = state.quickFillSaveVersion;
+  const sent = { ...profileDocument(), revision: state.quickFillProfile?.revision ?? 0 };
+  setQuickFillSaveState("Saving…");
+  try {
+    const response = await fetch("/api/v1/profile", {
+      method: "PUT", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      body: JSON.stringify({ profile: sent }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 409 && body.profile) { adoptProfileConflict(body.profile); return Object.assign(new Error(body.error || "Your profile changed in another tab."), { conflict: true }); }
+    if (!response.ok) throw new Error(body.error || "Quick-fill could not be saved.");
+    const saved = Object.assign(body.profile, profileContextDocument());
+    state.quickFillSavedProfile = cloneJson(saved);
+    if (version === state.quickFillSaveVersion) state.quickFillProfile = saved;
+    else state.quickFillProfile.revision = saved.revision;
+    state.eligibility.clear();
+    if (state.selectedKey) loadEligibility(state.selectedKey);
+    setQuickFillSaveState("Saved automatically");
+    return null;
+  } catch (error) {
+    if (version === state.quickFillSaveVersion && state.quickFillSavedProfile) {
+      state.quickFillProfile = cloneJson(state.quickFillSavedProfile);
+      renderQuickFill();
+      renderSessionQuickFill();
+    }
+    setQuickFillSaveState("Not saved");
+    assertiveRegion.textContent = `${error.message} Changes rolled back.`;
+    showSnackbar(`${error.message} Changes rolled back.`);
+    return error;
+  }
+}
+
+// never overwrite the other tab
+function adoptProfileConflict(latest) {
+  state.quickFillSaveVersion += 1;
+  Object.assign(latest, profileContextDocument());
+  state.quickFillProfile = latest;
+  state.quickFillSavedProfile = cloneJson(latest);
+  renderQuickFill();
+  renderSessionQuickFill();
+  setQuickFillSaveState("Reloaded");
+}
+
+// a waiting autosave is lost too
+function reportProfileConflict(dropped) {
+  const typing = state.quickFillSaveTimer ? 1 : 0;
+  cancelAutosave();
+  const message = conflictMessage(dropped + typing);
+  assertiveRegion.textContent = message;
+  showSnackbar(message);
 }
 
 async function setupBlankQuickFill() {
   if (!state.quickFillEnabled || !state.quickFillProfile || state.quickFillProfile.fields?.length || state.quickFillSetupSaving || state.quickFillContextPendingKey) return;
   state.quickFillSetupSaving = true;
-  setQuickFillSaveState("Saving…");
-  try {
-    const context = profileContextDocument();
-    const saved = await persistQuickFillProfile({ ...profileDocument(), fields: cloneJson(blankQuickFillFields) });
-    Object.assign(saved, context);
-    state.quickFillProfile = saved;
-    state.quickFillSavedProfile = cloneJson(saved);
-    state.quickFillEdit = true;
-    setQuickFillSaveState("Saved automatically");
-    renderQuickFill();
-    renderSessionQuickFill();
-    requestAnimationFrame(() => document.querySelector("#quick-fill-sheet [data-profile-kind], #session-quick-fill [data-profile-kind]")?.focus());
-    showSnackbar("Blank Quick-fill fields are ready. Add only details you want to reuse.");
-  } catch (error) {
-    setQuickFillSaveState("Setup failed");
-    showSnackbar(error instanceof Error ? error.message : "Quick-fill setup failed. Retry.");
-  } finally {
-    state.quickFillSetupSaving = false;
-  }
+  state.quickFillProfile.fields = cloneJson(blankQuickFillFields);
+  state.quickFillSaveVersion += 1;
+  const error = await queueProfileSave();
+  state.quickFillSetupSaving = false;
+  if (error) return;
+  state.quickFillEdit = true;
+  renderQuickFill();
+  renderSessionQuickFill();
+  requestAnimationFrame(() => document.querySelector("#quick-fill-sheet [data-profile-kind], #session-quick-fill [data-profile-kind]")?.focus());
+  showSnackbar("Blank Quick-fill fields are ready. Add only details you want to reuse.");
 }
 
 async function persistQuickFillContext(context, job) {
@@ -2470,31 +2519,9 @@ function updateQuickFillProfile(control) {
   const counter = control.closest(".quick-fill-edit-card")?.querySelector("small");
   if (counter && property === "body") counter.textContent = `${new Intl.NumberFormat().format(control.value.length)} characters before variables are replaced`;
   state.quickFillSaveVersion += 1;
-  const version = state.quickFillSaveVersion;
-  const snapshot = profileDocument();
-  clearTimeout(state.quickFillSaveTimer);
+  cancelAutosave();
   setQuickFillSaveState("Unsaved changes");
-  state.quickFillSaveTimer = setTimeout(async () => {
-    setQuickFillSaveState("Saving…");
-    try {
-      const saved = await persistQuickFillProfile(snapshot);
-      Object.assign(saved, profileContextDocument());
-      state.quickFillSavedProfile = cloneJson(saved);
-      if (version === state.quickFillSaveVersion) {
-        state.quickFillProfile = saved;
-        state.eligibility.clear();
-        if (state.selectedKey) loadEligibility(state.selectedKey);
-        setQuickFillSaveState("Saved automatically");
-      }
-    } catch (error) {
-      if (version === state.quickFillSaveVersion && state.quickFillSavedProfile) {
-        state.quickFillProfile = cloneJson(state.quickFillSavedProfile);
-        renderQuickFill();
-      }
-      assertiveRegion.textContent = `${error.message} Changes rolled back.`;
-      showSnackbar(`${error.message} Changes rolled back.`);
-    }
-  }, 600);
+  state.quickFillSaveTimer = setTimeout(() => { state.quickFillSaveTimer = null; queueProfileSave(); }, 600);
 }
 
 function updateQuickFillContext(control) {
@@ -2553,30 +2580,26 @@ function exportQuickFillProfile() {
 
 async function importQuickFillProfile(file) {
   const previous = profileDocument();
-  const context = profileContextDocument();
-  setQuickFillSaveState("Importing…");
+  let candidate;
   try {
     const parsed = JSON.parse(await file.text());
-    const candidate = parsed.profile && typeof parsed.profile === "object" ? parsed.profile : parsed;
-    const saved = await persistQuickFillProfile(candidate);
-    Object.assign(saved, context);
-    state.quickFillProfile = saved;
-    state.quickFillSavedProfile = cloneJson(saved);
-    state.quickFillSaveVersion += 1;
-    state.eligibility.clear();
-    if (state.selectedKey) loadEligibility(state.selectedKey);
-    renderQuickFill();
-    offerUndoSnackbar("Quick-fill JSON imported.", ["quick-fill-profile"], async () => {
-      try {
-        const restored = await persistQuickFillProfile(previous);
-        Object.assign(restored, context);
-        state.quickFillProfile = restored; state.quickFillSavedProfile = cloneJson(restored); renderQuickFill(); showSnackbar("Import undone.");
-      } catch (error) { showSnackbar(error.message || "The import could not be undone."); }
-    });
-  } catch (error) {
+    candidate = profileDocument(parsed.profile && typeof parsed.profile === "object" ? parsed.profile : parsed);
+  } catch {
     setQuickFillSaveState("Import failed");
-    showSnackbar(error instanceof Error ? error.message : "The profile file could not be imported.");
+    showSnackbar("The profile file isn't valid JSON.");
+    return;
   }
+  Object.assign(state.quickFillProfile, candidate);
+  state.quickFillSaveVersion += 1;
+  cancelAutosave();
+  if (await queueProfileSave()) return;
+  renderQuickFill();
+  offerUndoSnackbar("Quick-fill JSON imported.", ["quick-fill-profile"], async () => {
+    Object.assign(state.quickFillProfile, previous);
+    state.quickFillSaveVersion += 1;
+    renderQuickFill();
+    if (!await queueProfileSave()) showSnackbar("Import undone.");
+  });
 }
 
 function renderQuickFill() {

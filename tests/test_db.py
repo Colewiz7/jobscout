@@ -48,6 +48,7 @@ def conn():
         cur.execute("drop table if exists saved_views")
         cur.execute("drop table if exists board_notices")
         cur.execute("drop table if exists postings")
+        cur.execute("drop table if exists profile_meta")
         cur.execute("drop table if exists schema_migrations")
     connection.commit()
     database.ensure_schema(connection)
@@ -85,6 +86,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 12, "name": "queued_ai_overviews"},
             {"version": 13, "name": "posting_taglines"},
             {"version": 14, "name": "board_positions"},
+            {"version": 15, "name": "profile_revision"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -511,6 +513,17 @@ def test_profile_save_updates_inserts_and_deletes_by_id(conn):
     assert sorted(row["name"] for row in saved["documents"]) == ["Three", "Two"]
     assert profile["documents"][0]["id"] in {row["id"] for row in saved["documents"]}
     assert 999999 not in {row["id"] for row in saved["documents"]}
+
+
+def test_profile_save_checks_and_bumps_the_revision(conn):
+    start = database.profile_data(conn)["revision"]
+    saved = database.replace_profile_data(conn, {"fields": [{"key": "email", "group": "Contact", "label": "Email", "value": "a"}]}, revision=start)
+    assert saved["revision"] == start + 1
+
+    with pytest.raises(database.ProfileConflict):
+        database.replace_profile_data(conn, {"fields": []}, revision=start)
+    assert database.profile_data(conn)["fields"][0]["value"] == "a"
+    assert database.profile_data(conn)["revision"] == start + 1
 
 
 def test_quick_fill_job_context_is_server_backed(conn):

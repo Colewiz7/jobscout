@@ -140,6 +140,8 @@ def merge_missing(conn, profile: dict) -> tuple[int, int]:
                 (template["name"], template["body"], order),
             )
             added_templates += 1
+        if added_fields or added_templates:
+            db.bump_profile_revision(cur)  # open editors must reload
     conn.commit()
     return added_fields, added_templates
 

@@ -755,6 +755,18 @@ def delete_saved_view(conn: psycopg.Connection, view_id: int) -> bool:
     return changed
 
 
+class ProfileConflict(Exception):
+    """The profile changed since the client read it."""
+
+
+def bump_profile_revision(cur, expected: int | None = None) -> None:
+    cur.execute("select revision from profile_meta where id for update")
+    current = cur.fetchone()["revision"]
+    if expected is not None and expected != current:
+        raise ProfileConflict("profile is at revision %d, not %d" % (current, expected))
+    cur.execute("update profile_meta set revision = revision + 1 where id")
+
+
 def profile_data(
     conn: psycopg.Connection,
     *,
@@ -762,6 +774,8 @@ def profile_data(
     company: str | None = None,
 ) -> dict:
     with conn.cursor() as cur:
+        cur.execute("select revision from profile_meta where id")
+        revision = cur.fetchone()["revision"]
         cur.execute(
             """
             select key, group_name as "group", label, value, pinned, sort_order
@@ -822,6 +836,7 @@ def profile_data(
             )
             company_account = cur.fetchone()
     return {
+        "revision": revision,
         "fields": fields,
         "answer_templates": templates,
         "documents": documents,
@@ -1078,10 +1093,15 @@ def _sync_documents(cur, documents: list[dict]) -> None:
             )
 
 
-def replace_profile_data(conn: psycopg.Connection, payload: dict) -> dict:
+def replace_profile_data(conn: psycopg.Connection, payload: dict, *, revision: int | None = None) -> dict:
     """Atomically replace the feature-gated single-user Quick-fill profile."""
     clean = normalize_profile_data(payload)
     with conn.cursor() as cur:
+        try:
+            bump_profile_revision(cur, revision)
+        except ProfileConflict:
+            conn.rollback()
+            raise
         cur.execute("delete from profile_fields")
         cur.executemany(
             """

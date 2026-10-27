@@ -401,6 +401,17 @@ MIGRATIONS = (
         alter table application_states add column if not exists board_position integer;
         """,
     ),
+    Migration(
+        15,
+        "profile_revision",
+        """
+        create table if not exists profile_meta (
+            id       boolean primary key default true check (id),
+            revision bigint not null default 0
+        );
+        insert into profile_meta (id) values (true) on conflict (id) do nothing;
+        """,
+    ),
 )
 
 

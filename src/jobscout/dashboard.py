@@ -507,10 +507,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.profile_data(conn, dedupe_key=dedupe_key, company=company)
 
-    def save_profile(self, payload: dict) -> dict:
+    def save_profile(self, payload: dict, revision: int | None = None) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.replace_profile_data(conn, payload)
+            return database.replace_profile_data(conn, payload, revision=revision)
 
     def mark_copy(self, dedupe_key: str, target_key: str) -> None:
         with database.connect(self.dsn) as conn:
@@ -734,6 +734,7 @@ class DemoStore:
         self._profile_path = profile_path or DEFAULT_PROFILE
         self._profile = load_profile(self._profile_path)
         self._next_profile_id = 0
+        self._profile_revision = 0
         self._copied_fields: dict[str, set[str]] = {}
         self._answer_overrides: dict[str, dict[str, str]] = {}
         self._company_accounts: dict[str, dict] = {}
@@ -1184,6 +1185,7 @@ class DemoStore:
 
     def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
         profile = copy.deepcopy(self._profile)
+        profile["revision"] = self._profile_revision
         profile["copied_fields"] = sorted(self._copied_fields.get(dedupe_key or "", set()))
         profile["answer_overrides"] = copy.deepcopy(self._answer_overrides.get(dedupe_key or "", {}))
         profile["company_account"] = copy.deepcopy(
@@ -1191,7 +1193,9 @@ class DemoStore:
         )
         return profile
 
-    def save_profile(self, payload: dict) -> dict:
+    def save_profile(self, payload: dict, revision: int | None = None) -> dict:
+        if revision is not None and revision != self._profile_revision:
+            raise database.ProfileConflict("profile is at revision %d, not %d" % (self._profile_revision, revision))
         clean = database.normalize_profile_data(payload)
         # mirrors the id-preserving postgres write
         for name, prefix in (("documents", "document"), ("answer_templates", "template")):
@@ -1205,6 +1209,7 @@ class DemoStore:
                         row["id"] = "%s-%d" % (prefix, self._next_profile_id)
                 taken.add(str(row["id"]))
         self._profile = clean
+        self._profile_revision += 1
         return self.profile()
 
     def mark_copy(self, dedupe_key: str, target_key: str) -> None:
@@ -2106,9 +2111,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/v1/profile/context":
                 profile = self.app.store.save_profile_context(payload)
             else:
-                profile = self.app.store.save_profile(
-                    payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
-                )
+                document = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+                revision = document.get("revision")
+                # without it, tabs overwrite each other
+                if not isinstance(revision, int) or isinstance(revision, bool):
+                    raise ValueError("revision is required; reload the profile and retry")
+                profile = self.app.store.save_profile(document, revision)
+        except database.ProfileConflict:
+            self._json({
+                "error": "Your profile changed in another tab or window.",
+                "profile": self.app.store.profile(),
+            }, HTTPStatus.CONFLICT)
+            return
         except (json.JSONDecodeError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
             return
