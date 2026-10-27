@@ -2,7 +2,7 @@
 
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
-import { eligibilityVerdict, loadLatest, splitEligible } from "./selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
@@ -2748,7 +2748,7 @@ function nextKeyAfter(keys) {
   return remaining[Math.min(current, remaining.length - 1)]?.dedupe_key || "";
 }
 
-async function performDecision(status, label, targets = null, note = "") {
+async function performDecision(status, label, targets = null, { note = "", scope = "" } = {}) {
   const keys = targets || (state.selectedKeys.size ? [...state.selectedKeys] : [state.selectedKey]);
   const jobs = keys.map((key) => state.jobs.find((job) => job.dedupe_key === key)).filter(Boolean);
   if (!jobs.length || jobs.some((job) => state.pending.has(job.dedupe_key))) return;
@@ -2777,7 +2777,7 @@ async function performDecision(status, label, targets = null, note = "") {
     state.undo = { previous, next: jobs.map((job) => ({ key: job.dedupe_key, status: job.status })) };
     const noun = jobs.length === 1 ? "role" : `${new Intl.NumberFormat().format(jobs.length)} roles`;
     const closed = results.filter((result) => result.status === "fulfilled" && result.value.status === "archived" && result.value.liveness?.status === "closed").length;
-    const message = closed ? `${closed === 1 ? "Posting" : `${closed} postings`} closed and skipped.` : `${label} ${noun}.`;
+    const message = closed ? `${closed === 1 ? "Posting" : `${closed} postings`} closed and skipped.` : `${label} ${noun}${scope}.`;
     showSnackbar(note ? `${message} ${note}` : message, { action: "Undo", onAction: undoLastDecision, duration: 6000 });
   }
   jobs.forEach((job) => state.pending.delete(job.dedupe_key));
@@ -2791,7 +2791,7 @@ async function queueSelection() {
   const format = (value) => new Intl.NumberFormat().format(value);
   const note = [blocked.length ? `Skipped ${format(blocked.length)} that failed the eligibility check.` : "", unknown.length ? `Skipped ${format(unknown.length)} that couldn't be checked.` : ""].filter(Boolean).join(" ");
   if (!eligible.length) { showSnackbar(`Nothing queued. ${note}`); return; }
-  await performDecision("queued", "Queued", eligible.map((job) => job.dedupe_key), note);
+  await performDecision("queued", "Queued", eligible.map((job) => job.dedupe_key), { note });
 }
 
 async function undoLastDecision() {
@@ -3060,10 +3060,10 @@ document.addEventListener("click", (event) => {
     const labels = { saved: "Saved", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return;
   }
   if (event.target.closest("[data-dismiss-company]")) {
-    const selected = state.jobs.filter((job) => state.selectedKeys.has(job.dedupe_key));
-    const companies = new Set(selected.map((job) => job.company));
-    const targets = state.jobs.filter((job) => companies.has(job.company)).map((job) => job.dedupe_key);
-    performDecision("archived", "Dismissed", targets); return;
+    const { companies, targets } = companyDismissTargets(state.jobs, state.selectedKeys);
+    const where = companyLabel(companies);
+    if (!targets.length) { showSnackbar(`No unapplied roles to dismiss at ${where}.`); return; }
+    performDecision("archived", "Dismissed", targets.map((job) => job.dedupe_key), { scope: ` at ${where}` }); return;
   }
   if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
   const tab = event.target.closest("[data-status-tab]");

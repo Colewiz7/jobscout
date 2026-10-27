@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { eligibilityVerdict, loadLatest, splitEligible } from "../src/jobscout/static/selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible } from "../src/jobscout/static/selection.js";
 
-const job = (key, status = "new") => ({ dedupe_key: key, status });
+const job = (key, status = "new", company = "Acme") => ({ dedupe_key: key, status, company });
 const keys = (jobs) => jobs.map((item) => item.dedupe_key);
 
 test("splitEligible keeps blocked jobs out of the batch", () => {
@@ -123,4 +123,27 @@ test("loadLatest stops forwarding after two hops", async () => {
   assert.equal(await pending, false);
   assert.equal(calls.length, 3);
   assert.equal(cache.has("a"), false);
+});
+
+test("companyDismissTargets only takes pre-application jobs", () => {
+  const jobs = ["new", "saved", "queued", "applying", "applied", "interviewing", "offer", "rejected", "archived"].map((status) => job(status, status));
+  jobs.push(job("other", "new", "Globex"));
+  const { companies, targets } = companyDismissTargets(jobs, new Set(["new"]));
+  assert.deepEqual(companies, ["Acme"]);
+  assert.deepEqual(keys(targets), ["new", "saved", "queued"]);
+});
+
+test("companyDismissTargets covers every selected company", () => {
+  const jobs = [job("a", "applied"), job("b", "saved"), job("c", "new", "Globex"), job("d", "new", "Initech")];
+  const { companies, targets } = companyDismissTargets(jobs, new Set(["a", "c"]));
+  assert.deepEqual(companies, ["Acme", "Globex"]);
+  assert.deepEqual(keys(targets), ["b", "c"]);
+});
+
+test("companyLabel names three companies then counts the rest", () => {
+  assert.equal(companyLabel(["Acme"]), "Acme");
+  assert.equal(companyLabel(["Acme", "Globex"]), "Acme and Globex");
+  assert.equal(companyLabel(["Acme", "Globex", "Initech"]), "Acme, Globex and Initech");
+  assert.equal(companyLabel(["Acme", "Globex", "Initech", "Hooli", "Umbrella"]), "Acme, Globex, Initech and 2 more");
+  assert.equal(companyLabel(["A", "B", "C", "D"]), "A, B, C and 1 more");
 });

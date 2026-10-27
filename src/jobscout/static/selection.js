@@ -25,3 +25,17 @@ export function loadLatest(cache, key, fetch, force = false, hops = 2) {
   cache.set(key, request);
   return request.pending;
 }
+
+// applying counts as tracked
+const DISMISSABLE = new Set(["new", "saved", "queued"]);
+
+export function companyDismissTargets(jobs, selectedKeys) {
+  const companies = new Set(jobs.filter((job) => selectedKeys.has(job.dedupe_key)).map((job) => job.company));
+  return { companies: [...companies], targets: jobs.filter((job) => companies.has(job.company) && DISMISSABLE.has(job.status)) };
+}
+
+export function companyLabel(companies) {
+  const names = companies.slice(0, 3);
+  if (companies.length > 3) return `${names.join(", ")} and ${new Intl.NumberFormat().format(companies.length - 3)} more`;
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join("");
+}
