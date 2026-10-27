@@ -1053,12 +1053,24 @@ def _sync_templates(cur, templates: list[dict]) -> None:
     cur.execute("select id, name from answer_templates")
     existing = {row["id"]: row["name"] for row in cur.fetchall()}
     kept = {_row_id(row["id"]) for row in templates} & existing.keys()
+    # orphaned overrides let undo reconnect
     cur.execute("delete from answer_templates where not (id = any(%s))", (list(kept),))
+    renames = {_row_id(row["id"]): row["name"] for row in templates if _row_id(row["id"]) in kept and existing[_row_id(row["id"])] != row["name"]}
     # names are unique, park renames first
-    for row in templates:
-        key = _row_id(row["id"])
-        if key in kept and existing[key] != row["name"]:
-            cur.execute("update answer_templates set name = %s where id = %s", ("\x01%d" % key, key))
+    for key in renames:
+        cur.execute("update answer_templates set name = %s where id = %s", ("\x01%d" % key, key))
+        cur.execute("update answer_template_overrides set template_name = %s where template_name = %s", ("\x01%d" % key, existing[key]))
+    for key, name in renames.items():
+        # the live answer beats orphans
+        cur.execute(
+            """
+            delete from answer_template_overrides o
+             where o.template_name = %s
+               and exists (select 1 from answer_template_overrides p where p.dedupe_key = o.dedupe_key and p.template_name = %s)
+            """,
+            (name, "\x01%d" % key),
+        )
+        cur.execute("update answer_template_overrides set template_name = %s where template_name = %s", (name, "\x01%d" % key))
     for row in templates:
         key = _row_id(row["id"])
         if key in kept:

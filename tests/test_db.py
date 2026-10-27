@@ -526,6 +526,41 @@ def test_profile_save_checks_and_bumps_the_revision(conn):
     assert database.profile_data(conn)["revision"] == start + 1
 
 
+def _override(conn, dedupe_key, overrides):
+    return database.save_quick_fill_context(conn, dedupe_key=dedupe_key, company="Acme", answer_overrides=overrides, company_account={})
+
+
+def test_template_rename_carries_job_overrides(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    profile = database.replace_profile_data(conn, {"answer_templates": [{"name": "Why", "body": "x"}, {"name": "Fit", "body": "y"}]})
+    _override(conn, posting.dedupe_key, {"Why": "acme why", "Fit": "acme fit"})
+    why, fit = sorted(profile["answer_templates"], key=lambda row: row["name"], reverse=True)
+    # a swap needs both parked first
+    why["name"], fit["name"] = "Fit", "Why"
+
+    database.replace_profile_data(conn, profile)
+
+    overrides = database.profile_data(conn, dedupe_key=posting.dedupe_key)["answer_overrides"]
+    assert overrides == {"Fit": "acme why", "Why": "acme fit"}
+
+
+def test_deleted_template_overrides_return_with_the_name(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    profile = database.replace_profile_data(conn, {"answer_templates": [{"name": "Why", "body": "x"}]})
+    _override(conn, posting.dedupe_key, {"Why": "acme why"})
+    removed = profile["answer_templates"].pop()
+
+    database.replace_profile_data(conn, profile)
+    assert database.profile_data(conn, dedupe_key=posting.dedupe_key)["answer_templates"] == []
+    profile["answer_templates"].append({"name": removed["name"], "body": removed["body"]})
+    restored = database.replace_profile_data(conn, profile)
+
+    assert [row["name"] for row in restored["answer_templates"]] == ["Why"]
+    assert database.profile_data(conn, dedupe_key=posting.dedupe_key)["answer_overrides"] == {"Why": "acme why"}
+
+
 def test_quick_fill_job_context_is_server_backed(conn):
     posting = _p()
     database.upsert_open(conn, [posting])

@@ -935,3 +935,26 @@ def test_profile_save_from_a_stale_revision_is_a_conflict(quick_fill_dashboard):
     assert stale.json()["profile"]["revision"] == landed.json()["profile"]["revision"]
     assert unversioned.status_code == 400
     assert client.get("/api/v1/profile").json()["profile"]["fields"][0]["value"] == "Second tab"
+
+
+def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
+    base, _ = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    job = {"job": "demo:2", "company": "Datadog"}
+    profile = client.get("/api/v1/profile").json()["profile"]
+    name = profile["answer_templates"][0]["name"]
+    client.put("/api/v1/profile/context", headers=headers, json={"dedupe_key": "demo:2", "company": "Datadog", "answer_overrides": {name: "Datadog answer"}, "company_account": {}})
+
+    profile["answer_templates"][0]["name"] = "Why Datadog"
+    renamed = client.put("/api/v1/profile", headers=headers, json={"profile": profile}).json()["profile"]
+    after_rename = client.get("/api/v1/profile", params=job).json()["profile"]["answer_overrides"]
+    template = renamed["answer_templates"].pop()
+    deleted = client.put("/api/v1/profile", headers=headers, json={"profile": renamed}).json()["profile"]
+    deleted["answer_templates"].append({"name": template["name"], "body": template["body"]})
+    client.put("/api/v1/profile", headers=headers, json={"profile": deleted})
+    after_restore = client.get("/api/v1/profile", params=job).json()["profile"]
+
+    assert after_rename == {"Why Datadog": "Datadog answer"}
+    assert [row["name"] for row in after_restore["answer_templates"]] == ["Why Datadog"]
+    assert after_restore["answer_overrides"] == {"Why Datadog": "Datadog answer"}

@@ -1208,6 +1208,11 @@ class DemoStore:
                         self._next_profile_id += 1
                         row["id"] = "%s-%d" % (prefix, self._next_profile_id)
                 taken.add(str(row["id"]))
+        names = {str(row.get("id")): row["name"] for row in self._profile.get("answer_templates", [])}
+        renames = {names[str(row["id"])]: row["name"] for row in clean["answer_templates"] if names.get(str(row["id"]), row["name"]) != row["name"]}
+        for overrides in self._answer_overrides.values():
+            moved = {renames[name]: overrides.pop(name) for name in list(overrides) if name in renames}
+            overrides.update(moved)
         self._profile = clean
         self._profile_revision += 1
         return self.profile()
