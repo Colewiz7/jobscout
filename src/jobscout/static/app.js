@@ -5,7 +5,7 @@ import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
-import { flip, placeNodes } from "./drag.js";
+import { bindDrag, flip, placeNodes } from "./drag.js";
 import { createLoadGate, createOrderSaver, moveAnnouncement, moveKey, restoreOrder } from "./drag-logic.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
@@ -100,7 +100,7 @@ const state = {
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
-  queueDraggedKey: "", sessionStarting: false, statusSaving: new Set(),
+  sessionStarting: false, statusSaving: new Set(),
   applySession: null, sessionTimer: null,
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
@@ -1026,7 +1026,7 @@ function queueCard(job, index, count) {
         ? '<span class="queue-liveness"><span aria-hidden="true">?</span>Couldn’t verify</span>'
       : '<span class="queue-liveness"><span aria-hidden="true">?</span>Not checked</span>';
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
-    <button class="queue-drag-handle interactive" type="button" draggable="true" aria-label="Reorder ${escapeHtml(job.title)}" title="Drag to reorder">${icons.queue}</button>
+    <button class="queue-drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Drag to reorder">${icons.queue}</button>
     <div class="queue-card-copy"><h2>${escapeHtml(job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
     <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
   </article>`;
@@ -3448,45 +3448,34 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("dragstart", (event) => {
   const trackerCard = event.target.closest(".board-card[data-tracker-key]");
-  if (trackerCard) {
-    state.trackerDraggedKey = trackerCard.dataset.trackerKey;
-    trackerCard.classList.add("is-dragged");
-    event.dataTransfer?.setData("text/plain", state.trackerDraggedKey);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    return;
-  }
-  const card = event.target.closest(".queue-card[data-queue-key]");
-  if (!card) return;
-  state.queueDraggedKey = card.dataset.queueKey;
-  card.classList.add("is-dragged");
-  event.dataTransfer?.setData("text/plain", state.queueDraggedKey);
+  if (!trackerCard) return;
+  state.trackerDraggedKey = trackerCard.dataset.trackerKey;
+  trackerCard.classList.add("is-dragged");
+  event.dataTransfer?.setData("text/plain", state.trackerDraggedKey);
   if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 });
 
 document.addEventListener("dragover", (event) => {
-  if (state.trackerDraggedKey && event.target.closest("[data-board-status]")) { event.preventDefault(); return; }
-  if (state.queueDraggedKey && event.target.closest(".queue-card[data-queue-key]")) event.preventDefault();
+  if (state.trackerDraggedKey && event.target.closest("[data-board-status]")) event.preventDefault();
 });
 
 document.addEventListener("drop", (event) => {
   const boardColumn = event.target.closest("[data-board-status]");
-  if (boardColumn && state.trackerDraggedKey) {
-    event.preventDefault(); const key = state.trackerDraggedKey; state.trackerDraggedKey = "";
-    setTrackerStatus(key, boardColumn.dataset.boardStatus); return;
-  }
-  const target = event.target.closest(".queue-card[data-queue-key]");
-  if (!target || !state.queueDraggedKey) return;
-  event.preventDefault();
-  const jobs = queueJobs();
-  reorderQueue(state.queueDraggedKey, jobs.findIndex((job) => job.dedupe_key === target.dataset.queueKey));
-  state.queueDraggedKey = "";
+  if (!boardColumn || !state.trackerDraggedKey) return;
+  event.preventDefault(); const key = state.trackerDraggedKey; state.trackerDraggedKey = "";
+  setTrackerStatus(key, boardColumn.dataset.boardStatus);
 });
 
 document.addEventListener("dragend", (event) => {
-  event.target.closest(".queue-card")?.classList.remove("is-dragged");
   event.target.closest(".board-card")?.classList.remove("is-dragged");
-  state.queueDraggedKey = "";
   state.trackerDraggedKey = "";
+});
+
+bindDrag({
+  handle: ".queue-drag-handle", item: ".queue-card[data-queue-key]",
+  lists: () => [...document.querySelectorAll(".queue-list")],
+  key: (item) => item.dataset.queueKey,
+  drop: ({ key, to }) => reorderQueue(key, to.index),
 });
 
 document.addEventListener("input", (event) => {

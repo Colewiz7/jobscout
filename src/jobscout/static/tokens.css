@@ -84,7 +84,11 @@
   --ease-emph: cubic-bezier(0.2, 0, 0, 1);
   --ease-emph-dec: cubic-bezier(0.05, 0.7, 0.1, 1);
   --ease-emph-acc: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --spatial-fast: 150ms cubic-bezier(0.24, 0.12, 0.23, 1);
+  --spatial-default: 200ms cubic-bezier(0.21, 0.05, 0.28, 1);
+  --spatial-slow: 300ms cubic-bezier(0.18, 0.01, 0.29, 1);
   --effects-fast: 100ms cubic-bezier(0.19, 0.06, 0.22, 1);
+  --effects-default: 150ms cubic-bezier(0.16, 0, 0.23, 1);
   --d-short1: 50ms;
   --d-short2: 100ms;
   --d-short3: 150ms;

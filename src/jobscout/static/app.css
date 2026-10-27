@@ -2282,14 +2282,65 @@ dialog[open]::backdrop {
   padding: var(--s-4);
   border-radius: var(--r-lg);
   background: var(--surface-container-low);
-  transition: transform var(--spatial-default), opacity var(--effects-fast);
 }
 
-.queue-card.is-dragged {
-  z-index: 1;
+/* --- drag lift --- */
+
+.queue-card {
+  position: relative;
+  isolation: isolate;
+  transition: scale var(--spatial-fast);
+}
+
+.queue-card::before,
+.queue-card::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+}
+
+.queue-card::before {
+  z-index: -1;
+  background: currentColor;
+  transition: opacity var(--effects-fast);
+}
+
+/* shadow fades, never animates */
+.queue-card::after {
+  z-index: -2;
   box-shadow: var(--shadow-float);
-  opacity: .84;
-  transform: scale(1.02);
+  transition: opacity var(--spatial-fast);
+}
+
+.queue-card.is-lifted {
+  z-index: 30;
+  scale: 1.02;
+}
+
+.queue-card.is-lifted::before {
+  opacity: .16;
+}
+
+.queue-card.is-lifted::after {
+  opacity: 1;
+}
+
+.queue-card.is-settling {
+  z-index: 30;
+}
+
+.drag-placeholder {
+  flex: none;
+  background: var(--surface-lowest);
+}
+
+:root.is-dragging,
+:root.is-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
 .queue-drag-handle {
@@ -2301,10 +2352,10 @@ dialog[open]::backdrop {
   background: transparent;
   color: var(--on-surface-variant);
   cursor: grab;
-}
-
-.queue-drag-handle:active {
-  cursor: grabbing;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
 }
 
 .queue-drag-handle svg {
@@ -4591,6 +4642,14 @@ body.quick-fill-popout {
 
 :root[data-motion="reduce"] .action-menu {
   transition-property: opacity, display, overlay !important;
+  transition-duration: var(--d-short2) !important;
+}
+
+:root[data-motion="reduce"] .is-lifted {
+  scale: none;
+}
+
+:root[data-motion="reduce"] .queue-card::after {
   transition-duration: var(--d-short2) !important;
 }
 

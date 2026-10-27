@@ -215,6 +215,7 @@ export function bindObjectMenus(resolve) {
     swallow = null;
     cancelPress();
     if (event.pointerType !== "touch" || !event.isPrimary || typing(event.target)) return;
+    if (event.target.closest("[data-drag-handle]")) return; // long-press there drags
     const { clientX: x, clientY: y, target } = event;
     press = { x, y, timer: setTimeout(() => { press = null; if (show(target, { x, y })) swallow = { target, until: performance.now() + 1500, lifting: true }; }, LONG_PRESS) };
   });
