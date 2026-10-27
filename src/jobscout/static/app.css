@@ -1064,8 +1064,14 @@ dialog[open]::backdrop {
   right: var(--s-1);
 }
 
+.board-card > .board-drag-handle {
+  position: absolute;
+  top: var(--s-1);
+  right: calc(var(--s-1) + 40px);
+}
+
 .board-card > a {
-  padding-right: 40px;
+  padding-right: calc(40px + var(--handle-size));
 }
 
 .tracker-table .row-menu-cell {
@@ -2274,7 +2280,6 @@ dialog[open]::backdrop {
 }
 
 .queue-card {
-  --handle-size: 40px;
   display: grid;
   grid-template-columns: var(--handle-size) minmax(0, 1fr) auto;
   align-items: center;
@@ -2287,14 +2292,17 @@ dialog[open]::backdrop {
 
 /* --- drag lift --- */
 
-.queue-card {
+.queue-card,
+.board-card {
   position: relative;
   isolation: isolate;
   transition: scale var(--spatial-fast);
 }
 
 .queue-card::before,
-.queue-card::after {
+.queue-card::after,
+.board-card::before,
+.board-card::after {
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -2303,33 +2311,35 @@ dialog[open]::backdrop {
   pointer-events: none;
 }
 
-.queue-card::before {
+.queue-card::before,
+.board-card::before {
   z-index: -1;
   background: currentColor;
   transition: opacity var(--effects-fast);
 }
 
 /* shadow fades, never animates */
-.queue-card::after {
+.queue-card::after,
+.board-card::after {
   z-index: -2;
   box-shadow: var(--shadow-float);
   transition: opacity var(--spatial-fast);
 }
 
-.queue-card.is-lifted {
+.is-lifted {
   z-index: 30;
   scale: 1.02;
 }
 
-.queue-card.is-lifted::before {
+.is-lifted::before {
   opacity: .16;
 }
 
-.queue-card.is-lifted::after {
+.is-lifted::after {
   opacity: 1;
 }
 
-.queue-card.is-settling {
+.is-settling {
   z-index: 30;
 }
 
@@ -2344,7 +2354,7 @@ dialog[open]::backdrop {
   user-select: none;
 }
 
-.queue-drag-handle {
+.drag-handle {
   display: grid;
   width: var(--handle-size);
   height: var(--handle-size);
@@ -2359,13 +2369,17 @@ dialog[open]::backdrop {
   -webkit-user-select: none;
 }
 
+:root {
+  --handle-size: 40px;
+}
+
 @media (pointer: coarse) {
-  .queue-card {
+  :root {
     --handle-size: 48px; /* carrel touch target */
   }
 }
 
-.queue-drag-handle svg {
+.drag-handle svg {
   width: 24px;
   height: 24px;
 }
@@ -3388,16 +3402,23 @@ dialog[open]::backdrop {
   padding: var(--s-3);
   border-radius: var(--r-md);
   background: var(--surface-container-high);
-  cursor: grab;
   content-visibility: auto;
   contain-intrinsic-size: auto 148px;
-  transition: transform var(--d-short4) var(--ease-standard), opacity var(--d-short2) var(--ease-standard);
 }
 
-.board-card.is-dragged {
-  box-shadow: var(--shadow-float);
-  opacity: .84;
-  transform: scale(1.02);
+/* paint containment clips the shadow */
+.board-card.is-lifted,
+.board-card.is-settling {
+  content-visibility: visible;
+}
+
+.board-column {
+  transition: background-color var(--effects-fast), box-shadow var(--effects-fast);
+}
+
+.board-column.is-drop-target {
+  background: var(--surface-container);
+  box-shadow: inset 0 0 0 1px var(--outline-variant);
 }
 
 .board-card > a {
@@ -4656,7 +4677,8 @@ body.quick-fill-popout {
   scale: none;
 }
 
-:root[data-motion="reduce"] .queue-card::after {
+:root[data-motion="reduce"] .queue-card::after,
+:root[data-motion="reduce"] .board-card::after {
   transition-duration: var(--d-short2) !important;
 }
 

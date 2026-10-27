@@ -6,7 +6,7 @@ import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, placeNodes } from "./drag.js";
-import { cancelAnnouncement, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder } from "./drag-logic.js";
+import { cancelAnnouncement, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -104,7 +104,7 @@ const state = {
   applySession: null, sessionTimer: null,
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
-  trackerQuery: "", trackerDraggedKey: "",
+  trackerQuery: "",
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   rules: null, rulesLoading: false, rulesError: "",
@@ -1026,7 +1026,7 @@ function queueCard(job, index, count) {
         ? '<span class="queue-liveness"><span aria-hidden="true">?</span>Couldn’t verify</span>'
       : '<span class="queue-liveness"><span aria-hidden="true">?</span>Not checked</span>';
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
-    <button class="queue-drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button>
+    <button class="queue-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button>
     <div class="queue-card-copy"><h2>${escapeHtml(job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
     <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
   </article>`;
@@ -1101,12 +1101,7 @@ function trackerApplications() {
     (state.trackerStatus === "all" || job.status === state.trackerStatus)
     && (!query || `${job.company} ${job.title} ${job.next_step || ""}`.toLowerCase().includes(query))
   );
-  applications.sort((left, right) => {
-    if (state.trackerSort === "company") return `${left.company} ${left.title}`.localeCompare(`${right.company} ${right.title}`);
-    if (state.trackerSort === "status") return `${left.status} ${left.company}`.localeCompare(`${right.status} ${right.company}`);
-    if (state.trackerSort === "applied") return new Date(right.applied_at || 0) - new Date(left.applied_at || 0);
-    return new Date(right.application_updated_at || 0) - new Date(left.application_updated_at || 0);
-  });
+  applications.sort(trackerCompare(state.trackerSort));
   return applications;
 }
 
@@ -1160,7 +1155,7 @@ function trackerTableMarkup(applications) {
 function trackerBoardMarkup(applications) {
   return `<div class="tracker-board" aria-label="Applications by status">${boardStatuses.map((status) => {
     const jobs = applications.filter((job) => job.status === status);
-    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" draggable="true" data-tracker-key="${escapeHtml(job.dedupe_key)}"><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}${moreButtonMarkup(job.title)}</article>`).join("")}</div></section>`;
+    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" data-tracker-key="${escapeHtml(job.dedupe_key)}"><button class="board-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${escapeHtml(job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}${moreButtonMarkup(job.title)}</article>`).join("")}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1190,7 +1185,12 @@ function renderTracker({ focus = false } = {}) {
   parseTrackerUrl();
   if (state.trackerError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load the tracker.</h1><p>${escapeHtml(state.trackerError)}</p><button class="tonal-button interactive" type="button" data-retry-tracker>Retry</button></div></section>`;
   else if (!state.trackerData) routeView.innerHTML = state.trackerShowLoader ? '<section class="page-shell"><div class="tracker-skeleton skeleton"></div></section>' : "";
-  else routeView.innerHTML = trackerMarkup();
+  else {
+    // status saves rerender the board
+    const held = document.activeElement?.closest?.(".board-card[data-tracker-key]") && document.activeElement.matches(".board-drag-handle") ? document.activeElement.closest(".board-card").dataset.trackerKey : "";
+    routeView.innerHTML = trackerMarkup();
+    if (held && !focus) document.querySelector(`.board-card[data-tracker-key="${CSS.escape(held)}"] .board-drag-handle`)?.focus({ preventScroll: true });
+  }
   if (focus) document.querySelector("#tracker-title, .error-state h1")?.focus({ preventScroll: true });
 }
 
@@ -3446,30 +3446,26 @@ document.addEventListener("click", (event) => {
   if (command) runCommand(command.dataset.command);
 });
 
-document.addEventListener("dragstart", (event) => {
-  const trackerCard = event.target.closest(".board-card[data-tracker-key]");
-  if (!trackerCard) return;
-  state.trackerDraggedKey = trackerCard.dataset.trackerKey;
-  trackerCard.classList.add("is-dragged");
-  event.dataTransfer?.setData("text/plain", state.trackerDraggedKey);
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-});
+function boardStatusOf(list) {
+  return list.closest("[data-board-status]").dataset.boardStatus;
+}
 
-document.addEventListener("dragover", (event) => {
-  if (state.trackerDraggedKey && event.target.closest("[data-board-status]")) event.preventDefault();
-});
+function boardApplication(item) {
+  return state.trackerData?.applications?.find((job) => job.dedupe_key === item.dataset.trackerKey);
+}
 
-document.addEventListener("drop", (event) => {
-  const boardColumn = event.target.closest("[data-board-status]");
-  if (!boardColumn || !state.trackerDraggedKey) return;
-  event.preventDefault(); const key = state.trackerDraggedKey; state.trackerDraggedKey = "";
-  setTrackerStatus(key, boardColumn.dataset.boardStatus);
-});
+// a column hop shouldnt force manual
+function boardSlot({ list, item, origin }) {
+  const job = boardApplication(item);
+  if (!job || list === origin?.list) return origin?.index ?? 0;
+  const status = boardStatusOf(list);
+  return sortedInsertIndex(trackerApplications().filter((app) => app.status === status), job, status, state.trackerSort);
+}
 
-document.addEventListener("dragend", (event) => {
-  event.target.closest(".board-card")?.classList.remove("is-dragged");
-  state.trackerDraggedKey = "";
-});
+function dropOnBoard({ key, to }) {
+  setTrackerStatus(key, boardStatusOf(to.list));
+  return document.querySelector(`.board-card[data-tracker-key="${CSS.escape(key)}"]`);
+}
 
 bindDrag({
   handle: ".queue-drag-handle", item: ".queue-card[data-queue-key]",
@@ -3481,6 +3477,23 @@ bindDrag({
   moved: (at) => moveAnnouncement(at.index, at.count),
   dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
   cancelled: (at) => cancelAnnouncement(at.index, at.count),
+});
+
+bindDrag({
+  handle: ".board-drag-handle", item: ".board-card[data-tracker-key]",
+  lists: () => [...document.querySelectorAll(".board-column > div")],
+  zone: (list) => list.closest(".board-column"),
+  key: (item) => item.dataset.trackerKey,
+  find: (key) => document.querySelector(`.board-card[data-tracker-key="${CSS.escape(key)}"]`),
+  vertical: false,
+  slot: boardSlot,
+  keyboardSlot: boardSlot,
+  drop: dropOnBoard,
+  announce,
+  lifted: (at) => `Picked up, in ${statusLabel(boardStatusOf(at.list))}. Use Left and Right to change column, Space to drop, Escape to cancel.`,
+  moved: (at) => `Over ${statusLabel(boardStatusOf(at.list))}.`,
+  dropped: (at) => `Dropped, still in ${statusLabel(boardStatusOf(at.list))}.`,
+  cancelled: (at) => `Move cancelled, back in ${statusLabel(boardStatusOf(at.list))}.`,
 });
 
 document.addEventListener("input", (event) => {

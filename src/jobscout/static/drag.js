@@ -252,11 +252,43 @@ export function bindDrag(config) {
     const from = session.origin;
     if (spot.list !== from.list || spot.index !== from.index) {
       // state first, the spring only follows
+      const released = session.item.getBoundingClientRect();
       moveNode(spot.list, session.item, session.placeholder);
       spot.list.insertBefore(session.placeholder, session.item.nextSibling);
-      config.drop({ key: config.key(session.item), item: session.item, from, to: spot });
+      const next = config.drop({ key: config.key(session.item), item: session.item, from, to: spot });
+      if (next && next !== session.item && !session.item.isConnected) { cleanup(session); settleFrom(next, config.key(next), released, velocity); return; }
     }
     settle(session, velocity);
+  }
+
+  // a rerender swapped the node
+  function settleFrom(item, key, released, velocity) {
+    if (reducedMotion()) return;
+    const rect = item.getBoundingClientRect();
+    const offset = { x: released.left + (released.width - rect.width) / 2 - rect.left, y: released.top + (released.height - rect.height) / 2 - rect.top };
+    const phys = fromRatio(SETTLE.ratio, SETTLE.stiffness);
+    const start = performance.now();
+    const sx = new Spring(offset.x, phys);
+    const sy = new Spring(offset.y, phys);
+    sx.setTarget(0, start, settleVelocity(velocity.x, -offset.x, SETTLE.stiffness));
+    sy.setTarget(0, start, settleVelocity(velocity.y, -offset.y, SETTLE.stiffness));
+    item.classList.add("is-settling");
+    item.style.translate = `${offset.x}px ${offset.y}px`;
+    const done = () => { item.style.translate = ""; item.classList.remove("is-settling"); };
+    settling = { frame: 0, done: () => done() };
+    const step = (now) => {
+      if (!item.isConnected) {
+        // follow the card through a rerender
+        const again = config.find?.(key);
+        if (!again) { settling = null; return; }
+        item = again;
+        item.classList.add("is-settling");
+      }
+      if (sx.atRest(now) && sy.atRest(now)) { settling = null; done(); return; }
+      item.style.translate = `${sx.sample(now).value}px ${sy.sample(now).value}px`;
+      settling.frame = requestAnimationFrame(step);
+    };
+    settling.frame = requestAnimationFrame(step);
   }
 
   function placeAtOrigin(session) {
@@ -325,6 +357,9 @@ export function bindDrag(config) {
     event.stopImmediatePropagation();
   }, true);
 
+  // links start a native drag
+  document.addEventListener("dragstart", (event) => { if (drag || pending) event.preventDefault(); }, true);
+
   // page must not scroll mid drag
   document.addEventListener("touchmove", (event) => { if (drag) event.preventDefault(); }, { passive: false });
 
@@ -387,7 +422,7 @@ export function bindDrag(config) {
     if (event.key === "Escape") { dropHeld({ restore: true }); return; }
     const at = spotOf(held.item);
     const count = itemsOf(at.list, null).length;
-    const index = keyboardTarget(at.index, count, event.key);
+    const index = config.vertical === false ? null : keyboardTarget(at.index, count, event.key);
     if (index !== null && index !== at.index) {
       shift(at.list, index);
       config.announce(config.moved(spotOf(held.item), held.item));
