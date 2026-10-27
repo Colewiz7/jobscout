@@ -29,7 +29,7 @@ from .models import Posting
 from .capture import PostingCapture, manual_capture
 from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, extract_pay, parse_description, parse_sections
 from .overview import OverviewService
-from .eligibility import analyze as analyze_eligibility
+from .eligibility import ELIGIBILITY_FIELDS, analyze as analyze_eligibility
 from .http import Fetcher
 from .liveness import LivenessResult, PostingLivenessChecker
 
@@ -231,6 +231,11 @@ def load_profile(path: str | os.PathLike | None = None) -> dict:
                 if item.get("key") == field:
                     item["value"] = value
     return raw
+
+
+def _with_checks(profile: dict) -> dict:
+    # deleting these needs a warning
+    return {**profile, "eligibility_checks": ELIGIBILITY_FIELDS}
 
 
 def _env_enabled(name: str) -> bool:
@@ -1575,10 +1580,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 query = urllib.parse.parse_qs(parsed.query)
                 self._json({
-                    "profile": self.app.store.profile(
+                    "profile": _with_checks(self.app.store.profile(
                         dedupe_key=query.get("job", [None])[0],
                         company=query.get("company", [None])[0],
-                    )
+                    ))
                 })
                 return
             detail_prefix = "/api/v1/jobs/"
@@ -2132,7 +2137,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except database.ProfileConflict:
             self._json({
                 "error": "Your profile changed in another tab or window.",
-                "profile": self.app.store.profile(),
+                "profile": _with_checks(self.app.store.profile()),
             }, HTTPStatus.CONFLICT)
             return
         except (json.JSONDecodeError, TypeError, ValueError) as error:
@@ -2142,7 +2147,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             log.exception("could not save Quick-fill profile")
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save Quick-fill. Retry shortly.")
             return
-        self._json({"profile": profile})
+        self._json({"profile": _with_checks(profile)})
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)

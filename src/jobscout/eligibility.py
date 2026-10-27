@@ -131,6 +131,17 @@ def _finding(key: str, label: str, evidence: str, comparison: str, *, hard: bool
     }
 
 
+# the editor warns before deleting these
+ELIGIBILITY_FIELDS = {
+    "work_authorization": ["sponsorship"],
+    "clearance": ["security clearance"],
+    "degree": ["degree requirement"],
+    "graduation": ["graduation window"],
+    "gpa": ["GPA requirement"],
+    "location": ["location requirement"],
+}
+
+
 def _blockers_and_warnings(text: str, profile: dict) -> tuple[list[dict], list[dict]]:
     fields = _profile_map(profile)
     blockers: list[dict] = []

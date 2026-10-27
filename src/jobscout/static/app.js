@@ -7,7 +7,7 @@ import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js"
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
-import { adoptIds, applyOp, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
+import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
@@ -2331,6 +2331,22 @@ function templateMarkup(template) {
   return profileItemMarkup("answer_templates", template, `<details class="quick-fill-edit-card"><summary>${escapeHtml(template.name)}</summary>${editorField("Name", template.name || "", `data-profile-rename="answer_templates" data-profile-id="${escapeHtml(itemId("answer_templates", template))}" data-profile-property="name" maxlength="120"`)}${editorField("Template", template.body || "", profileAttrs("answer_templates", template, "body"), { multiline: true })}<small>${count}</small></details>`);
 }
 
+function fieldMarkup(field, scope) {
+  const rename = (property, max) => `data-profile-rename="fields" data-profile-id="${escapeHtml(itemId("fields", field))}" data-profile-property="${property}" maxlength="${max}"`;
+  const value = editorField(field.label || field.key, field.value || "", `${profileAttrs("fields", field, "value")} maxlength="10000"`, {
+    multiline: String(field.value || "").length > 120 || String(field.value || "").includes("\n"),
+  });
+  return profileItemMarkup("fields", field, `${value}<details class="quick-fill-edit-card"><summary>Label and group<span class="profile-badge">${escapeHtml(field.group || "")}</span></summary>${editorField("Label", field.label || "", rename("label", 120))}${editorField("Group", field.group || "", `${rename("group", 80)} list="profile-groups-${scope}"`)}</details>`);
+}
+
+function fieldAddMarkup(profile, scope) {
+  const groups = [...new Set((profile.fields || []).map((field) => field.group).filter(Boolean))];
+  const list = `<datalist id="profile-groups-${scope}">${groups.map((group) => `<option value="${escapeHtml(group)}"></option>`).join("")}</datalist>`;
+  const group = `<label class="quick-fill-edit-field profile-add-group"><span>Group</span><input type="text" maxlength="80" placeholder="${escapeHtml(groups.at(-1) || "Other")}" list="profile-groups-${scope}" data-profile-add-extra="fields-group"></label>`;
+  const setup = (profile.fields || []).length ? "" : `<button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`;
+  return `${setup}${profileAddMarkup("fields", scope, { label: "New field", button: "Add field", placeholder: "Portfolio", maxlength: 120, extra: group })}${list}`;
+}
+
 function documentMarkup(document) {
   const name = `data-profile-rename="documents" data-profile-id="${escapeHtml(itemId("documents", document))}" data-profile-property="name" maxlength="160"`;
   const badge = document.default ? '<span class="profile-badge">Default resume</span>' : "";
@@ -2340,17 +2356,14 @@ function documentMarkup(document) {
 function quickFillEditorMarkup(scope = "docked") {
   const profile = state.quickFillProfile || {};
   const job = currentJob();
-  const fields = (profile.fields || []).map((field) => editorField(
-    field.label || field.key, field.value || "", profileAttrs("fields", field, "value"),
-    { multiline: String(field.value || "").length > 120 || String(field.value || "").includes("\n") },
-  )).join("");
+  const fields = profileSectionMarkup("fields", "Profile fields", (profile.fields || []).map((field) => fieldMarkup(field, scope)), "No fields yet. Start with blank labels, then enter only what you want to reuse.", fieldAddMarkup(profile, scope));
   const templates = profileSectionMarkup("answer_templates", "Short answers", (profile.answer_templates || []).map(templateMarkup), "No templates yet.", profileAddMarkup("answer_templates", scope, { label: "New template", button: "Add template", placeholder: "Why this company", maxlength: 120 }));
   const documents = profileSectionMarkup("documents", "Documents", (profile.documents || []).map(documentMarkup), "No documents yet. Add a resume version to pick it when you mark an application.", profileAddMarkup("documents", scope, { label: "New document", button: "Add document", placeholder: "Platform resume", maxlength: 160 }));
   const stories = profileSectionMarkup("stories", "Story bank", (profile.stories || []).map(storyMarkup), "No stories yet.", profileAddMarkup("stories", scope, { label: "New story", button: "Add story", placeholder: "Stabilized a failing service", maxlength: 160 }));
   const overrides = (profile.answer_templates || []).map((template) => `<label class="quick-fill-edit-field"><span>${escapeHtml(template.name)} override</span><textarea rows="3" placeholder="Use the global template" data-context-kind="override" data-context-key="${escapeHtml(template.name)}">${escapeHtml(profile.answer_overrides?.[template.name] || "")}</textarea></label>`).join("");
   const account = profile.company_account || {};
   const accountEditor = job ? `<section><h3>${escapeHtml(job.company)} ATS account</h3><label class="quick-fill-edit-field"><span>Account exists</span><select data-context-kind="account" data-context-property="account_exists"><option value="" ${account.account_exists == null ? "selected" : ""}>Not recorded</option><option value="yes" ${account.account_exists === true ? "selected" : ""}>Yes</option><option value="no" ${account.account_exists === false ? "selected" : ""}>No</option></select></label>${editorField("Sign-in email", account.sign_in_email || "", 'data-context-kind="account" data-context-property="sign_in_email"', { type: "email", autocomplete: "email" })}${editorField("Password manager link", account.password_manager_url || "", 'data-context-kind="account" data-context-property="password_manager_url"', { type: "url", inputmode: "url", autocomplete: "off", spellcheck: "false", autocapitalize: "off" })}<p class="quick-fill-privacy">JobSeer never stores passwords.</p></section>` : "";
-  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}<section><h3>Profile fields</h3>${fields || `<p class="quick-fill-empty">No fields yet. Start with blank labels, then enter only what you want to reuse.</p><button class="tonal-button interactive" type="button" data-quick-fill-setup ${state.quickFillContextPendingKey || state.quickFillSetupSaving ? "disabled" : ""}>Create blank fields</button>`}</section>${documents}${templates}${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
+  return `<div class="quick-fill-editor">${accountEditor}${job ? `<section><h3>Answers for this job</h3>${overrides || '<p class="quick-fill-empty">No templates yet.</p>'}</section>` : ""}${fields}${documents}${templates}${stories}<div class="quick-fill-data-actions"><button class="outlined-button interactive" type="button" data-profile-export>Export JSON</button><button class="outlined-button interactive" type="button" data-profile-import-trigger>Import JSON</button><input class="visually-hidden" type="file" accept="application/json,.json" data-profile-import tabindex="-1"></div></div>`;
 }
 
 function quickFillInnerMarkup({ popout = false, embedded = false } = {}) {
@@ -2685,6 +2698,10 @@ function newProfileItem(kind, text, root) {
   if (kind === "stories") return { id: newId("story", taken), title: text, situation: "", task: "", action: "", result: "", reflection: "", competencies: [] };
   if (kind === "answer_templates") return { id: newId("new-template", taken), name: text, body: "" }; // the server assigns the real id
   if (kind === "documents") return { id: newId("new-document", taken), name: text, date: "", url: "", default: false };
+  if (kind === "fields") {
+    const group = root.querySelector('[data-profile-add-extra="fields-group"]');
+    return { key: fieldKey(text, taken), label: text, group: group?.value.trim() || group?.placeholder || "Other", value: "", pinned: false };
+  }
   return null;
 }
 
@@ -2713,6 +2730,8 @@ const profileFirstInput = { stories: '[data-profile-property="situation"]', answ
 const renameCopy = {
   "answer_templates:name": { empty: "A template needs a name.", message: "Template renamed.", undone: "Rename undone." },
   "documents:name": { empty: "A document needs a name.", message: "Document renamed.", undone: "Rename undone." },
+  "fields:label": { empty: "A field needs a label.", message: "Field renamed.", undone: "Rename undone." },
+  "fields:group": { empty: "A field needs a group.", message: (group) => `Moved to ${group}.`, undone: "Group change undone." },
 };
 
 // one undo entry per rename
@@ -2771,6 +2790,7 @@ async function removalWarning(kind, item) {
     const count = await documentReferences(itemId(kind, item));
     return { count, text: referenceWarning(count) };
   }
+  if (kind === "fields") return { count: 0, text: eligibilityWarning(String(item.key).toLowerCase(), state.quickFillProfile.eligibility_checks) };
   return { count: 0, text: "" };
 }
 
@@ -3570,6 +3590,8 @@ const profileMenuItems = [
   { label: "Use as default resume", when: (c) => c.kind === "documents" && !c.item.default, run: (c) => setDefaultDocument(c, c.id) },
   { label: "Stop using as default", when: (c) => c.kind === "documents" && c.item.default, run: (c) => setDefaultDocument(c, null) },
   { label: "Rename", divider: true, when: (c) => c.kind === "answer_templates", run: (c) => openProfileItem(c, '[data-profile-property="name"]') },
+  { label: "Rename", divider: true, when: (c) => c.kind === "fields", run: (c) => openProfileItem(c, '[data-profile-property="label"]') },
+  { label: "Change group", when: (c) => c.kind === "fields", run: (c) => openProfileItem(c, '[data-profile-property="group"]') },
   { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
 ];
 

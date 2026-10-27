@@ -2311,7 +2311,7 @@ dialog[open]::backdrop {
 
 .profile-add > .profile-add-group {
   grid-column: 1 / -1;
-  order: -1;
+  margin: 0;
 }
 
 .profile-limit,

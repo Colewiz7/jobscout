@@ -937,6 +937,19 @@ def test_profile_save_from_a_stale_revision_is_a_conflict(quick_fill_dashboard):
     assert client.get("/api/v1/profile").json()["profile"]["fields"][0]["value"] == "Second tab"
 
 
+def test_profile_lists_the_fields_eligibility_reads(quick_fill_dashboard):
+    base, _ = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    profile = client.get("/api/v1/profile").json()["profile"]
+    profile["fields"].reverse()
+    saved = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": profile}).json()["profile"]
+
+    assert profile["eligibility_checks"]["work_authorization"] == ["sponsorship"]
+    assert set(profile["eligibility_checks"]) >= {"clearance", "degree", "graduation"}
+    assert saved["eligibility_checks"] == profile["eligibility_checks"]
+    assert [row["key"] for row in saved["fields"]] == [row["key"] for row in profile["fields"]]
+
+
 def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     base, _ = quick_fill_dashboard
     client, csrf = authenticated_client(base)

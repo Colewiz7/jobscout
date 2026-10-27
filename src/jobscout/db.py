@@ -780,7 +780,7 @@ def profile_data(
             """
             select key, group_name as "group", label, value, pinned, sort_order
               from profile_fields
-             order by pinned desc, sort_order, key
+             order by sort_order, key
             """
         )
         fields = cur.fetchall()

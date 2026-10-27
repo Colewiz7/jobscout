@@ -498,6 +498,15 @@ def test_field_only_profile_save_keeps_resume_references(conn):
         assert cur.fetchone()["resume_document_id"] == document_id
 
 
+def test_profile_fields_come_back_in_hand_order(conn):
+    saved = database.replace_profile_data(conn, {"fields": [
+        {"key": "email", "group": "Contact", "label": "Email", "value": "", "pinned": False, "sort_order": 0},
+        {"key": "name", "group": "Identity", "label": "Name", "value": "", "pinned": True, "sort_order": 10},
+    ]})
+
+    assert [row["key"] for row in saved["fields"]] == ["email", "name"]
+
+
 def test_profile_save_updates_inserts_and_deletes_by_id(conn):
     profile = database.replace_profile_data(conn, {
         "answer_templates": [{"name": "A", "body": "1"}, {"name": "B", "body": "2"}],
