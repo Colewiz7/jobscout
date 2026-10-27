@@ -104,6 +104,8 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
     if not postings:
         return 0
     with conn.cursor() as cur:
+        # before any postings row lock
+        lock_companies(cur)
         cur.execute("select count(*) as n from postings")
         before = cur.fetchone()["n"]
     # Collapse duplicates inside this batch first. Three rows for the same job
@@ -156,17 +158,10 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
             """,
             rows,
         )
-        companies = {
+        _ensure_companies(cur, {
             company_key(posting.company): posting.company.strip()
             for posting in merged.values() if company_key(posting.company)
-        }
-        cur.executemany(
-            """
-            insert into companies (key, name) values (%s, %s)
-            on conflict (key) do update set name = excluded.name, updated_at = now()
-            """,
-            list(companies.items()),
-        )
+        })
         _apply_rules_cursor(cur)
         _apply_hidden_cursor(cur)
         cur.execute("select count(*) as n from postings")
@@ -463,17 +458,94 @@ def company_key(value: str) -> str:
     return " ".join(parts)
 
 
-def company_icon_keys(conn: psycopg.Connection) -> list[str]:
-    with conn.cursor() as cur:
-        cur.execute("select company_key from company_assets where logo_data is not null")
-        return [row["company_key"] for row in cur.fetchall()]
+COMPANY_COLUMNS = "key, name, display_name, manual, hidden_at, revision"
 
 
-def company_icon(conn: psycopg.Connection, name: str) -> dict | None:
+def company_name(row: dict) -> str:
+    return row.get("display_name") or row["name"]
+
+
+def resolve_company(companies: dict[str, dict], name: str) -> str | None:
+    """The company a scout or typed name means, after renames and merges."""
     key = company_key(name)
     if not key:
         return None
+    if key in companies:
+        return canonical_key(companies, key)
+    owner = renamed_owners(companies).get(key)
+    return owner and canonical_key(companies, owner)
+
+
+def renamed_owners(companies: dict[str, dict]) -> dict[str, str]:
+    """Display-name keys to the row that took that name."""
+    owners: dict[str, str] = {}
+    # live rows win over merged ones
+    for row in sorted(companies.values(), key=lambda row: bool(row.get("merged_into"))):
+        if row.get("display_name"):
+            owners.setdefault(company_key(row["display_name"]), row["key"])
+    return owners
+
+
+def canonical_key(companies: dict[str, dict], key: str) -> str:
+    seen = set()
+    # merges chain, so walk them
+    while key in companies and companies[key].get("merged_into") and key not in seen:
+        seen.add(key)
+        key = companies[key]["merged_into"]
+    return key
+
+
+def company_rows(cur) -> dict[str, dict]:
+    cur.execute(f"select {COMPANY_COLUMNS}, merged_into from companies")
+    return {row["key"]: row for row in cur.fetchall()}
+
+
+def companies(conn: psycopg.Connection) -> dict[str, dict]:
     with conn.cursor() as cur:
+        return company_rows(cur)
+
+
+def lock_companies(cur) -> None:
+    """Every companies writer takes this first."""
+    # one order means no deadlocks
+    cur.execute("lock table companies in share row exclusive mode")
+
+
+def _read_companies(cur) -> dict[str, dict]:
+    # waits out merges and renames
+    cur.execute("lock table companies in share mode")
+    return company_rows(cur)
+
+
+def _ensure_companies(cur, names: dict[str, str], *, refresh: bool = True) -> None:
+    # renames must not slip between
+    lock_companies(cur)
+    # postings may use new names
+    renamed = renamed_owners(company_rows(cur))
+    cur.executemany(
+        f"""
+        insert into companies (key, name, merged_into) values (%s, %s, %s)
+        on conflict (key) do {'update set name = excluded.name, updated_at = now()' if refresh else 'nothing'}
+        """,
+        [(key, name, renamed[key] if renamed.get(key, key) != key else None) for key, name in names.items()],
+    )
+
+
+def company_icon_keys(conn: psycopg.Connection) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("select company_key from company_assets where logo_data is not null")
+        keys = [row["company_key"] for row in cur.fetchall()]
+        cur.execute("select display_name from companies where display_name is not null and key = any(%s)", (keys,))
+        # renamed rows show the new name
+        renamed = [company_key(row["display_name"]) for row in cur.fetchall()]
+    return sorted(set(keys) | set(renamed))
+
+
+def company_icon(conn: psycopg.Connection, name: str) -> dict | None:
+    with conn.cursor() as cur:
+        key = resolve_company(company_rows(cur), name) or company_key(name)
+        if not key:
+            return None
         cur.execute(
             "select logo_data, media_type from company_assets where company_key = %s and logo_data is not null",
             (key,),
@@ -937,6 +1009,7 @@ def profile_data(
             answer_overrides = {row["template_name"]: row["body"] for row in cur.fetchall()}
         company_account = None
         if company:
+            key = resolve_company(company_rows(cur), company) or company_key(company)
             cur.execute(
                 """
                 select company_name, account_exists, sign_in_email, password_manager_url, updated_at
@@ -945,7 +1018,7 @@ def profile_data(
                  order by (company_key = %s) desc
                  limit 1
                 """,
-                ([company_key(company), company.casefold().strip()], company_key(company)),
+                ([key, company.casefold().strip()], key),
             )
             company_account = cur.fetchone()
     return {
@@ -1042,6 +1115,8 @@ def save_quick_fill_context(
     account = clean["company_account"]
 
     with conn.cursor() as cur:
+        # merged jobs share the target's
+        key = resolve_company(company_rows(cur), company) or company_key(company)
         cur.execute("delete from answer_template_overrides where dedupe_key = %s", (dedupe_key,))
         cur.executemany(
             "insert into answer_template_overrides (dedupe_key, template_name, body) values (%s, %s, %s)",
@@ -1060,7 +1135,7 @@ def save_quick_fill_context(
                 updated_at = now()
             """,
             (
-                company_key(company), company, account["account_exists"],
+                key, company, account["account_exists"],
                 account["sign_in_email"], account["password_manager_url"],
             ),
         )
@@ -1399,6 +1474,8 @@ def edit_posting(conn: psycopg.Connection, dedupe_key: str, fields: dict[str, st
     Returns ``{"id": None}`` when nothing changed and None for an unknown job.
     """
     with conn.cursor() as cur:
+        if "company" in fields:
+            lock_companies(cur)
         if not _lock_job(cur, dedupe_key):
             conn.rollback()
             return None
@@ -1431,10 +1508,7 @@ def edit_posting(conn: psycopg.Connection, dedupe_key: str, fields: dict[str, st
             return {"id": None}
         _write_override(cur, dedupe_key, values)
         if "company" in changed and company_key(changed["company"]):
-            cur.execute(
-                "insert into companies (key, name) values (%s, %s) on conflict (key) do nothing",
-                (company_key(changed["company"]), changed["company"]),
-            )
+            _ensure_companies(cur, {company_key(changed["company"]): changed["company"]}, refresh=False)
         if described:
             _description_changed(cur, dedupe_key)
         before = {"override": {
@@ -2059,8 +2133,8 @@ _CONTACT_COLUMNS = "id, company_name, name, title, email, linkedin_url, source, 
 
 
 def company_records(conn: psycopg.Connection, name: str) -> dict:
-    key = company_key(name)
     with conn.cursor() as cur:
+        key = resolve_company(company_rows(cur), name) or company_key(name)
         cur.execute(
             f"""
             select {_CONTACT_COLUMNS}
@@ -2078,8 +2152,26 @@ def company_records(conn: psycopg.Connection, name: str) -> dict:
     return {"contacts": contacts, "note": note or {"body": "", "updated_at": None}}
 
 
+def company_counts(conn: psycopg.Connection) -> dict[str, dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select company_key, count(*)::integer as contacts
+              from contacts where deleted_at is null group by company_key
+            """
+        )
+        counts: dict[str, dict] = {}
+        for row in cur.fetchall():
+            counts.setdefault(row["company_key"], {})["contacts"] = row["contacts"]
+        cur.execute("select company_key from company_notes where btrim(body) <> ''")
+        for row in cur.fetchall():
+            counts.setdefault(row["company_key"], {})["note"] = True
+    return counts
+
+
 def company_account(conn: psycopg.Connection, name: str) -> dict | None:
     with conn.cursor() as cur:
+        key = resolve_company(company_rows(cur), name) or company_key(name)
         cur.execute(
             """
             select account_exists, sign_in_email, password_manager_url, updated_at
@@ -2088,7 +2180,7 @@ def company_account(conn: psycopg.Connection, name: str) -> dict | None:
              order by (company_key = %s) desc
              limit 1
             """,
-            ([company_key(name), name.casefold().strip()], company_key(name)),
+            ([key, name.casefold().strip()], key),
         )
         return cur.fetchone()
 
@@ -2096,13 +2188,14 @@ def company_account(conn: psycopg.Connection, name: str) -> dict | None:
 def save_company_note(conn: psycopg.Connection, name: str, body: str) -> dict:
     if len(body) > 20_000:
         raise ValueError("company note is too long")
-    key = company_key(name)
-    if not key:
+    if not company_key(name):
         raise ValueError("company name is required")
     with conn.cursor() as cur:
-        cur.execute("select name from companies where key = %s", (key,))
+        key = resolve_company(_read_companies(cur), name)
+        cur.execute("select name, display_name from companies where key = %s", (key,))
         company = cur.fetchone()
         if company is None:
+            conn.rollback()
             raise ValueError("company not found")
         cur.execute(
             """
@@ -2112,11 +2205,256 @@ def save_company_note(conn: psycopg.Connection, name: str, body: str) -> dict:
                 company_name = excluded.company_name, body = excluded.body, updated_at = now()
             returning body, updated_at
             """,
-            (key, company["name"], body),
+            (key, company_name(company), body),
         )
         note = cur.fetchone()
     conn.commit()
     return note
+
+
+def _public_company(cur, key: str) -> dict | None:
+    cur.execute(f"select {COMPANY_COLUMNS} from companies where key = %s", (key,))
+    row = cur.fetchone()
+    return row and {**row, "name": company_name(row), "hidden": row["hidden_at"] is not None}
+
+
+def _taken_name(rows: dict[str, dict], name: str, key: str | None = None) -> None:
+    other = resolve_company(rows, name)
+    if other is not None and other != key:
+        raise ValueError(f"{company_name(rows[other])} is already a company. Merge them instead.")
+
+
+def create_company(conn: psycopg.Connection, name: str) -> dict:
+    """Add a company before the scout finds any of its jobs."""
+    name = name.strip()
+    key = company_key(name)
+    if not key or len(name) > 500:
+        raise ValueError("A company needs a name under 500 characters.")
+    with conn.cursor() as cur:
+        lock_companies(cur)
+        rows = company_rows(cur)
+        existing = resolve_company(rows, name)
+        if existing is not None:
+            row = rows[existing]
+            if row["hidden_at"] is not None:
+                conn.rollback()
+                raise ValueError(f"{company_name(row)} is hidden. Show hidden companies to restore it.")
+            # keep it listed without jobs
+            cur.execute("update companies set manual = true where key = %s", (existing,))
+            company = _public_company(cur, existing)
+            conn.commit()
+            return {"company": company, "created": False}
+        cur.execute(
+            "insert into companies (key, name, display_name, manual) values (%s, %s, %s, true)",
+            (key, name, name),
+        )
+        company = _public_company(cur, key)
+    conn.commit()
+    return {"company": company, "created": True}
+
+
+def _canonical_for_update(cur, key: str) -> dict | None:
+    cur.execute(
+        f"select {COMPANY_COLUMNS} from companies where key = %s and merged_into is null for update",
+        (key,),
+    )
+    return cur.fetchone()
+
+
+def rename_company(conn: psycopg.Connection, key: str, name: str, expected: int | None = None) -> dict | None:
+    """Store a display name, so the scout keeps matching on the key."""
+    name = name.strip()
+    if not company_key(name) or len(name) > 500:
+        raise ValueError("A company needs a name under 500 characters.")
+    with conn.cursor() as cur:
+        lock_companies(cur)
+        row = _canonical_for_update(cur, key)
+        if row is None:
+            conn.rollback()
+            return None
+        previous = {**row, "name": company_name(row), "hidden": row["hidden_at"] is not None}
+        # undo must not undo another tab
+        if expected is not None and row["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        try:
+            _taken_name(company_rows(cur), name, key)
+        except ValueError:
+            conn.rollback()
+            raise
+        cur.execute(
+            "update companies set display_name = %s, revision = revision + 1, updated_at = now() where key = %s",
+            (None if name == row["name"] and not row["manual"] else name, key),
+        )
+        company = _public_company(cur, key)
+    conn.commit()
+    return {"company": company, "previous": previous}
+
+
+def hide_company(conn: psycopg.Connection, key: str, hidden: bool) -> dict | None:
+    with conn.cursor() as cur:
+        lock_companies(cur)
+        cur.execute(
+            f"""
+            update companies set hidden_at = {'now()' if hidden else 'null'}
+             where key = %s and merged_into is null and (hidden_at is null) = %s
+            returning key
+            """,
+            (key, hidden),
+        )
+        found = cur.fetchone()
+        company = found and _public_company(cur, key)
+    conn.commit()
+    return company
+
+
+def merge_companies(conn: psycopg.Connection, source: str, target: str) -> dict | None:
+    """Fold one company into another; the target keeps its own fields."""
+    if source == target:
+        raise ValueError("Pick a different company to merge into.")
+    with conn.cursor() as cur:
+        lock_companies(cur)
+        # both rows, in a stable order
+        cur.execute(
+            "select key from companies where key = any(%s) and merged_into is null order by key for update",
+            ([source, target],),
+        )
+        if len(cur.fetchall()) != 2:
+            conn.rollback()
+            return None
+        target_row = _public_company(cur, target)
+        source_row = _public_company(cur, source)
+        hidden = next((row for row in (source_row, target_row) if row["hidden"]), None)
+        if hidden:
+            conn.rollback()
+            raise ValueError(f"{hidden['name']} is hidden. Show it in Companies before merging.")
+        cur.execute("select company_key, company_name, body, updated_at from company_notes where company_key = any(%s)", ([source, target],))
+        notes = {row["company_key"]: row for row in cur.fetchall()}
+        source_note, target_note = notes.get(source), notes.get(target)
+        if source_note and source_note["body"].strip():
+            kept = (target_note or {}).get("body", "").rstrip()
+            appended = f"From {source_row['name']}:\n{source_note['body'].strip()}"
+            body = f"{kept}\n\n{appended}" if kept else appended
+            cur.execute(
+                """
+                insert into company_notes (company_key, company_name, body) values (%s, %s, %s)
+                on conflict (company_key) do update set body = excluded.body, updated_at = clock_timestamp()
+                """,
+                (target, target_row["name"], body),
+            )
+        if source_note:
+            cur.execute("delete from company_notes where company_key = %s", (source,))
+        cur.execute(
+            "update contacts set company_key = %s, company_name = %s where company_key = %s returning id",
+            (target, target_row["name"], source),
+        )
+        contacts = [row["id"] for row in cur.fetchall()]
+        links = _move_links(cur, source, target)
+        cur.execute(
+            "update companies set merged_into = %s, revision = revision + 1, updated_at = now() where key = %s",
+            (target, source),
+        )
+        cur.execute(
+            "update companies set revision = revision + 1, updated_at = now() where key = %s returning revision",
+            (target,),
+        )
+        revision = cur.fetchone()["revision"]
+        cur.execute("select updated_at from company_notes where company_key = %s", (target,))
+        note_at = (cur.fetchone() or {}).get("updated_at")
+        before = {
+            "target_note": target_note and {"body": target_note["body"], "updated_at": target_note["updated_at"].isoformat()},
+            "source_note": source_note and {
+                "body": source_note["body"], "company_name": source_note["company_name"],
+                "updated_at": source_note["updated_at"].isoformat(),
+            },
+            "contacts": contacts, "links": links,
+        }
+        cur.execute(
+            """
+            insert into company_merges (source_key, target_key, before, revision, note_at)
+            values (%s, %s, %s, %s, %s) returning id
+            """,
+            (source, target, Json(before), revision, note_at),
+        )
+        merge_id = cur.fetchone()["id"]
+        company = _public_company(cur, target)
+    conn.commit()
+    return {"merge_id": merge_id, "company": company, "moved": {"contacts": len(contacts), "links": len(links)}}
+
+
+def _move_links(cur, source: str, target: str, ids: list[int] | None = None) -> list[int]:
+    return []
+
+
+def merge_target(conn: psycopg.Connection, merge_id: int) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("select target_key from company_merges where id = %s", (merge_id,))
+        row = cur.fetchone()
+    return row and row["target_key"]
+
+
+def undo_company_merge(conn: psycopg.Connection, merge_id: int, expected: int | None = None) -> dict | None:
+    with conn.cursor() as cur:
+        lock_companies(cur)
+        cur.execute("select source_key, target_key from company_merges where id = %s", (merge_id,))
+        found = cur.fetchone()
+        if found is None:
+            conn.rollback()
+            return None
+        cur.execute(
+            "select key, merged_into, revision from companies where key = any(%s) order by key for update",
+            ([found["source_key"], found["target_key"]],),
+        )
+        rows = {row["key"]: row for row in cur.fetchall()}
+        cur.execute("select * from company_merges where id = %s", (merge_id,))
+        merge = cur.fetchone()
+        source, target = rows.get(merge["source_key"]), rows.get(merge["target_key"])
+        cur.execute("select updated_at from company_notes where company_key = %s", (merge["target_key"],))
+        note_at = (cur.fetchone() or {}).get("updated_at")
+        current = merge["revision"] if expected is None else expected
+        # later changes would be lost
+        if (
+            merge["undone_at"] is not None or source is None or target is None
+            or source["merged_into"] != merge["target_key"] or target["revision"] != current
+        ):
+            conn.rollback()
+            raise EditConflict("This company changed after the merge, so it can't be undone.")
+        if note_at != merge["note_at"]:
+            conn.rollback()
+            raise EditConflict("Its notes changed after the merge, so it can't be undone.")
+        before = merge["before"]
+        source_key, target_key = merge["source_key"], merge["target_key"]
+        source_name = _public_company(cur, source_key)["name"]
+        if before["target_note"] is None:
+            cur.execute("delete from company_notes where company_key = %s", (target_key,))
+        else:
+            cur.execute(
+                "update company_notes set body = %s, updated_at = %s where company_key = %s",
+                (before["target_note"]["body"], before["target_note"]["updated_at"], target_key),
+            )
+        if before["source_note"] is not None:
+            cur.execute(
+                """
+                insert into company_notes (company_key, company_name, body, updated_at) values (%s, %s, %s, %s)
+                on conflict (company_key) do update set
+                    company_name = excluded.company_name, body = excluded.body, updated_at = excluded.updated_at
+                """,
+                (source_key, *(before["source_note"][name] for name in ("company_name", "body", "updated_at"))),
+            )
+        cur.execute(
+            "update contacts set company_key = %s, company_name = %s where id = any(%s) and company_key = %s",
+            (source_key, source_name, before["contacts"], target_key),
+        )
+        _move_links(cur, target_key, source_key, before["links"])
+        cur.execute(
+            "update companies set merged_into = null, revision = revision + 1, updated_at = now() where key = %s",
+            (source_key,),
+        )
+        cur.execute("update companies set revision = revision + 1, updated_at = now() where key = %s", (target_key,))
+        cur.execute("update company_merges set undone_at = now() where id = %s", (merge_id,))
+        result = {"company": _public_company(cur, source_key), "target": _public_company(cur, target_key)}
+    conn.commit()
+    return result
 
 
 def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual") -> dict:
@@ -2129,16 +2467,17 @@ def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual"
     linkedin_url = str(payload.get("linkedin_url") or "").strip()[:2_000]
     if linkedin_url and not linkedin_url.startswith("https://"):
         raise ValueError("LinkedIn URL must use HTTPS")
-    key = company_key(company)
-    import_key = None
-    if source == "linkedin_csv":
-        fingerprint = "\0".join((key, normalise(name), linkedin_url.casefold()))
-        import_key = hashlib.sha256(fingerprint.encode()).hexdigest()
     with conn.cursor() as cur:
-        cur.execute("select name from companies where key = %s", (key,))
+        key = resolve_company(_read_companies(cur), company)
+        cur.execute("select name, display_name from companies where key = %s", (key,))
         known_company = cur.fetchone()
         if known_company is None:
+            conn.rollback()
             raise ValueError("company not found")
+        import_key = None
+        if source == "linkedin_csv":
+            fingerprint = "\0".join((key, normalise(name), linkedin_url.casefold()))
+            import_key = hashlib.sha256(fingerprint.encode()).hexdigest()
         cur.execute(
             """
             insert into contacts
@@ -2151,7 +2490,7 @@ def save_contact(conn: psycopg.Connection, payload: dict, source: str = "manual"
                 revision = contacts.revision + 1, updated_at = now()
             returning *
             """,
-            (key, known_company["name"], name, title, email, linkedin_url, source, import_key),
+            (key, company_name(known_company), name, title, email, linkedin_url, source, import_key),
         )
         contact = cur.fetchone()
     conn.commit()

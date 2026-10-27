@@ -170,30 +170,106 @@ def _contact_changes(payload: dict) -> dict:
     return changes
 
 
-def _company_groups(jobs: list[dict]) -> list[dict]:
+def _company_name(payload: dict) -> str:
+    unknown = sorted(set(payload) - {"name"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("A company needs a name. Add one and save again.")
+    if len(name.strip()) > 500:
+        raise ValueError("Company name must be under 500 characters")
+    return name.strip()
+
+
+def _merge_target(payload: dict) -> str:
+    target = payload.get("target")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("Pick a company to merge into.")
+    return target
+
+
+def _import_connections(store, contacts: list[dict]) -> dict:
+    companies = {
+        key: item["name"] for item in store.companies()["companies"] for key in item["match_keys"]
+    }
+    matched = []
+    for contact in contacts:
+        key = database.company_key(str(contact.get("company") or ""))
+        if key not in companies:
+            continue
+        matched.append({**contact, "company": companies[key]})
+    saved = [store.save_contact(item, source="linkedin_csv") for item in matched]
+    return {"imported": len(saved), "unmatched": len(contacts) - len(matched)}
+
+
+def _company_view(jobs: list[dict], companies: dict[str, dict]) -> list[dict]:
+    """Point each job at the company it now belongs to."""
+    for job in jobs:
+        posted = str(job.get("company") or "")
+        raw = database.company_key(posted)
+        key = database.resolve_company(companies, posted) or raw
+        job["company_key"] = key
+        job["posting_company"] = posted
+        row = companies.get(key)
+        # untouched companies keep posting names
+        if row and (key != raw or row.get("display_name")):
+            job["company"] = database.company_name(row)
+    return jobs
+
+
+def _company_groups(jobs: list[dict], companies: dict[str, dict] | None = None, counts: dict[str, dict] | None = None) -> list[dict]:
+    companies, counts = companies or {}, counts or {}
+    merged: dict[str, list[str]] = {}
+    for key in companies:
+        target = database.canonical_key(companies, key)
+        if target != key:
+            merged.setdefault(target, []).append(key)
     grouped: dict[str, dict] = {}
     tracked = {"applying", "applied", "interviewing", "offer", "rejected"}
-    for job in jobs:
-        key = database.company_key(str(job.get("company") or ""))
-        if not key:
-            continue
-        group = grouped.setdefault(key, {
+
+    def group(key: str, name: str) -> dict:
+        if key in grouped:
+            return grouped[key]
+        row = companies.get(key, {})
+        aliases = sorted(merged.get(key, []))
+        extra = counts.get(key, {})
+        grouped[key] = {
             "key": key,
-            "name": job["company"],
+            "name": row.get("display_name") or name,
             "postings": [],
             "applications": [],
             "connections_count": 0,
             "links": [],
-        })
-        group["postings"].append(job)
+            "hidden": bool(row.get("hidden_at")),
+            "manual": bool(row.get("manual")),
+            "revision": row.get("revision", 0),
+            "aliases": [database.company_name(companies[other]) for other in aliases],
+            "match_keys": sorted({key, *aliases, *([database.company_key(row["display_name"])] if row.get("display_name") else [])}),
+            "contacts_count": extra.get("contacts", 0),
+            "saved_links_count": extra.get("links", 0),
+            "has_note": bool(extra.get("note")),
+        }
+        return grouped[key]
+
+    for job in jobs:
+        key = job.get("company_key") or database.company_key(str(job.get("company") or ""))
+        if not key:
+            continue
+        found = group(key, job["company"])
+        found["postings"].append(job)
         if job.get("status") in tracked:
-            group["applications"].append(job)
-        group["connections_count"] = max(
-            group["connections_count"], int(job.get("connections_count") or 0)
+            found["applications"].append(job)
+        found["connections_count"] = max(
+            found["connections_count"], int(job.get("connections_count") or 0)
         )
         url = str(job.get("url") or "")
-        if url and not any(item["url"] == url for item in group["links"]):
-            group["links"].append({"label": job["title"], "url": url})
+        if url and not any(item["url"] == url for item in found["links"]):
+            found["links"].append({"label": job["title"], "url": url})
+    # hand-made ones have no jobs yet
+    for key, row in companies.items():
+        if row.get("manual") and not row.get("merged_into"):
+            group(key, database.company_name(row))
     return sorted(
         grouped.values(),
         key=lambda item: (-len(item["applications"]), item["name"].casefold()),
@@ -339,6 +415,9 @@ class PostgresStore:
         self._prefetching: set[str] = set()
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
+        return self._jobs(include_closed)[0]
+
+    def _jobs(self, include_closed: bool = False) -> tuple[list[dict], dict[str, dict]]:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             jobs = database.dashboard_postings(conn, include_closed=include_closed)
@@ -346,16 +425,17 @@ class PostgresStore:
             counts = database.contact_counts(conn)
             active_rules = database.rules(conn)
             taglines = database.posting_taglines(conn)
+            companies = database.companies(conn)
         # Old rows are retained for audit/history, but a changed scout filter
         # must remove newly discovered out-of-scope rows from today's Inbox.
-        jobs = [job for job in jobs if _visible_scoped_job(job, self._filter_config)]
+        jobs = _company_view([job for job in jobs if _visible_scoped_job(job, self._filter_config)], companies)
         for job in jobs:
-            job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
+            job["connections_count"] = counts.get(job["company_key"], 0)
             description = queue_texts.get(job["dedupe_key"])
             job["pay"] = extract_pay(description)
             job["pay_checked"] = description is not None
             job["tagline"] = taglines.get(job["dedupe_key"], "")
-        return _annotate_rules(_annotate_reposts(jobs), active_rules)
+        return _annotate_rules(_annotate_reposts(jobs), active_rules), companies
 
     def company_icon_keys(self) -> list[str]:
         with database.connect(self.dsn) as conn:
@@ -574,20 +654,57 @@ class PostgresStore:
             return database.save_next_step(conn, key, value)
 
     def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
-        jobs = self.jobs(include_closed=True)
-        groups = _company_groups(jobs)
+        jobs, companies = self._jobs(include_closed=True)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            counts = database.company_counts(conn)
+        groups = _company_groups(jobs, companies, counts)
         if not name:
             return {"companies": groups}
-        key = database.company_key(name)
+        key = database.resolve_company(companies, name)
         company = next((item for item in groups if item["key"] == key), None)
         if company is None:
             return {"company": None}
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            records = database.company_records(conn, company["name"])
-            account = database.company_account(conn, company["name"]) if include_account else None
+            records = database.company_records(conn, key)
+            account = database.company_account(conn, key) if include_account else None
         company = {**company, **records, "account": account, "account_protected": not include_account}
         return {"company": company}
+
+    def create_company(self, payload: dict) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.create_company(conn, _company_name(payload))
+
+    def rename_company(self, key: str, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.rename_company(conn, key, _company_name(payload), expected)
+
+    def hide_company(self, key: str, hidden: bool) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.hide_company(conn, key, hidden)
+
+    def merge_company(self, key: str, payload: dict) -> dict | None:
+        target = _merge_target(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.merge_companies(conn, key, target)
+
+    def merge_target(self, merge_id: int) -> str | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.merge_target(conn, merge_id)
+
+    def undo_company_merge(self, merge_id: int, payload: dict) -> dict | None:
+        expected = _expected_revision(dict(payload))
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.undo_company_merge(conn, merge_id, expected)
 
     def save_company_note(self, name: str, body: str) -> dict:
         with database.connect(self.dsn) as conn:
@@ -618,17 +735,7 @@ class PostgresStore:
             return database.restore_contact(conn, contact_id)
 
     def import_connections(self, contacts: list[dict]) -> dict:
-        companies = {
-            item["key"]: item["name"] for item in _company_groups(self.jobs(include_closed=True))
-        }
-        matched = []
-        for contact in contacts:
-            key = database.company_key(str(contact.get("company") or ""))
-            if key not in companies:
-                continue
-            matched.append({**contact, "company": companies[key]})
-        saved = [self.save_contact(item, source="linkedin_csv") for item in matched]
-        return {"imported": len(saved), "unmatched": len(contacts) - len(matched)}
+        return _import_connections(self, contacts)
 
     def saved_views(self) -> list[dict]:
         with database.connect(self.dsn) as conn:
@@ -925,6 +1032,8 @@ class DemoStore:
         self._interviews = []
         self._contacts = []
         self._company_notes: dict[str, dict] = {}
+        self._companies: dict[str, dict] = {}
+        self._merges: list[dict] = []
         self._next_reminder_id = 1
         self._next_interview_id = 1
         self._next_contact_id = 1
@@ -978,10 +1087,28 @@ class DemoStore:
             self._with_override(row) for row in self.rows
             if (include_closed or not row["closed"]) and not self._is_hidden(row)
         ]
-        for job in jobs:
-            job["connections_count"] = counts.get(database.company_key(job["company"]), 0)
+        for job in _company_view(jobs, self._company_registry()):
+            job["connections_count"] = counts.get(job["company_key"], 0)
             job.setdefault("next_step", "")
         return _annotate_rules(_annotate_reposts(jobs), self._rules)
+
+    # mirrors the scout's companies upsert
+    def _company_registry(self) -> dict[str, dict]:
+        renamed = database.renamed_owners(self._companies)
+        for row in self.rows:
+            name = str(self._with_override(row).get("company") or "").strip()
+            key = database.company_key(name)
+            if key and key not in self._companies:
+                self._companies[key] = {
+                    "key": key, "name": name, "display_name": None, "manual": False, "hidden_at": None,
+                    "revision": 0, "merged_into": renamed.get(key) if renamed.get(key, key) != key else None,
+                }
+        return self._companies
+
+    def _public_company(self, key: str) -> dict:
+        row = self._companies[key]
+        return copy.deepcopy({**{name: row[name] for name in ("key", "display_name", "manual", "hidden_at", "revision")},
+                              "name": database.company_name(row), "hidden": row["hidden_at"] is not None})
 
     def _with_override(self, row: dict) -> dict:
         override = self._overrides.get(row["dedupe_key"], {})
@@ -1347,18 +1474,29 @@ class DemoStore:
         self._complete_demo_followup(key)
         return True
 
+    def _company_counts(self) -> dict[str, dict]:
+        counts: dict[str, dict] = {}
+        for contact in self._contacts:
+            if not contact.get("deleted"):
+                entry = counts.setdefault(contact["company_key"], {})
+                entry["contacts"] = entry.get("contacts", 0) + 1
+        for key, note in self._company_notes.items():
+            if note["body"].strip():
+                counts.setdefault(key, {})["note"] = True
+        return counts
+
     def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
-        groups = _company_groups(self.jobs(include_closed=True))
+        groups = _company_groups(self.jobs(include_closed=True), self._companies, self._company_counts())
         if not name:
             return {"companies": groups}
-        key = database.company_key(name)
+        key = database.resolve_company(self._companies, name)
         company = next((item for item in groups if item["key"] == key), None)
         if company is None:
             return {"company": None}
         contacts = [self._public_contact(item) for item in self._contacts
                     if item["company_key"] == key and not item.get("deleted")]
         note = self._company_notes.get(key, {"body": "", "updated_at": None})
-        account = self._company_accounts.get(database.company_key(company["name"])) if include_account else None
+        account = self._company_accounts.get(key) if include_account else None
         return {"company": {
             **company,
             "contacts": copy.deepcopy(contacts),
@@ -1370,18 +1508,130 @@ class DemoStore:
     def save_company_note(self, name: str, body: str) -> dict:
         if len(body) > 20_000:
             raise ValueError("company note is too long")
-        key = database.company_key(name)
-        if not key:
+        if not database.company_key(name):
             raise ValueError("company name is required")
-        company = next(
-            (item for item in _company_groups(self.jobs(include_closed=True)) if item["key"] == key),
-            None,
-        )
-        if company is None:
+        key = database.resolve_company(self._company_registry(), name)
+        if key is None:
             raise ValueError("company not found")
         note = {"body": body, "updated_at": dt.datetime.now(dt.timezone.utc)}
         self._company_notes[key] = note
         return copy.deepcopy(note)
+
+    def _taken_name(self, name: str, key: str | None = None) -> None:
+        other = database.resolve_company(self._company_registry(), name)
+        if other is not None and other != key:
+            raise ValueError(f"{database.company_name(self._companies[other])} is already a company. Merge them instead.")
+
+    def create_company(self, payload: dict) -> dict:
+        name = _company_name(payload)
+        existing = database.resolve_company(self._company_registry(), name)
+        if existing is not None:
+            row = self._companies[existing]
+            if row["hidden_at"] is not None:
+                raise ValueError(f"{database.company_name(row)} is hidden. Show hidden companies to restore it.")
+            row["manual"] = True
+            return {"company": self._public_company(existing), "created": False}
+        key = database.company_key(name)
+        self._companies[key] = {
+            "key": key, "name": name, "display_name": name, "manual": True,
+            "hidden_at": None, "revision": 0, "merged_into": None,
+        }
+        return {"company": self._public_company(key), "created": True}
+
+    def _canonical(self, key: str) -> dict | None:
+        row = self._company_registry().get(key)
+        return row if row and not row["merged_into"] else None
+
+    def rename_company(self, key: str, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        name = _company_name(payload)
+        row = self._canonical(key)
+        if row is None:
+            return None
+        previous = self._public_company(key)
+        if expected is not None and row["revision"] != expected:
+            raise database.RecordConflict(previous)
+        self._taken_name(name, key)
+        row["display_name"] = None if name == row["name"] and not row["manual"] else name
+        row["revision"] += 1
+        return {"company": self._public_company(key), "previous": previous}
+
+    def hide_company(self, key: str, hidden: bool) -> dict | None:
+        row = self._canonical(key)
+        if row is None or (row["hidden_at"] is None) != hidden:
+            return None
+        row["hidden_at"] = dt.datetime.now(dt.timezone.utc) if hidden else None
+        return self._public_company(key)
+
+    def merge_company(self, key: str, payload: dict) -> dict | None:
+        target = _merge_target(payload)
+        if key == target:
+            raise ValueError("Pick a different company to merge into.")
+        source_row, target_row = self._canonical(key), self._canonical(target)
+        if source_row is None or target_row is None:
+            return None
+        hidden = next((row for row in (source_row, target_row) if row["hidden_at"] is not None), None)
+        if hidden:
+            raise ValueError(f"{database.company_name(hidden)} is hidden. Show it in Companies before merging.")
+        source_note, target_note = self._company_notes.get(key), self._company_notes.get(target)
+        before = {"target_note": copy.deepcopy(target_note), "source_note": copy.deepcopy(source_note)}
+        if source_note and source_note["body"].strip():
+            kept = (target_note or {}).get("body", "").rstrip()
+            source_name = database.company_name(source_row)
+            appended = f"From {source_name}:\n{source_note['body'].strip()}"
+            body = f"{kept}\n\n{appended}" if kept else appended
+            self._company_notes[target] = {"body": body, "updated_at": dt.datetime.now(dt.timezone.utc)}
+        self._company_notes.pop(key, None)
+        moved = [contact for contact in self._contacts if contact["company_key"] == key]
+        for contact in moved:
+            contact.update(company_key=target, company_name=database.company_name(target_row))
+        links = self._move_links(key, target)
+        source_row["merged_into"] = target
+        source_row["revision"] += 1
+        target_row["revision"] += 1
+        merge = {
+            "id": len(self._merges) + 1, "source": key, "target": target, "revision": target_row["revision"],
+            "note_at": (self._company_notes.get(target) or {}).get("updated_at"),
+            "before": {**before, "contacts": [contact["id"] for contact in moved], "links": links}, "undone": False,
+        }
+        self._merges.append(merge)
+        return {"merge_id": merge["id"], "company": self._public_company(target),
+                "moved": {"contacts": len(moved), "links": len(links)}}
+
+    def _move_links(self, source: str, target: str, ids: list[int] | None = None) -> list[int]:
+        return []
+
+    def merge_target(self, merge_id: int) -> str | None:
+        return next((merge["target"] for merge in self._merges if merge["id"] == merge_id), None)
+
+    def undo_company_merge(self, merge_id: int, payload: dict) -> dict | None:
+        expected = _expected_revision(dict(payload))
+        merge = next((item for item in self._merges if item["id"] == merge_id), None)
+        if merge is None:
+            return None
+        source, target = self._companies[merge["source"]], self._companies[merge["target"]]
+        current = merge["revision"] if expected is None else expected
+        if merge["undone"] or source["merged_into"] != merge["target"] or target["revision"] != current:
+            raise database.EditConflict("This company changed after the merge, so it can't be undone.")
+        if (self._company_notes.get(merge["target"]) or {}).get("updated_at") != merge["note_at"]:
+            raise database.EditConflict("Its notes changed after the merge, so it can't be undone.")
+        before = merge["before"]
+        if before["target_note"] is None:
+            self._company_notes.pop(merge["target"], None)
+        else:
+            self._company_notes[merge["target"]] = copy.deepcopy(before["target_note"])
+        if before["source_note"] is not None:
+            self._company_notes[merge["source"]] = copy.deepcopy(before["source_note"])
+        for contact in self._contacts:
+            if contact["id"] in before["contacts"] and contact["company_key"] == merge["target"]:
+                contact.update(company_key=merge["source"], company_name=database.company_name(source))
+        self._move_links(merge["target"], merge["source"], before["links"])
+        source["merged_into"] = None
+        source["revision"] += 1
+        target["revision"] += 1
+        merge["undone"] = True
+        return {"company": self._public_company(merge["source"]), "target": self._public_company(merge["target"])}
 
     def save_contact(self, payload: dict, source: str = "manual") -> dict:
         company = str(payload.get("company") or "").strip()
@@ -1391,14 +1641,10 @@ class DemoStore:
         linkedin_url = str(payload.get("linkedin_url") or "").strip()
         if linkedin_url and not linkedin_url.startswith("https://"):
             raise ValueError("LinkedIn URL must use HTTPS")
-        key = database.company_key(company)
-        known_company = next(
-            (item for item in _company_groups(self.jobs(include_closed=True)) if item["key"] == key),
-            None,
-        )
-        if known_company is None:
+        key = database.resolve_company(self._company_registry(), company)
+        if key is None:
             raise ValueError("company not found")
-        company = known_company["name"]
+        company = database.company_name(self._companies[key])
         if source == "linkedin_csv":
             existing = next((item for item in self._contacts if
                 item["company_key"] == key and item["name"].casefold() == name.casefold()
@@ -1454,17 +1700,7 @@ class DemoStore:
         return self._public_contact(contact)
 
     def import_connections(self, contacts: list[dict]) -> dict:
-        companies = {
-            item["key"]: item["name"] for item in _company_groups(self.jobs(include_closed=True))
-        }
-        matched = []
-        for contact in contacts:
-            key = database.company_key(str(contact.get("company") or ""))
-            if key in companies:
-                matched.append({**contact, "company": companies[key]})
-        for contact in matched:
-            self.save_contact(contact, source="linkedin_csv")
-        return {"imported": len(matched), "unmatched": len(contacts) - len(matched)}
+        return _import_connections(self, contacts)
 
     def saved_views(self) -> list[dict]:
         return [dict(view) for view in self._saved_views]
@@ -1502,7 +1738,7 @@ class DemoStore:
         profile["copied_fields"] = sorted(self._copied_fields.get(dedupe_key or "", set()))
         profile["answer_overrides"] = copy.deepcopy(self._answer_overrides.get(dedupe_key or "", {}))
         profile["company_account"] = copy.deepcopy(
-            self._company_accounts.get(database.company_key(company or ""))
+            self._company_accounts.get(database.resolve_company(self._company_registry(), company or "") or database.company_key(company or ""))
         )
         return profile
 
@@ -1549,7 +1785,7 @@ class DemoStore:
         dedupe_key = clean["dedupe_key"]
         company = clean["company"]
         self._answer_overrides[dedupe_key] = clean["answer_overrides"]
-        self._company_accounts[database.company_key(company)] = clean["company_account"]
+        self._company_accounts[database.resolve_company(self._company_registry(), company) or database.company_key(company)] = clean["company_account"]
         return self.profile(dedupe_key, company)
 
     def eligibility(self, key: str) -> dict | None:
@@ -2119,6 +2355,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _company_route(self, path: str, method: str) -> bool:
+        prefix, undo_prefix = "/api/v1/companies/", "/api/v1/company-merges/"
+        if method == "POST" and path == "/api/v1/companies":
+            action, key = "create", ""
+        elif method == "POST" and path.startswith(undo_prefix) and path.endswith("/undo"):
+            action, key = "undo", path[len(undo_prefix):-len("/undo")]
+        elif path.startswith(prefix) and path.count("/") == 4 and method == "PATCH":
+            action, key = "rename", path[len(prefix):]
+        elif path.startswith(prefix) and path.count("/") == 5 and method == "POST":
+            key, action = path[len(prefix):].split("/")
+            if action not in {"hide", "restore", "merge"}:
+                return False
+        else:
+            return False
+        if not self._require_write_security():
+            return True
+        store, key = self.app.store, urllib.parse.unquote(key)
+        try:
+            # undo may carry a revision
+            sent = action != "undo" or self.headers.get("Content-Length", "0") != "0"
+            payload = self._read_json() if action not in {"hide", "restore"} and sent else {}
+            if action == "create":
+                result = store.create_company(payload)
+                self._json(result, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
+                return True
+            if action == "undo":
+                if not key.isdigit():
+                    raise ValueError("invalid merge")
+                result = store.undo_company_merge(int(key), payload)
+            elif action == "rename":
+                result = store.rename_company(key, payload)
+            elif action == "merge":
+                result = store.merge_company(key, payload)
+            else:
+                company = store.hide_company(key, action == "hide")
+                result = company and {"company": company}
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return True
+        except database.RecordConflict as conflict:
+            self._json({"error": "This company changed in another tab.", "company": conflict.record}, HTTPStatus.CONFLICT)
+            return True
+        except database.EditConflict as error:
+            self._error(HTTPStatus.CONFLICT, str(error))
+            return True
+        except Exception:
+            log.exception("could not change company")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the company. Retry shortly.")
+            return True
+        if result is None:
+            self._error(HTTPStatus.NOT_FOUND, "merge not found" if action == "undo" else "company not found")
+            return True
+        self._json(result)
+        return True
+
     def _record_route(self, path: str, method: str) -> bool:
         for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/")):
             if not path.startswith(prefix):
@@ -2135,7 +2426,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
-        if self._record_route(parsed.path, "PATCH"):
+        if self._record_route(parsed.path, "PATCH") or self._company_route(parsed.path, "PATCH"):
             return
         prefix = "/api/v1/jobs/"
         posting_suffix = "/posting"
@@ -2380,7 +2671,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._json({"eligibility": result}, HTTPStatus.CREATED)
             return
-        if self._record_route(parsed.path, "POST"):
+        if self._record_route(parsed.path, "POST") or self._company_route(parsed.path, "POST"):
             return
         if parsed.path == "/api/v1/interviews":
             if not self._require_write_security():

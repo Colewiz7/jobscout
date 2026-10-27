@@ -1080,6 +1080,237 @@ def test_company_writes_reject_unknown_companies(dashboard):
     assert note.json()["error"] == "company not found"
 
 
+def _company(client, name):
+    return client.get("/api/v1/companies", params={"name": name}).json()["company"]
+
+
+def _index(client):
+    return {item["key"]: item for item in client.get("/api/v1/companies").json()["companies"]}
+
+
+def _capture(client, headers, company, slug):
+    return client.post("/api/v1/capture", headers=headers, json={
+        "url": f"https://example.org/jobs/{slug}", "company": company, "title": f"{slug} intern",
+    })
+
+
+def test_company_writes_need_auth_and_csrf(dashboard):
+    base, _ = dashboard
+    for method, path in [
+        ("POST", "/api/v1/companies"), ("PATCH", "/api/v1/companies/datadog"),
+        ("POST", "/api/v1/companies/datadog/hide"), ("POST", "/api/v1/companies/datadog/restore"),
+        ("POST", "/api/v1/companies/datadog/merge"), ("POST", "/api/v1/company-merges/1/undo"),
+    ]:
+        assert httpx.request(method, f"{base}{path}", json={"name": "x"}, timeout=2).status_code == 401
+        assert httpx.request(method, f"{base}{path}", json={"name": "x"}, headers=AUTH, timeout=2).status_code == 403
+    client, token = authenticated_client(base)
+    assert client.post("/api/v1/companies/datadog/archive", headers={"X-CSRF-Token": token}).status_code == 404
+
+
+def test_companies_are_created_by_hand_before_any_job(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    for body, error in [
+        ({"name": "  "}, "A company needs a name. Add one and save again."),
+        ({}, "A company needs a name. Add one and save again."),
+        ({"name": "x" * 501}, "Company name must be under 500 characters"),
+        ({"name": "Acme", "notes": ""}, "notes can't be edited"),
+    ]:
+        response = client.post("/api/v1/companies", headers=headers, json=body)
+        assert (response.status_code, response.json()["error"]) == (400, error)
+
+    created = client.post("/api/v1/companies", headers=headers, json={"name": " Anthropic "})
+    assert created.status_code == 201
+    assert created.json()["created"] is True
+    assert created.json()["company"]["name"] == "Anthropic"
+    listed = _index(client)["anthropic"]
+    assert (listed["name"], listed["manual"], listed["postings"]) == ("Anthropic", True, [])
+    contact = client.post("/api/v1/contacts", headers=headers, json={"company": "Anthropic, Inc.", "name": "Ada"})
+    assert contact.status_code == 201
+    note = client.put("/api/v1/companies/note", headers=headers, json={"company": "Anthropic", "body": "Met at a meetup."})
+    assert note.status_code == 200
+    detail = _company(client, "Anthropic")
+    assert [item["name"] for item in detail["contacts"]] == ["Ada"]
+    assert detail["note"]["body"] == "Met at a meetup."
+
+    again = client.post("/api/v1/companies", headers=headers, json={"name": "Datadog, Inc."})
+    assert again.status_code == 200
+    assert (again.json()["created"], again.json()["company"]["key"]) == (False, "datadog")
+
+    # a later scout posting joins it
+    assert _capture(client, headers, "Anthropic PBC", "research").status_code == 201
+    assert _capture(client, headers, "Anthropic", "platform").status_code == 201
+    company = _company(client, "Anthropic")
+    assert sorted(job["title"] for job in company["postings"]) == ["platform intern"]
+    assert company["contacts"][0]["name"] == "Ada"
+
+    client.post("/api/v1/companies/anthropic/hide", headers=headers)
+    hidden = client.post("/api/v1/companies", headers=headers, json={"name": "anthropic"})
+    assert (hidden.status_code, hidden.json()["error"]) == (400, "Anthropic is hidden. Show hidden companies to restore it.")
+
+
+def test_a_rename_survives_later_scout_results_and_undoes_by_revision(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    other, other_token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    path = "/api/v1/companies/datadog"
+    for body, status, error in [
+        ({"name": ""}, 400, "A company needs a name. Add one and save again."),
+        ({"name": "Datadog", "expected_revision": "1"}, 400, "expected_revision must be a whole number"),
+        ({"name": "Cloudflare, Inc."}, 400, "Cloudflare is already a company. Merge them instead."),
+    ]:
+        response = client.patch(path, headers=headers, json=body)
+        assert (response.status_code, response.json()["error"]) == (status, error)
+    assert client.patch("/api/v1/companies/nobody", headers=headers, json={"name": "x"}).status_code == 404
+
+    renamed = client.patch(path, headers=headers, json={"name": "Datadog Labs"}).json()
+    assert (renamed["company"]["name"], renamed["previous"]["name"]) == ("Datadog Labs", "Datadog")
+    job = next(job for job in client.get("/api/v1/jobs").json()["jobs"] if job["dedupe_key"] == "demo:2")
+    assert (job["company"], job["posting_company"], job["company_key"]) == ("Datadog Labs", "Datadog", "datadog")
+    assert _company(client, "Datadog Labs")["key"] == _company(client, "Datadog")["key"] == "datadog"
+
+    # old and new names both land
+    _capture(client, headers, "Datadog, Inc.", "logs")
+    _capture(client, headers, "Datadog Labs", "metrics")
+    company = _company(client, "Datadog")
+    assert company["name"] == "Datadog Labs"
+    assert sorted(job["title"] for job in company["postings"]) == [
+        "Cloud Platform Engineering Intern", "logs intern", "metrics intern",
+    ]
+    assert "datadog labs" not in _index(client)
+
+    undo = client.patch(path, headers=headers, json={"name": "Datadog", "expected_revision": renamed["company"]["revision"]})
+    assert undo.json()["company"]["name"] == "Datadog"
+    redo = client.patch(path, headers=headers, json={"name": "Datadog Labs"}).json()
+    other.patch(path, headers={"X-CSRF-Token": other_token}, json={"name": "Datadog Cloud"})
+    stale = client.patch(path, headers=headers, json={"name": "Datadog", "expected_revision": redo["company"]["revision"]})
+    assert stale.status_code == 409
+    assert (stale.json()["error"], stale.json()["company"]["name"]) == ("This company changed in another tab.", "Datadog Cloud")
+
+
+def test_hiding_a_company_keeps_its_jobs(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    hidden = client.post("/api/v1/companies/datadog/hide", headers=headers)
+    assert hidden.json()["company"]["hidden"] is True
+    assert _index(client)["datadog"]["hidden"] is True
+    assert "demo:2" in [job["dedupe_key"] for job in client.get("/api/v1/jobs").json()["jobs"]]
+    assert client.post("/api/v1/companies/datadog/hide", headers=headers).status_code == 404
+    assert client.post("/api/v1/companies/datadog/restore", headers=headers).json()["company"]["hidden"] is False
+    assert client.post("/api/v1/companies/datadog/restore", headers=headers).status_code == 404
+    assert client.post("/api/v1/companies/nobody/hide", headers=headers).status_code == 404
+    assert _index(client)["datadog"]["hidden"] is False
+
+
+def test_a_merge_moves_everything_and_undoes_exactly(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    client.put("/api/v1/companies/note", headers=headers, json={"company": "Cloudflare", "body": "Target notes."})
+    client.put("/api/v1/companies/note", headers=headers, json={"company": "Datadog", "body": "Source notes."})
+    contact = client.post("/api/v1/contacts", headers=headers, json={"company": "Datadog", "name": "Grace"}).json()["contact"]
+    client.post("/api/v1/connections/import", headers=headers, json={"contacts": [{
+        "company": "Datadog", "name": "Lin", "linkedin_url": "https://www.linkedin.com/in/lin",
+    }]})
+    before = _index(client)
+    assert (before["datadog"]["contacts_count"], before["datadog"]["has_note"]) == (2, True)
+    merge = "/api/v1/companies/datadog/merge"
+    for body, status in [({}, 400), ({"target": "datadog"}, 400), ({"target": "nobody"}, 404)]:
+        assert client.post(merge, headers=headers, json=body).status_code == status
+
+    merged = client.post(merge, headers=headers, json={"target": "cloudflare"}).json()
+    assert merged["moved"] == {"contacts": 2, "links": 0}
+    assert merged["company"]["name"] == "Cloudflare"
+    index = _index(client)
+    assert "datadog" not in index
+    assert index["cloudflare"]["aliases"] == ["Datadog"]
+    assert "datadog" in index["cloudflare"]["match_keys"]
+    target = _company(client, "Cloudflare")
+    assert sorted(job["dedupe_key"] for job in target["postings"]) == ["demo:1", "demo:2"]
+    assert sorted(item["name"] for item in target["contacts"]) == ["Grace", "Lin"]
+    assert target["note"]["body"] == "Target notes.\n\nFrom Datadog:\nSource notes."
+    assert target["connections_count"] == 1
+    assert _company(client, "Datadog")["key"] == "cloudflare"
+    jobs = {job["dedupe_key"]: job for job in client.get("/api/v1/jobs").json()["jobs"]}
+    assert (jobs["demo:2"]["company"], jobs["demo:2"]["connections_count"]) == ("Cloudflare", 1)
+    # later scout results follow it
+    _capture(client, headers, "Datadog", "apm")
+    assert "apm intern" in [job["title"] for job in _company(client, "Cloudflare")["postings"]]
+    added = client.post("/api/v1/contacts", headers=headers, json={"company": "Datadog", "name": "Late"}).json()["contact"]
+    assert added["company_key"] == "cloudflare"
+    assert client.post(merge, headers=headers, json={"target": "cloudflare"}).status_code == 404
+
+    undo = f"/api/v1/company-merges/{merged['merge_id']}/undo"
+    undone = client.post(undo, headers=headers, json={"expected_revision": merged["company"]["revision"]})
+    assert undone.status_code == 200
+    assert undone.json()["company"]["name"] == "Datadog"
+    source, target = _company(client, "Datadog"), _company(client, "Cloudflare")
+    assert source["note"]["body"] == "Source notes." and target["note"]["body"] == "Target notes."
+    assert sorted(item["name"] for item in source["contacts"]) == ["Grace", "Lin"]
+    assert [item["name"] for item in target["contacts"]] == ["Late"]
+    assert sorted(job["dedupe_key"] for job in target["postings"]) == ["demo:1"]
+    assert contact["id"] in [item["id"] for item in source["contacts"]]
+    assert client.post(undo, headers=headers, json={}).status_code == 409
+    assert client.post("/api/v1/company-merges/99/undo", headers=headers, json={}).status_code == 404
+    assert client.post("/api/v1/company-merges/x/undo", headers=headers, json={}).status_code == 400
+
+
+def test_hidden_companies_cannot_be_merged(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    client.post("/api/v1/companies/datadog/hide", headers=headers)
+    for path, target in [("/api/v1/companies/cloudflare/merge", "datadog"), ("/api/v1/companies/datadog/merge", "cloudflare")]:
+        response = client.post(path, headers=headers, json={"target": target})
+        assert (response.status_code, response.json()["error"]) == (400, "Datadog is hidden. Show it in Companies before merging.")
+    assert set(_index(client)) >= {"datadog", "cloudflare"}
+
+
+def test_a_renamed_source_stays_merged_and_notes_keep_their_heading(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    headers = {"X-CSRF-Token": token}
+    client.put("/api/v1/companies/note", headers=headers, json={"company": "Datadog", "body": "Source notes."})
+    source_note = _company(client, "Datadog")["note"]
+    client.patch("/api/v1/companies/datadog", headers=headers, json={"name": "Datadog Labs"})
+    merged = client.post("/api/v1/companies/datadog/merge", headers=headers, json={"target": "cloudflare"}).json()
+    assert _company(client, "Cloudflare")["note"]["body"] == "From Datadog Labs:\nSource notes."
+    _capture(client, headers, "Datadog Labs", "metrics")
+    assert set(_index(client)) == {"cloudflare"}
+    assert "metrics intern" in [job["title"] for job in _company(client, "Datadog Labs")["postings"]]
+
+    client.post(f"/api/v1/company-merges/{merged['merge_id']}/undo", headers=headers, json={})
+    source = _company(client, "Datadog Labs")
+    assert source["key"] == "datadog" and source["note"] == source_note
+    assert sorted(job["title"] for job in source["postings"]) == ["Cloud Platform Engineering Intern", "metrics intern"]
+    assert _company(client, "Cloudflare")["note"]["body"] == ""
+
+
+def test_a_stale_merge_undo_cannot_clobber_later_changes(dashboard):
+    base, _ = dashboard
+    client, token = authenticated_client(base)
+    other, other_token = authenticated_client(base)
+    headers, other_headers = {"X-CSRF-Token": token}, {"X-CSRF-Token": other_token}
+    merge = lambda: client.post("/api/v1/companies/datadog/merge", headers=headers, json={"target": "cloudflare"}).json()
+    undo = lambda merged, **body: client.post(f"/api/v1/company-merges/{merged['merge_id']}/undo", headers=headers, json=body)
+
+    merged = merge()
+    other.put("/api/v1/companies/note", headers=other_headers, json={"company": "Cloudflare", "body": "Typed later."})
+    stale = undo(merged)
+    assert (stale.status_code, stale.json()["error"]) == (409, "Its notes changed after the merge, so it can't be undone.")
+    assert _company(client, "Datadog")["key"] == "cloudflare"
+
+    client.post("/api/v1/companies", headers=headers, json={"name": "Acme"})
+    merged = client.post("/api/v1/companies/acme/merge", headers=headers, json={"target": "cloudflare"}).json()
+    other.patch("/api/v1/companies/cloudflare", headers=other_headers, json={"name": "Cloudflare Labs"})
+    stale = undo(merged, expected_revision=merged["company"]["revision"])
+    assert (stale.status_code, stale.json()["error"]) == (409, "This company changed after the merge, so it can't be undone.")
+    assert undo(merged, expected_revision="x").status_code == 400
+
+
 def test_inbox_rules_archive_tag_boost_and_undo(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

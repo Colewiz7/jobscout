@@ -36,6 +36,7 @@ def conn():
         cur.execute("drop table if exists eligibility_overrides")
         cur.execute("drop table if exists contacts")
         cur.execute("drop table if exists company_notes")
+        cur.execute("drop table if exists company_merges")
         cur.execute("drop table if exists companies")
         cur.execute("drop table if exists application_snapshots")
         cur.execute("drop table if exists company_accounts")
@@ -95,6 +96,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 18, "name": "posting_edits"},
             {"version": 19, "name": "interview_cancel_and_delete"},
             {"version": 20, "name": "contact_deletes"},
+            {"version": 21, "name": "company_edits"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1090,6 +1092,266 @@ def test_contacts_are_edited_and_soft_deleted(conn):
     database.delete_contact(conn, contact["id"])
     database.save_contact(conn, linked, source="linkedin_csv")  # a reimport brings it back
     assert [row["id"] for row in database.company_records(conn, "Acme")["contacts"]] == [contact["id"]]
+
+
+def _store(monkeypatch):
+    from jobscout.dashboard import PostgresStore
+    monkeypatch.setenv("DATABASE_URL", DSN)
+    return PostgresStore(DSN)
+
+
+def _groups(store):
+    return {item["key"]: item for item in store.companies()["companies"]}
+
+
+def test_a_company_rename_survives_later_scout_runs(conn, monkeypatch):
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    assert database.rename_company(conn, "nobody", "x") is None
+    with pytest.raises(ValueError, match="Globex is already a company. Merge them instead."):
+        database.rename_company(conn, "acme", "Globex Inc")
+    renamed = database.rename_company(conn, "acme", "Acme Robotics")
+    assert (renamed["company"]["name"], renamed["previous"]["name"]) == ("Acme Robotics", "Acme")
+    assert renamed["company"]["revision"] == renamed["previous"]["revision"] + 1
+
+    database.upsert_open(conn, [
+        _p(company="ACME, Inc.", url="https://acme.example/1"),
+        _p(company="Acme", title="Cloud Robotics Intern", url="https://acme.example/2"),
+        _p(company="Acme Robotics", title="Cloud Firmware Intern", url="https://acme.example/3"),
+    ])
+    groups = _groups(store)
+    assert set(groups) == {"acme", "globex"}
+    assert groups["acme"]["name"] == "Acme Robotics"
+    assert sorted(job["title"] for job in groups["acme"]["postings"]) == ["Cloud Firmware Intern", "Cloud Intern", "Cloud Robotics Intern"]
+    assert {job["company"] for job in groups["acme"]["postings"]} == {"Acme Robotics"}
+    assert store.companies("Acme Robotics")["company"]["key"] == "acme"
+    database.save_company_note(conn, "Acme Robotics", "Renamed notes stay.")
+    assert database.company_records(conn, "Acme")["note"]["body"] == "Renamed notes stay."
+
+    with pytest.raises(database.RecordConflict) as conflict:
+        database.rename_company(conn, "acme", "Acme", expected=renamed["previous"]["revision"])
+    assert conflict.value.record["name"] == "Acme Robotics"
+    database.rename_company(conn, "acme", "Acme", expected=renamed["company"]["revision"])
+    with conn.cursor() as cur:
+        cur.execute("select display_name from companies where key = 'acme'")
+        assert cur.fetchone()["display_name"] is None
+
+
+def test_hand_made_and_hidden_companies(conn, monkeypatch):
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p()])
+    created = database.create_company(conn, "Initech")
+    assert created["created"] is True and created["company"]["manual"] is True
+    assert database.create_company(conn, "Initech LLC")["created"] is False
+    assert database.create_company(conn, "The Acme Company")["company"]["key"] == "acme"
+    database.save_contact(conn, {"company": "Initech", "name": "Peter"})
+    assert _groups(store)["initech"]["contacts_count"] == 1
+    database.upsert_open(conn, [_p(company="Initech", title="Cloud QA Intern", url="https://initech.example/1")])
+    assert [job["title"] for job in _groups(store)["initech"]["postings"]] == ["Cloud QA Intern"]
+
+    assert database.hide_company(conn, "initech", True)["hidden"] is True
+    assert database.hide_company(conn, "initech", True) is None
+    assert _groups(store)["initech"]["hidden"] is True
+    assert "Cloud QA Intern" in [job["title"] for job in store.jobs()]
+    with pytest.raises(ValueError, match="Initech is hidden"):
+        database.create_company(conn, "Initech")
+    assert database.hide_company(conn, "initech", False)["hidden"] is False
+    assert database.hide_company(conn, "initech", False) is None
+
+
+def test_a_merge_moves_records_and_later_scout_results(conn, monkeypatch):
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    database.save_company_note(conn, "Acme", "Acme notes.")
+    database.save_company_note(conn, "Globex", "Globex notes.")
+    moved = database.save_contact(conn, {"company": "Globex", "name": "Hank"})
+    gone = database.save_contact(conn, {"company": "Globex", "name": "Gone"})
+    database.delete_contact(conn, gone["id"])
+    database.save_contact(conn, {"company": "Globex", "name": "Lin", "linkedin_url": "https://www.linkedin.com/in/lin"}, source="linkedin_csv")
+    with pytest.raises(ValueError):
+        database.merge_companies(conn, "acme", "acme")
+    assert database.merge_companies(conn, "globex", "nobody") is None
+
+    merged = database.merge_companies(conn, "globex", "acme")
+    assert merged["company"]["name"] == "Acme" and merged["moved"]["contacts"] == 3
+    groups = _groups(store)
+    assert set(groups) == {"acme"} and groups["acme"]["aliases"] == ["Globex"]
+    assert sorted(job["title"] for job in groups["acme"]["postings"]) == ["Cloud Data Intern", "Cloud Intern"]
+    records = database.company_records(conn, "Globex")
+    assert records["note"]["body"] == "Acme notes.\n\nFrom Globex:\nGlobex notes."
+    assert sorted(item["name"] for item in records["contacts"]) == ["Hank", "Lin"]
+    assert database.contact_counts(conn) == {"acme": 1}
+    assert database.restore_contact(conn, gone["id"])["company_name"] == "Acme"
+    database.upsert_open(conn, [_p(company="Globex Corporation", title="Cloud Ops Intern", url="https://globex.example/2")])
+    assert "Cloud Ops Intern" in [job["title"] for job in _groups(store)["acme"]["postings"]]
+    assert database.save_contact(conn, {"company": "Globex", "name": "Late"})["company_key"] == "acme"
+    assert database.merge_companies(conn, "globex", "acme") is None
+
+    undone = database.undo_company_merge(conn, merged["merge_id"], merged["company"]["revision"])
+    assert undone["company"]["key"] == "globex"
+    groups = _groups(store)
+    assert sorted(job["title"] for job in groups["globex"]["postings"]) == ["Cloud Data Intern", "Cloud Ops Intern"]
+    assert database.company_records(conn, "Acme")["note"]["body"] == "Acme notes."
+    assert database.company_records(conn, "Globex")["note"]["body"] == "Globex notes."
+    assert sorted(item["name"] for item in database.company_records(conn, "Globex")["contacts"]) == ["Gone", "Hank", "Lin"]
+    assert [item["name"] for item in database.company_records(conn, "Acme")["contacts"]] == ["Late"]
+    assert moved["id"] in [item["id"] for item in database.company_records(conn, "Globex")["contacts"]]
+    with pytest.raises(database.EditConflict):
+        database.undo_company_merge(conn, merged["merge_id"])
+    assert database.undo_company_merge(conn, 999) is None
+
+
+def test_a_renamed_source_stays_merged_when_the_scout_uses_its_new_name(conn, monkeypatch):
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    database.rename_company(conn, "acme", "Acme Robotics")
+    merged = database.merge_companies(conn, "acme", "globex")
+    # first time the scout sees it
+    database.upsert_open(conn, [_p(company="Acme Robotics", title="Cloud Firmware Intern", url="https://acme.example/3")])
+    groups = _groups(store)
+    assert set(groups) == {"globex"}
+    assert sorted(job["title"] for job in groups["globex"]["postings"]) == ["Cloud Data Intern", "Cloud Firmware Intern", "Cloud Intern"]
+    assert store.companies("Acme Robotics")["company"]["key"] == "globex"
+    assert database.save_contact(conn, {"company": "Acme Robotics", "name": "Ada"})["company_key"] == "globex"
+
+    database.undo_company_merge(conn, merged["merge_id"])
+    groups = _groups(store)
+    assert set(groups) == {"acme", "globex"}
+    assert groups["acme"]["name"] == "Acme Robotics"
+    assert sorted(job["title"] for job in groups["acme"]["postings"]) == ["Cloud Firmware Intern", "Cloud Intern"]
+    assert store.companies("Acme Robotics")["company"]["key"] == "acme"
+    assert [item["name"] for item in database.company_records(conn, "Globex")["contacts"]] == ["Ada"]
+
+
+def test_a_scout_run_waits_for_a_rename_in_flight(conn, monkeypatch):
+    import threading
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p()])
+    blocker = database.connect(DSN)
+    with blocker.cursor() as cur:  # rename_company mid transaction
+        cur.execute("lock table companies in share row exclusive mode")
+        cur.execute("update companies set display_name = 'Acme Robotics', revision = revision + 1 where key = 'acme'")
+    done = threading.Event()
+
+    def scout():
+        with database.connect(DSN) as other:
+            database.upsert_open(other, [_p(company="Acme Robotics", title="Cloud Firmware Intern", url="https://acme.example/3")])
+        done.set()
+
+    thread = threading.Thread(target=scout)
+    thread.start()
+    thread.join(0.5)
+    assert thread.is_alive() and not done.is_set()
+    blocker.commit()
+    blocker.close()
+    thread.join(5)
+    assert done.is_set()
+    with conn.cursor() as cur:
+        cur.execute("select merged_into from companies where key = 'acme robotics'")
+        assert cur.fetchone()["merged_into"] == "acme"
+    groups = _groups(store)
+    assert set(groups) == {"acme"}
+    assert sorted(job["title"] for job in groups["acme"]["postings"]) == ["Cloud Firmware Intern", "Cloud Intern"]
+
+
+def _in_thread(work):
+    import threading
+    outcome = {}
+
+    def run():
+        try:
+            with database.connect(DSN) as other:
+                outcome["value"] = work(other)
+        except Exception as error:  # surfaced by the test
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, outcome
+
+
+def test_a_merge_waits_for_a_scout_run_without_deadlocking(conn):
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    scout = database.connect(DSN)
+    with scout.cursor() as cur:  # upsert_open mid transaction
+        cur.execute("set lock_timeout = '5s'")
+        database.lock_companies(cur)
+    thread, outcome = _in_thread(lambda other: database.merge_companies(other, "acme", "globex"))
+    thread.join(0.5)
+    assert thread.is_alive()
+    with scout.cursor() as cur:  # rows the merge would lock
+        cur.execute("update companies set name = name, updated_at = now() where key = any(%s)", (["acme", "globex"],))
+    scout.commit()
+    scout.close()
+    thread.join(5)
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["value"]["company"]["key"] == "globex"
+
+
+def test_a_scout_run_waits_for_a_merge_without_deadlocking(conn, monkeypatch):
+    store = _store(monkeypatch)
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    merge = database.connect(DSN)
+    with merge.cursor() as cur:  # merge_companies mid transaction
+        database.lock_companies(cur)
+        cur.execute("select key from companies where key = any(%s) for update", (["acme", "globex"],))
+        cur.execute("update companies set merged_into = 'globex', revision = revision + 1 where key = 'acme'")
+    posting = _p(title="Cloud Firmware Intern", url="https://acme.example/3")
+    thread, outcome = _in_thread(lambda other: database.upsert_open(other, [posting]))
+    edit, edited = _in_thread(lambda other: database.edit_posting(other, _p().dedupe_key, {"company": "Acme Labs"}))
+    thread.join(0.5)
+    assert thread.is_alive() and edit.is_alive()
+    merge.commit()
+    merge.close()
+    thread.join(5)
+    edit.join(5)
+    assert "error" not in outcome and "error" not in edited, (outcome, edited)
+    assert outcome["value"] == 1 and edited["value"]["id"]
+    titles = [job["title"] for job in _groups(store)["globex"]["postings"]]
+    assert "Cloud Firmware Intern" in titles
+
+
+def test_hidden_companies_cannot_be_merged(conn):
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    database.hide_company(conn, "globex", True)
+    with pytest.raises(ValueError, match="Globex is hidden. Show it in Companies before merging."):
+        database.merge_companies(conn, "acme", "globex")
+    with pytest.raises(ValueError, match="Globex is hidden"):
+        database.merge_companies(conn, "globex", "acme")
+    with conn.cursor() as cur:
+        cur.execute("select count(*) as n from company_merges")
+        assert cur.fetchone()["n"] == 0
+        cur.execute("select merged_into from companies where key = 'globex'")
+        assert cur.fetchone()["merged_into"] is None
+
+
+def test_a_merge_undo_restores_the_source_note_exactly(conn):
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    saved = database.save_company_note(conn, "Globex", "Globex notes.")
+    merged = database.merge_companies(conn, "globex", "acme")
+    # the target had no note
+    assert database.company_records(conn, "Acme")["note"]["body"] == "From Globex:\nGlobex notes."
+    database.undo_company_merge(conn, merged["merge_id"])
+    restored = database.company_records(conn, "Globex")["note"]
+    assert (restored["body"], restored["updated_at"]) == ("Globex notes.", saved["updated_at"])
+    with conn.cursor() as cur:
+        cur.execute("select company_name from company_notes where company_key = 'globex'")
+        assert cur.fetchone()["company_name"] == "Globex"
+    assert database.company_records(conn, "Acme")["note"]["body"] == ""
+
+
+def test_a_stale_merge_undo_is_refused(conn):
+    database.upsert_open(conn, [_p(), _p(company="Globex", title="Cloud Data Intern", url="https://globex.example/1")])
+    merged = database.merge_companies(conn, "globex", "acme")
+    database.save_company_note(conn, "Acme", "Written after the merge.")
+    with pytest.raises(database.EditConflict, match="notes changed"):
+        database.undo_company_merge(conn, merged["merge_id"])
+    database.create_company(conn, "Initech")
+    second = database.merge_companies(conn, "initech", "acme")
+    database.rename_company(conn, "acme", "Acme Labs")
+    with pytest.raises(database.EditConflict, match="company changed"):
+        database.undo_company_merge(conn, second["merge_id"], second["company"]["revision"])
+    assert database.company_records(conn, "Initech")["note"]["body"] == "Written after the merge."
 
 
 def test_eligibility_overrides_are_append_only_evidence_records(conn):

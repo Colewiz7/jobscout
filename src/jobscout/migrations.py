@@ -488,6 +488,28 @@ MIGRATIONS = (
         alter table contacts add column if not exists revision integer not null default 0;
         """,
     ),
+    Migration(
+        21,
+        "company_edits",
+        """
+        alter table companies add column if not exists display_name text;
+        alter table companies add column if not exists manual boolean not null default false;
+        alter table companies add column if not exists hidden_at timestamptz;
+        alter table companies add column if not exists revision integer not null default 0;
+        alter table companies add column if not exists merged_into text
+            references companies(key) on delete set null;
+        create table if not exists company_merges (
+            id          bigserial primary key,
+            source_key  text not null references companies(key) on delete cascade,
+            target_key  text not null references companies(key) on delete cascade,
+            before      jsonb not null,
+            revision    integer not null,
+            note_at     timestamptz,
+            created_at  timestamptz not null default now(),
+            undone_at   timestamptz
+        );
+        """,
+    ),
 )
 
 
