@@ -2,7 +2,7 @@
 
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
-import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible } from "./selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
@@ -669,6 +669,7 @@ function copyMenuMarkup(jobs) {
 function inboxMarkup() {
   const jobs = filteredJobs();
   buildEntries(jobs);
+  state.selectedKeys = visibleSelection(state.selectedKeys, jobs); // else bulk acts on hidden jobs
   if (!state.selectedKey || !state.jobs.some((job) => job.dedupe_key === state.selectedKey)) state.selectedKey = jobs[0]?.dedupe_key || "";
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();

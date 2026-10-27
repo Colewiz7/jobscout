@@ -39,3 +39,8 @@ export function companyLabel(companies) {
   if (companies.length > 3) return `${names.join(", ")} and ${new Intl.NumberFormat().format(companies.length - 3)} more`;
   return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join("");
 }
+
+export function visibleSelection(selectedKeys, jobs) {
+  const visible = new Set(jobs.map((job) => job.dedupe_key));
+  return new Set([...selectedKeys].filter((key) => visible.has(key)));
+}

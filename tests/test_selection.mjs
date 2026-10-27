@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible } from "../src/jobscout/static/selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "../src/jobscout/static/selection.js";
 
 const job = (key, status = "new", company = "Acme") => ({ dedupe_key: key, status, company });
 const keys = (jobs) => jobs.map((item) => item.dedupe_key);
@@ -146,4 +146,12 @@ test("companyLabel names three companies then counts the rest", () => {
   assert.equal(companyLabel(["Acme", "Globex", "Initech"]), "Acme, Globex and Initech");
   assert.equal(companyLabel(["Acme", "Globex", "Initech", "Hooli", "Umbrella"]), "Acme, Globex, Initech and 2 more");
   assert.equal(companyLabel(["A", "B", "C", "D"]), "A, B, C and 1 more");
+});
+
+test("visibleSelection drops jobs hidden by search or filter", () => {
+  const selected = new Set(["a", "b", "gone"]);
+  const pruned = visibleSelection(selected, [job("b"), job("c")]);
+  assert.deepEqual([...pruned], ["b"]);
+  assert.deepEqual([...selected], ["a", "b", "gone"]);
+  assert.equal(visibleSelection(new Set(["a"]), []).size, 0);
 });
