@@ -828,10 +828,10 @@ function inboxMarkup() {
   if (!state.selectedKey || !state.jobs.some((job) => job.dedupe_key === state.selectedKey)) state.selectedKey = jobs[0]?.dedupe_key || "";
   const selectedJob = state.jobs.find((job) => job.dedupe_key === state.selectedKey);
   const chips = activeFilterChips();
-  return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}" aria-label="Inbox">
+  return `<section class="inbox-page${state.focus ? " is-focus" : ""}${selectedKeyFromPath() ? " has-route-selection" : ""}">
     <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup()}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
-      <div class="job-viewport" id="job-viewport" role="listbox" aria-label="Jobs" aria-multiselectable="true" ${state.copySelectionMode ? 'tabindex="-1"' : ""}>${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
-    <main class="reading-pane" id="inbox-reading-pane">${detailMarkup(selectedJob)}</main>
+      <div class="job-viewport" id="job-viewport" ${jobs.length ? 'role="listbox" aria-multiselectable="true" aria-label="Jobs"' : ""} ${state.copySelectionMode ? 'tabindex="-1"' : ""}>${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
+    <section class="reading-pane" id="inbox-reading-pane" aria-label="Role detail">${detailMarkup(selectedJob)}</section>
   </section>`;
 }
 
@@ -1439,7 +1439,7 @@ function calibrationMarkup(applications) {
     const responses = rows.filter((job) => ["interviewing", "offer"].includes(job.status)).length;
     const offers = rows.filter((job) => job.status === "offer").length;
     return `<article><h3>${band.label}</h3><dl>${factItem("Applications", String(rows.length))}${factItem("Interview or offer", String(responses))}${factItem("Offers", String(offers))}</dl></article>`;
-  }).join("")}</div><div class="calibration-table"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Outcome</th></tr></thead><tbody>${applications.filter((job) => job.score != null).sort((a, b) => b.score - a.score).map((job) => `<tr><td>${new Intl.NumberFormat().format(job.score)}</td><td>${escapeHtml(job.company)}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td></tr>`).join("")}</tbody></table></div></section>`;
+  }).join("")}</div><div class="calibration-table" role="region" aria-label="Scores and outcomes" tabindex="0"><table><thead><tr><th>Score</th><th>Company</th><th>Role</th><th>Outcome</th></tr></thead><tbody>${applications.filter((job) => job.score != null).sort((a, b) => b.score - a.score).map((job) => `<tr><td>${new Intl.NumberFormat().format(job.score)}</td><td>${escapeHtml(job.company)}</td><td>${escapeHtml(job.title)}</td><td>${statusMarkup(job.status)}</td></tr>`).join("")}</tbody></table></div></section>`;
 }
 
 const trackerSorts = [["last_activity", "Last activity"], ["applied", "Date applied"], ["company", "Company"], ["status", "Status"], ["manual", "Manual"]];
