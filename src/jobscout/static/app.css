@@ -1677,12 +1677,13 @@ dialog[open]::backdrop {
   flex: 0 0 auto;
   place-items: center;
   border-radius: var(--r-full);
-  background: currentColor;
+  background: var(--on-surface);
   color: var(--surface-container-low);
   font-size: 13px;
 }
 
 .eligibility-banner.is-blocked h2 span {
+  background: var(--on-error-container);
   color: var(--error-container);
 }
 
@@ -4377,7 +4378,7 @@ body.quick-fill-popout {
 
 .confirm-dialog h2 {
   margin: 0;
-  font-size: 20px;
+  font: 400 22px/1.25 var(--font-serif);
   overflow-wrap: anywhere;
 }
 
