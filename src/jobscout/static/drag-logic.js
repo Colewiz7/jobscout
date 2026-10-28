@@ -28,6 +28,12 @@ export function keyboardTarget(index, count, key) {
   return null;
 }
 
+// row lists step left and right
+export function axisKey(key, horizontal) {
+  if (!horizontal) return key;
+  return { ArrowLeft: "ArrowUp", ArrowRight: "ArrowDown", Home: "Home", End: "End" }[key] || null;
+}
+
 // the queue may change before undo
 export function restoreOrder(previous, current) {
   const live = new Set(current);

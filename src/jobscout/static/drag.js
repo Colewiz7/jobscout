@@ -1,5 +1,5 @@
 // native dnd cant carry release velocity
-import { autoScrollSpeed, autoScrollStep, columnAt, EDGE, keyboardTarget, settleVelocity, slotIndex, startGesture } from "./drag-logic.js";
+import { autoScrollSpeed, autoScrollStep, axisKey, columnAt, EDGE, keyboardTarget, settleVelocity, slotIndex, startGesture } from "./drag-logic.js";
 import { Spring, VelocityTracker, fromRatio, springTokens } from "./motion.js";
 
 export const SPATIAL_DEFAULT = "cubic-bezier(0.21, 0.05, 0.28, 1)";
@@ -116,6 +116,7 @@ export function bindDrag(config) {
   let pending = null;
   let drag = null;
   let settling = null;
+  const horizontal = config.axis === "x";
   const itemsOf = (list, skip) => [...list.children].filter((el) => el !== skip && el.matches(config.item));
 
   const clearPending = () => { if (pending) clearTimeout(pending.timer); pending = null; };
@@ -138,6 +139,7 @@ export function bindDrag(config) {
     placeholder.className = "drag-placeholder";
     placeholder.setAttribute("aria-hidden", "true");
     Object.assign(placeholder.style, { height: `${rect.height}px`, borderRadius: getComputedStyle(item).borderRadius });
+    if (horizontal) placeholder.style.width = `${rect.width}px`;
     list.insertBefore(placeholder, item);
     Object.assign(item.style, { position: "fixed", left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, margin: "0", transformOrigin: `${x - rect.left}px ${y - rect.top}px` });
     item.classList.add("is-lifted");
@@ -158,15 +160,16 @@ export function bindDrag(config) {
     let index = 0;
     if (lists.length === 1) {
       const box = zones[0];
-      if (px < box.left - EDGE || px > box.right + EDGE) return null;
+      if (horizontal ? py < box.top - EDGE || py > box.bottom + EDGE : px < box.left - EDGE || px > box.right + EDGE) return null;
     } else {
       index = columnAt(zones, px);
       const box = zones[index];
       if (index < 0 || py < box.top - EDGE || py > box.bottom + EDGE) return null;
     }
     const list = lists[index];
-    const centre = py - drag.y + drag.rect.top + drag.rect.height / 2;
-    const slot = slotIndex(itemsOf(list, drag.item).map(layoutRect), centre);
+    const centre = horizontal ? px - drag.x + drag.rect.left + drag.rect.width / 2 : py - drag.y + drag.rect.top + drag.rect.height / 2;
+    const rects = itemsOf(list, drag.item).map(layoutRect);
+    const slot = slotIndex(horizontal ? rects.map((rect) => ({ top: rect.left, height: rect.width })) : rects, centre);
     return { list, index: config.slot ? config.slot({ list, slot, item: drag.item, origin: drag.origin }) : slot };
   }
 
@@ -444,7 +447,7 @@ export function bindDrag(config) {
     if (event.key === "Escape") { dropHeld({ restore: true }); return; }
     const at = spotOf(held.item);
     const count = itemsOf(at.list, null).length;
-    const index = config.vertical === false ? null : keyboardTarget(at.index, count, event.key);
+    const index = config.vertical === false ? null : keyboardTarget(at.index, count, axisKey(event.key, horizontal));
     if (index !== null && index !== at.index) {
       shift(at.list, index);
       config.announce(config.moved(spotOf(held.item), held.item));

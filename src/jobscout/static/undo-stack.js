@@ -43,6 +43,29 @@ export class UndoStack {
   }
 }
 
+// typing settles into one entry
+export class EditSessions {
+  constructor() { this.open = new Map(); }
+
+  begin(scope, value) { if (!this.open.has(scope)) this.open.set(scope, value); }
+
+  has(scope) { return this.open.has(scope); }
+
+  // the value it started from
+  end(scope) {
+    if (!this.open.has(scope)) return undefined;
+    const before = this.open.get(scope);
+    this.open.delete(scope);
+    return before;
+  }
+}
+
+// arrays compare by content
+export function textChange(before, after) {
+  if (before === undefined || JSON.stringify(before) === JSON.stringify(after)) return null;
+  return { before, after };
+}
+
 // merges restore their own action
 export function mergeSnackbar(item, next) {
   const step = { message: next.message, action: next.action, onAction: next.onAction, undoId: next.undoId };

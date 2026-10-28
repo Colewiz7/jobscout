@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { autoScrollSpeed, autoScrollStep, boardUndoOrders, columnAt, columnKeys, createLoadGate, createOrderSaver, manualCompare, placeKey, positionedKeys, keyboardTarget, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, settleVelocity, slotIndex, sortedInsertIndex, startGesture } from "../src/jobscout/static/drag-logic.js";
+import { autoScrollSpeed, autoScrollStep, axisKey, boardUndoOrders, columnAt, columnKeys, createLoadGate, createOrderSaver, manualCompare, placeKey, positionedKeys, keyboardTarget, liftAnnouncement, moveAnnouncement, moveKey, restoreOrder, settleVelocity, slotIndex, sortedInsertIndex, startGesture } from "../src/jobscout/static/drag-logic.js";
 import { fromRatio, solve, springTokens } from "../src/jobscout/static/motion.js";
 
 const rows = (...heights) => {
@@ -307,4 +307,13 @@ test("order saver prunes keys that left the column", async () => {
   assert.deepEqual(sent[1], ["a", "b"]); // x never went out
   gates[1].resolve();
   await saver.idle();
+});
+
+test("axisKey maps a row list onto left and right", () => {
+  assert.equal(axisKey("ArrowUp", false), "ArrowUp");
+  assert.equal(axisKey("ArrowLeft", true), "ArrowUp");
+  assert.equal(axisKey("ArrowRight", true), "ArrowDown");
+  assert.equal(axisKey("End", true), "End");
+  assert.equal(axisKey("ArrowUp", true), null);
+  assert.equal(keyboardTarget(2, 4, axisKey("ArrowDown", true)), null);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Countdown, SNACKBAR, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "../src/jobscout/static/undo-stack.js";
+import { Countdown, EditSessions, SNACKBAR, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "../src/jobscout/static/undo-stack.js";
 
 const labels = (taken) => taken && [taken.entry.label, ...taken.dropped.map((entry) => entry.label)];
 
@@ -222,4 +222,30 @@ test("a merge after a withdrawal brings the action back", () => {
   assert.equal(item.undoId, 2);
   assert.equal(item.onAction(), 2);
   assert.deepEqual(item.history.map((step) => step.undoId), [1, 2]);
+});
+
+test("EditSessions keeps the value typing started from", () => {
+  const sessions = new EditSessions();
+  sessions.begin("notes:a", "first");
+  sessions.begin("notes:a", "first and more");
+  assert.ok(sessions.has("notes:a"));
+  assert.equal(sessions.end("notes:a"), "first");
+  assert.ok(!sessions.has("notes:a"));
+  assert.equal(sessions.end("notes:a"), undefined);
+});
+
+test("EditSessions scopes each record apart", () => {
+  const sessions = new EditSessions();
+  sessions.begin("notes:a", "a");
+  sessions.begin("notes:b", "b");
+  assert.equal(sessions.end("notes:b"), "b");
+  assert.equal(sessions.end("notes:a"), "a");
+});
+
+test("textChange skips edits that end where they began", () => {
+  assert.equal(textChange("same", "same"), null);
+  assert.equal(textChange(undefined, "typed"), null);
+  assert.deepEqual(textChange("old", ""), { before: "old", after: "" });
+  assert.equal(textChange(["a", "b"], ["a", "b"]), null);
+  assert.deepEqual(textChange(["a"], ["a", "b"]), { before: ["a"], after: ["a", "b"] });
 });
