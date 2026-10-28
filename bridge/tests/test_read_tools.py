@@ -72,8 +72,9 @@ def test_rules_views_profile_and_ics(call):
 
 def test_every_read_tool_is_marked_read_only(listing):
     tools = {tool.name: tool for tool in listing()}
-    assert {"status", "inbox_list", "job_get", "queue_get", "tracker_get", "companies_list", "company_get", "rules_list", "views_list", "profile_get", "interviews_ics"} <= set(tools)
-    for tool in tools.values():
+    names = {"status", "inbox_list", "job_get", "queue_get", "tracker_get", "companies_list", "company_get", "rules_list", "views_list", "profile_get", "interviews_ics"}
+    assert names <= set(tools)
+    for tool in (tools[name] for name in names):
         assert tool.annotations.readOnlyHint is True
         assert tool.annotations.destructiveHint is False
 

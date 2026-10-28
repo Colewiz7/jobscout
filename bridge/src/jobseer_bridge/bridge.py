@@ -7,6 +7,7 @@ from .client import ApiError, BridgeError, Client, Conflict
 from .config import Config
 from .registry import annotations, collect
 from .tools_read import ReadTools
+from .tools_write import WriteTools
 
 
 # compact text only, no duplicate structured copy
@@ -14,7 +15,7 @@ def pack(payload) -> str:
     return json.dumps(payload, separators=(",", ":"), default=str)
 
 
-class Bridge(ReadTools):
+class Bridge(ReadTools, WriteTools):
     def __init__(self, config: Config, client: Client | None = None):
         self.config = config
         self.client = client or Client(config)
