@@ -104,6 +104,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 23, "name": "rule_edits"},
             {"version": 24, "name": "job_tags"},
             {"version": 25, "name": "eligibility_override_revokes"},
+            {"version": 26, "name": "reminder_edits"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -880,6 +881,61 @@ def test_tracker_followups_interviews_and_company_records(conn):
         database.save_contact(conn, {"company": "Unknown", "name": "No One"})
     with pytest.raises(ValueError, match="company not found"):
         database.save_company_note(conn, "Unknown", "Not persisted")
+
+
+def test_follow_ups_reopen_snooze_and_sit_beside_hand_made_ones(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    database.save_application_state(conn, key, "applied", "")
+    automatic = database.tracker_support(conn)["reminders"][0]
+    later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=5)
+
+    manual = database.add_reminder(conn, key, later, "  Ask about the team ")
+    second = database.add_reminder(conn, key, later, "")
+    assert (manual["kind"], manual["note"]) == ("manual", "Ask about the team")
+    assert database.add_reminder(conn, "missing", later) is None
+    assert database.reminder_key(conn, manual["id"]) == key
+
+    snoozed = database.save_reminder(conn, automatic["id"], "snooze", until=later, expected=automatic["revision"])
+    assert snoozed["previous"]["status"] == "pending"
+    assert snoozed["reminder"]["snoozed_until"] == later
+    done = database.save_reminder(conn, automatic["id"], "done")["reminder"]
+    with pytest.raises(ValueError):
+        database.save_reminder(conn, automatic["id"], "snooze")
+    support = database.tracker_support(conn)
+    assert [item["id"] for item in support["done_reminders"]] == [automatic["id"]]
+    assert automatic["id"] not in [item["id"] for item in support["reminders"]]
+    reopened = database.save_reminder(conn, automatic["id"], "reopen", expected=done["revision"])["reminder"]
+    assert reopened["status"] == "snoozed"
+    with pytest.raises(database.RecordConflict):
+        database.save_reminder(conn, automatic["id"], "done", expected=done["revision"])
+    assert database.save_reminder(conn, automatic["id"], "unsnooze")["reminder"]["snoozed_until"] is None
+    assert database.save_reminder(conn, 999_999, "done") is None
+
+    # reapplying resets only the automatic one
+    database.save_application_state(conn, key, "interviewing", "")
+    database.save_application_state(conn, key, "applied", "x")
+    kinds = sorted(item["kind"] for item in database.tracker_support(conn)["reminders"])
+    assert kinds == ["follow_up", "manual", "manual"]
+    assert database.delete_reminder(conn, automatic["id"]) is False
+    assert database.delete_reminder(conn, second["id"]) is True
+    assert database.delete_reminder(conn, second["id"]) is False
+
+
+def test_follow_ups_of_hidden_jobs_are_left_alone(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=5)
+    manual = database.add_reminder(conn, key, later)
+    database.hide_jobs(conn, [key])
+    assert database.add_reminder(conn, key, later) is None
+    assert database.save_reminder(conn, manual["id"], "done") is None
+    assert database.delete_reminder(conn, manual["id"]) is False
+    with conn.cursor() as cur:
+        cur.execute("select status, revision from reminders where id = %s", (manual["id"],))
+        assert cur.fetchone() == {"status": "pending", "revision": 0}
 
 
 def test_posting_edits_survive_a_scout_refresh_and_undo_in_order(conn):

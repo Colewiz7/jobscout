@@ -983,6 +983,98 @@ def test_tracker_followup_interview_calendar_and_next_step(dashboard):
     assert "Video call" in calendar.text
 
 
+def _soon(**delta):
+    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(**delta)).isoformat()
+
+
+def test_follow_ups_reopen_snooze_to_a_date_and_are_added_by_hand(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        reminder = client.get("/api/v1/tracker").json()["reminders"][0]
+        path = f"/api/v1/reminders/{reminder['id']}"
+        snoozed = client.put(path, headers=headers, json={"action": "snooze", "until": _soon(days=7), "expected_revision": reminder["revision"]})
+        done = client.put(path, headers=headers, json={"action": "done"})
+        after_done = client.get("/api/v1/tracker").json()
+        cant_snooze = client.put(path, headers=headers, json={"action": "snooze", "until": _soon(days=1)})
+        reopened = client.put(path, headers=headers, json={"action": "reopen", "expected_revision": done.json()["reminder"]["revision"]})
+        stale = client.put(path, headers=headers, json={"action": "done", "expected_revision": done.json()["reminder"]["revision"]})
+        unsnoozed = client.put(path, headers=headers, json={"action": "unsnooze"})
+        added = client.post("/api/v1/reminders", headers=headers,
+                            json={"dedupe_key": "demo:2", "due_at": _soon(days=3), "note": " Ask about the team "})
+        listed = client.get("/api/v1/tracker").json()["reminders"]
+        removed = client.delete(f"/api/v1/reminders/{added.json()['reminder']['id']}", headers=headers)
+        automatic = client.delete(path, headers=headers)
+        final = client.get("/api/v1/tracker").json()["reminders"]
+    finally:
+        client.close()
+
+    assert snoozed.status_code == 200
+    assert snoozed.json()["previous"]["status"] == "pending"
+    assert snoozed.json()["reminder"]["status"] == "snoozed"
+    assert done.json()["reminder"]["status"] == "done"
+    assert after_done["reminders"] == []
+    assert after_done["done_reminders"][0]["id"] == reminder["id"]
+    assert cant_snooze.status_code == 400
+    # reopening keeps the snooze it had
+    assert reopened.json()["reminder"]["status"] == "snoozed"
+    assert stale.status_code == 409
+    assert stale.json()["reminder"]["status"] == "snoozed"
+    assert unsnoozed.json()["reminder"]["status"] == "pending"
+    assert unsnoozed.json()["reminder"]["snoozed_until"] is None
+    assert added.status_code == 201
+    assert added.json()["reminder"]["kind"] == "manual"
+    assert added.json()["reminder"]["note"] == "Ask about the team"
+    assert [item["kind"] for item in listed] == ["manual", "follow_up"]
+    assert removed.status_code == 200
+    assert automatic.status_code == 404
+    assert [item["kind"] for item in final] == ["follow_up"]
+
+
+def test_follow_up_writes_check_auth_csrf_input_and_hidden_jobs(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        reminder = client.get("/api/v1/tracker").json()["reminders"][0]
+        path = f"/api/v1/reminders/{reminder['id']}"
+        no_auth = httpx.put(f"{base}{path}", json={"action": "done"}, timeout=2)
+        no_csrf = client.put(path, json={"action": "done"})
+        no_csrf_add = client.post("/api/v1/reminders", json={"dedupe_key": "demo:2", "due_at": _soon(days=1)})
+        no_csrf_delete = client.delete(path)
+        bad_action = client.put(path, headers=headers, json={"action": "later"})
+        far = client.put(path, headers=headers, json={"action": "snooze", "until": _soon(days=400)})
+        naive = client.put(path, headers=headers, json={"action": "snooze", "until": "2026-11-01T09:00:00"})
+        stray_date = client.put(path, headers=headers, json={"action": "done", "until": _soon(days=1)})
+        extra = client.put(path, headers=headers, json={"action": "done", "status": "done"})
+        bad_id = client.put("/api/v1/reminders/soon", headers=headers, json={"action": "done"})
+        missing = client.put("/api/v1/reminders/999", headers=headers, json={"action": "done"})
+        no_date = client.post("/api/v1/reminders", headers=headers, json={"dedupe_key": "demo:2"})
+        long_note = client.post("/api/v1/reminders", headers=headers, json={"dedupe_key": "demo:2", "due_at": _soon(days=1), "note": "x" * 501})
+        no_job = client.post("/api/v1/reminders", headers=headers, json={"dedupe_key": "demo:404", "due_at": _soon(days=1)})
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden_update = client.put(path, headers=headers, json={"action": "done"})
+        hidden_add = client.post("/api/v1/reminders", headers=headers, json={"dedupe_key": "demo:2", "due_at": _soon(days=1)})
+        hidden_delete = client.delete(path, headers=headers)
+    finally:
+        client.close()
+
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert no_csrf_add.status_code == 403
+    assert no_csrf_delete.status_code == 403
+    for response in (bad_action, far, naive, stray_date, extra, bad_id, no_date, long_note):
+        assert response.status_code == 400, response.text
+    assert missing.status_code == 404
+    assert no_job.status_code == 404
+    assert hidden_update.status_code == 410
+    assert hidden_add.status_code == 410
+    assert hidden_delete.status_code == 410
+
+
 def test_interviews_are_edited_cancelled_deleted_and_restored(dashboard):
     base, _ = dashboard
     client, token = authenticated_client(base)

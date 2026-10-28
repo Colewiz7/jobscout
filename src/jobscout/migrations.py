@@ -567,6 +567,20 @@ MIGRATIONS = (
         alter table eligibility_overrides add column if not exists revoked_at timestamptz;
         """,
     ),
+    Migration(
+        26,
+        "reminder_edits",
+        """
+        alter table reminders drop constraint if exists reminders_kind_check;
+        alter table reminders add constraint reminders_kind_check
+            check (kind in ('follow_up', 'deadline', 'interview', 'manual'));
+        alter table reminders drop constraint if exists reminders_dedupe_key_kind_key;
+        create unique index if not exists reminders_job_kind_idx
+            on reminders (dedupe_key, kind) where kind <> 'manual';
+        alter table reminders add column if not exists note text not null default '';
+        alter table reminders add column if not exists revision integer not null default 0;
+        """,
+    ),
 )
 
 

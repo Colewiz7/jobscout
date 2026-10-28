@@ -1649,7 +1649,7 @@ def save_application_state(
                 """
                 insert into reminders (dedupe_key, kind, due_at)
                 values (%s, 'follow_up', now() + interval '7 days')
-                on conflict (dedupe_key, kind) do update set
+                on conflict (dedupe_key, kind) where kind <> 'manual' do update set
                     due_at = excluded.due_at, status = 'pending',
                     snoozed_until = null, completed_at = null
                 """,
@@ -1836,7 +1836,7 @@ def mark_application_applied(
             """
             insert into reminders (dedupe_key, kind, due_at)
             values (%s, 'follow_up', now() + interval '7 days')
-            on conflict (dedupe_key, kind) do update set
+            on conflict (dedupe_key, kind) where kind <> 'manual' do update set
                 due_at = excluded.due_at, status = 'pending',
                 snoozed_until = null, completed_at = null
             """,
@@ -1902,18 +1902,23 @@ def tracker_support(conn: psycopg.Connection) -> dict:
     with conn.cursor() as cur:
         cur.execute(
             """
-            select r.id, r.dedupe_key, r.kind, r.due_at, r.status,
-                   r.snoozed_until, coalesce(min(o.company), min(p.company)) as company,
+            select r.id, r.dedupe_key, r.kind, r.due_at, r.status, r.snoozed_until,
+                   r.completed_at, r.note, r.revision,
+                   coalesce(min(o.company), min(p.company)) as company,
                    coalesce(min(o.title), min(p.title)) as title
               from reminders r
               join postings p on p.dedupe_key = r.dedupe_key
               left join posting_overrides o on o.dedupe_key = r.dedupe_key
-             where r.status <> 'done' and p.hidden_by is null
+             where p.hidden_by is null
+               and (r.status <> 'done' or r.completed_at > now() - interval '14 days')
              group by r.id
              order by coalesce(r.snoozed_until, r.due_at), r.id
             """
         )
-        reminders = cur.fetchall()
+        rows = cur.fetchall()
+        reminders = [row for row in rows if row["status"] != "done"]
+        # recent ones can be reopened
+        done = sorted((row for row in rows if row["status"] == "done"), key=lambda row: row["completed_at"], reverse=True)[:20]
         cur.execute(_INTERVIEWS.format(where="i.deleted_at is null"))
         interviews = cur.fetchall()
         cur.execute(
@@ -1928,34 +1933,104 @@ def tracker_support(conn: psycopg.Connection) -> dict:
             """
         )
         history = cur.fetchall()
-    return {"reminders": reminders, "interviews": interviews, "history": history}
+    return {"reminders": reminders, "done_reminders": done, "interviews": interviews, "history": history}
 
 
-def save_reminder(conn: psycopg.Connection, reminder_id: int, action: str) -> dict | None:
-    if action not in {"done", "snooze"}:
-        raise ValueError("reminder action must be done or snooze")
+REMINDER_ACTIONS = frozenset({"done", "reopen", "snooze", "unsnooze"})
+_REMINDER_COLUMNS = "id, dedupe_key, kind, due_at, status, snoozed_until, completed_at, note, revision"
+
+
+def reminder_key(conn: psycopg.Connection, reminder_id: int) -> str | None:
     with conn.cursor() as cur:
-        if action == "done":
-            cur.execute(
-                """
-                update reminders set status = 'done', completed_at = now()
-                 where id = %s returning *
-                """,
-                (reminder_id,),
-            )
-        else:
-            cur.execute(
-                """
-                update reminders
-                   set status = 'snoozed', snoozed_until = now() + interval '3 days',
-                       completed_at = null
-                 where id = %s returning *
-                """,
-                (reminder_id,),
-            )
-        saved = cur.fetchone()
+        cur.execute("select dedupe_key from reminders where id = %s", (reminder_id,))
+        row = cur.fetchone()
+        return row["dedupe_key"] if row else None
+
+
+def save_reminder(
+    conn: psycopg.Connection,
+    reminder_id: int,
+    action: str,
+    *,
+    until: dt.datetime | None = None,
+    expected: int | None = None,
+) -> dict | None:
+    """Returns the reminder before and after."""
+    if action not in REMINDER_ACTIONS:
+        raise ValueError("reminder action must be done, reopen, snooze or unsnooze")
+    with conn.cursor() as cur:
+        # hidden jobs stay as they were
+        cur.execute(
+            f"""
+            select {_REMINDER_COLUMNS} from reminders r
+             where id = %s and not exists (
+                 select 1 from postings p where p.dedupe_key = r.dedupe_key and p.hidden_by is not null
+             )
+               for update
+            """,
+            (reminder_id,),
+        )
+        previous = cur.fetchone()
+        if previous is None:
+            return None
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        if action != "done" and action != "reopen" and previous["status"] == "done":
+            raise ValueError("Reopen this follow-up before snoozing it")
+        changes = {
+            # keeps the snooze for reopen
+            "done": "status = 'done', completed_at = now()",
+            "reopen": "status = case when snoozed_until > now() then 'snoozed' else 'pending' end, completed_at = null",
+            "snooze": "status = 'snoozed', snoozed_until = coalesce(%(until)s, now() + interval '3 days'), completed_at = null",
+            "unsnooze": "status = 'pending', snoozed_until = null, completed_at = null",
+        }[action]
+        cur.execute(
+            f"update reminders set {changes}, revision = revision + 1 where id = %(id)s returning {_REMINDER_COLUMNS}",
+            {"id": reminder_id, "until": until},
+        )
+        reminder = cur.fetchone()
     conn.commit()
-    return saved
+    return {"reminder": reminder, "previous": previous}
+
+
+def add_reminder(conn: psycopg.Connection, dedupe_key: str, due_at: dt.datetime, note: str = "") -> dict | None:
+    note = note.strip()
+    if len(note) > 500:
+        raise ValueError("A follow-up note must be under 500 characters")
+    with conn.cursor() as cur:
+        cur.execute(
+            "select 1 from postings where dedupe_key = %s group by dedupe_key having bool_and(hidden_by is null)",
+            (dedupe_key,),
+        )
+        if cur.fetchone() is None:
+            return None
+        cur.execute(
+            f"""
+            insert into reminders (dedupe_key, kind, due_at, note)
+            values (%s, 'manual', %s, %s) returning {_REMINDER_COLUMNS}
+            """,
+            (dedupe_key, due_at, note),
+        )
+        reminder = cur.fetchone()
+    conn.commit()
+    return reminder
+
+
+def delete_reminder(conn: psycopg.Connection, reminder_id: int) -> bool:
+    # only hand-made ones go away
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            delete from reminders r where id = %s and kind = 'manual' and not exists (
+                select 1 from postings p where p.dedupe_key = r.dedupe_key and p.hidden_by is not null
+            ) returning id
+            """,
+            (reminder_id,),
+        )
+        deleted = cur.fetchone() is not None
+    conn.commit()
+    return deleted
 
 
 def add_interview(

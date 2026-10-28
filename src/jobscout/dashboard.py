@@ -170,6 +170,42 @@ def _contact_changes(payload: dict) -> dict:
     return changes
 
 
+def _reminder_change(payload: dict) -> tuple[str, dt.datetime | None, int | None]:
+    payload = dict(payload)
+    expected = _expected_revision(payload)
+    unknown = sorted(set(payload) - {"action", "until"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be changed")
+    action = payload.get("action")
+    if action not in database.REMINDER_ACTIONS:
+        raise ValueError("reminder action must be done, reopen, snooze or unsnooze")
+    until = _parse_client_datetime(payload.get("until"), "snooze date", optional=True)
+    if until is not None and action != "snooze":
+        raise ValueError("only a snooze takes a date")
+    _within_a_year(until, "snooze date")
+    return action, until, expected
+
+
+# undo may send a past date
+def _within_a_year(value: dt.datetime | None, label: str) -> None:
+    if value is not None and abs(value - dt.datetime.now(dt.timezone.utc)) > dt.timedelta(days=366):
+        raise ValueError(f"{label} must be within a year of today")
+
+
+def _new_reminder(payload: dict) -> tuple[str, dt.datetime, str]:
+    unknown = sorted(set(payload) - {"dedupe_key", "due_at", "note"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be set")
+    key, note = payload.get("dedupe_key"), payload.get("note", "")
+    if not isinstance(key, str) or not key or not isinstance(note, str):
+        raise ValueError("a follow-up needs a job and a text note")
+    if len(note.strip()) > 500:
+        raise ValueError("A follow-up note must be under 500 characters")
+    due_at = _parse_client_datetime(payload.get("due_at"), "follow-up date")
+    _within_a_year(due_at, "follow-up date")
+    return key, due_at, note.strip()
+
+
 def _rule_changes(payload: dict) -> dict:
     unknown = sorted(set(payload) - {"name", "kind", "pattern", "value"})
     if unknown:
@@ -707,10 +743,27 @@ class PostgresStore:
             support = database.tracker_support(conn)
         return {"applications": applications, **support}
 
-    def update_reminder(self, reminder_id: int, action: str) -> dict | None:
+    def update_reminder(self, reminder_id: int, payload: dict) -> dict | None:
+        action, until, expected = _reminder_change(payload)
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_reminder(conn, reminder_id, action)
+            return database.save_reminder(conn, reminder_id, action, until=until, expected=expected)
+
+    def reminder_key(self, reminder_id: int) -> str | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.reminder_key(conn, reminder_id)
+
+    def add_reminder(self, payload: dict) -> dict | None:
+        key, due_at, note = _new_reminder(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.add_reminder(conn, key, due_at, note)
+
+    def delete_reminder(self, reminder_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_reminder(conn, reminder_id)
 
     def add_interview(self, payload: dict) -> dict:
         starts_at = _parse_client_datetime(payload.get("starts_at"), "interview start")
@@ -1193,7 +1246,7 @@ class DemoStore:
                     "kind": "follow_up",
                     "due_at": row["applied_at"] + dt.timedelta(days=7),
                     "status": "pending",
-                    "snoozed_until": None,
+                    "snoozed_until": None, "completed_at": None, "note": "", "revision": 0,
                     "company": row["company"],
                     "title": row["title"],
                 })
@@ -1201,25 +1254,25 @@ class DemoStore:
 
     def _upsert_demo_followup(self, row: dict) -> None:
         reminder = next(
-            (item for item in self._reminders if item["dedupe_key"] == row["dedupe_key"]),
+            (item for item in self._reminders if item["dedupe_key"] == row["dedupe_key"] and item["kind"] == "follow_up"),
             None,
         )
         values = {
             "dedupe_key": row["dedupe_key"], "kind": "follow_up",
             "due_at": row["applied_at"] + dt.timedelta(days=7),
-            "status": "pending", "snoozed_until": None,
+            "status": "pending", "snoozed_until": None, "completed_at": None,
             "company": row["company"], "title": row["title"],
         }
         if reminder:
             reminder.update(values)
         else:
-            self._reminders.append({"id": self._next_reminder_id, **values})
+            self._reminders.append({"id": self._next_reminder_id, "note": "", "revision": 0, **values})
             self._next_reminder_id += 1
 
     def _complete_demo_followup(self, key: str) -> None:
         for reminder in self._reminders:
-            if reminder["dedupe_key"] == key and reminder["kind"] == "follow_up":
-                reminder["status"] = "done"
+            if reminder["dedupe_key"] == key and reminder["kind"] == "follow_up" and reminder["status"] != "done":
+                reminder.update(status="done", completed_at=dt.datetime.now(dt.timezone.utc))
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         counts: dict[str, int] = {}
@@ -1602,10 +1655,15 @@ class DemoStore:
         visible = {row["dedupe_key"] for row in self.rows if not self._is_hidden(row)}
         return {
             "applications": applications,
-            "reminders": copy.deepcopy([
-                reminder for reminder in self._reminders
+            "reminders": copy.deepcopy(sorted((
+                self._named(reminder) for reminder in self._reminders
                 if reminder["status"] != "done" and reminder["dedupe_key"] in visible
-            ]),
+            ), key=lambda item: (item["snoozed_until"] or item["due_at"], item["id"]))),
+            "done_reminders": copy.deepcopy(sorted((
+                self._named(reminder) for reminder in self._reminders
+                if reminder["status"] == "done" and reminder["dedupe_key"] in visible
+                and reminder["completed_at"] > dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=14)
+            ), key=lambda item: item["completed_at"], reverse=True)[:20]),
             "interviews": copy.deepcopy(sorted(
                 (self._named(item) for item in self._interviews
                  if item["dedupe_key"] in visible and not item.get("deleted")),
@@ -1659,20 +1717,48 @@ class DemoStore:
         interview["deleted"] = False
         return self._named(interview)
 
-    def update_reminder(self, reminder_id: int, action: str) -> dict | None:
-        if action not in {"done", "snooze"}:
-            raise ValueError("reminder action must be done or snooze")
+    def update_reminder(self, reminder_id: int, payload: dict) -> dict | None:
+        action, until, expected = _reminder_change(payload)
         reminder = next((item for item in self._reminders if item["id"] == reminder_id), None)
         if reminder is None:
             return None
+        previous = self._named(reminder)
+        if expected is not None and reminder["revision"] != expected:
+            raise database.RecordConflict(previous)
+        if action not in {"done", "reopen"} and reminder["status"] == "done":
+            raise ValueError("Reopen this follow-up before snoozing it")
+        now = dt.datetime.now(dt.timezone.utc)
         if action == "done":
-            reminder.update(status="done", completed_at=dt.datetime.now(dt.timezone.utc))
+            reminder.update(status="done", completed_at=now)
+        elif action == "reopen":
+            snoozed = reminder["snoozed_until"] is not None and reminder["snoozed_until"] > now
+            reminder.update(status="snoozed" if snoozed else "pending", completed_at=None)
+        elif action == "snooze":
+            reminder.update(status="snoozed", snoozed_until=until or now + dt.timedelta(days=3), completed_at=None)
         else:
-            reminder.update(
-                status="snoozed",
-                snoozed_until=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=3),
-            )
-        return copy.deepcopy(reminder)
+            reminder.update(status="pending", snoozed_until=None, completed_at=None)
+        reminder["revision"] += 1
+        return {"reminder": self._named(reminder), "previous": previous}
+
+    def reminder_key(self, reminder_id: int) -> str | None:
+        return next((item["dedupe_key"] for item in self._reminders if item["id"] == reminder_id), None)
+
+    def add_reminder(self, payload: dict) -> dict | None:
+        key, due_at, note = _new_reminder(payload)
+        if not any(row["dedupe_key"] == key and not self._is_hidden(row) for row in self.rows):
+            return None
+        reminder = {
+            "id": self._next_reminder_id, "dedupe_key": key, "kind": "manual", "due_at": due_at,
+            "status": "pending", "snoozed_until": None, "completed_at": None, "note": note, "revision": 0,
+        }
+        self._next_reminder_id += 1
+        self._reminders.append(reminder)
+        return self._named(reminder)
+
+    def delete_reminder(self, reminder_id: int) -> bool:
+        before = len(self._reminders)
+        self._reminders = [item for item in self._reminders if not (item["id"] == reminder_id and item["kind"] == "manual")]
+        return len(self._reminders) != before
 
     def add_interview(self, payload: dict) -> dict:
         starts_at = _parse_client_datetime(payload.get("starts_at"), "interview start")
@@ -2345,6 +2431,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if hidden:
             self._error(HTTPStatus.GONE, HIDDEN_WRITE)
         return hidden
+
+    def _reminder_write(self, raw_id: str, action: str) -> None:
+        if not self._require_write_security():
+            return
+        store = self.app.store
+        try:
+            if action == "add":
+                payload = self._read_json()
+                if self._reject_hidden(str(payload.get("dedupe_key") or "")):
+                    return
+                reminder = store.add_reminder(payload)
+                if reminder is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                else:
+                    self._json({"reminder": reminder}, HTTPStatus.CREATED)
+                return
+            reminder_id = int(raw_id)
+            key = store.reminder_key(reminder_id)
+            if key is None:
+                self._error(HTTPStatus.NOT_FOUND, "reminder not found")
+                return
+            if self._reject_hidden(key):
+                return
+            if action == "delete":
+                result = {"ok": True} if store.delete_reminder(reminder_id) else None
+            else:
+                result = store.update_reminder(reminder_id, self._read_json())
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except database.RecordConflict as conflict:
+            self._json({"error": "This follow-up changed in another tab.", "reminder": conflict.record}, HTTPStatus.CONFLICT)
+            return
+        except Exception:
+            log.exception("could not change reminder")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the follow-up. Retry shortly.")
+            return
+        if result is None:
+            self._error(HTTPStatus.NOT_FOUND, "reminder not found")
+            return
+        self._json(result)
 
     # revoke and its undo share this
     def _change_override(self, key: str, *, restore: bool) -> None:
@@ -3075,6 +3202,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if self._record_route(parsed.path, "POST") or self._company_route(parsed.path, "POST"):
             return
+        if parsed.path == "/api/v1/reminders":
+            self._reminder_write("", "add")
+            return
         if parsed.path == "/api/v1/interviews":
             if not self._require_write_security():
                 return
@@ -3266,24 +3396,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         reminder_prefix = "/api/v1/reminders/"
         if parsed.path.startswith(reminder_prefix):
-            if not self._require_write_security():
-                return
-            try:
-                reminder_id = int(parsed.path.removeprefix(reminder_prefix))
-                reminder = self.app.store.update_reminder(
-                    reminder_id, str(self._read_json().get("action") or "")
-                )
-            except (json.JSONDecodeError, TypeError, ValueError) as error:
-                self._error(HTTPStatus.BAD_REQUEST, str(error))
-                return
-            except Exception:
-                log.exception("could not update reminder")
-                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the reminder. Retry shortly.")
-                return
-            if reminder is None:
-                self._error(HTTPStatus.NOT_FOUND, "reminder not found")
-                return
-            self._json({"reminder": reminder})
+            self._reminder_write(parsed.path.removeprefix(reminder_prefix), "update")
             return
         next_step_prefix = "/api/v1/applications/"
         next_step_suffix = "/next-step"
@@ -3407,6 +3520,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         if self._record_route(parsed.path, "DELETE"):
+            return
+        if parsed.path.startswith("/api/v1/reminders/"):
+            self._reminder_write(parsed.path.removeprefix("/api/v1/reminders/"), "delete")
             return
         override_prefix, override_suffix = "/api/v1/jobs/", "/eligibility/override"
         if parsed.path.startswith(override_prefix) and parsed.path.endswith(override_suffix):
