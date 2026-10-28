@@ -5394,3 +5394,15 @@ body.quick-fill-popout {
     min-height: 48px;
   }
 }
+
+@media (max-width: 599px) {
+  /* keeps decline actions together */
+  .submission-prompt > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .submission-prompt > div > :first-child {
+    grid-column: 1 / -1;
+  }
+}
