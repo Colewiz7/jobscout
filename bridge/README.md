@@ -48,6 +48,7 @@ this config; use `JOBSEER_TOKEN_CMD` below.
 | `JOBSEER_READONLY` | `1` registers only the read tools and refuses writes |
 | `JOBSEER_CACHE_TTL` | seconds to reuse the inbox list, default 10 |
 | `JOBSEER_TOKEN` | app password, sent as HTTP Basic auth on every request |
+| `JOBSEER_TOKEN_FILE` | file holding the token, read once at startup; warns if group or other can read it |
 | `JOBSEER_TOKEN_CMD` | command whose output is the token, run once at startup |
 | `JOBSEER_USER` | Basic auth user name, default `cole` |
 | `JOBSEER_AUTHENTIK_USER` | send the proxy headers, for a local non-demo server only |
@@ -74,6 +75,7 @@ whether auth was accepted and the session user. It exits 0 on success and never 
 
 - `JOBSEER_TOKEN_CMD` is split into words and run without a shell, once, with a 5 second timeout.
   Its stderr is discarded. If `JOBSEER_TOKEN` is also set, that value is used and the command is skipped.
+  Precedence is `JOBSEER_TOKEN`, then `JOBSEER_TOKEN_FILE`, then `JOBSEER_TOKEN_CMD`.
 - With a token, a non-loopback target must use https. Plain http is allowed only for localhost,
   `127.0.0.0/8` and `::1`.
 - A token turns off the proxy header mode, so the two are never sent together.

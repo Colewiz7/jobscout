@@ -50,3 +50,62 @@ def test_direct_construction_is_validated_too():
 
 def test_origin_drops_the_path():
     assert Config(url="http://127.0.0.1:9/base/path").origin == "http://127.0.0.1:9"
+
+
+def test_token_file_is_read_and_stripped(tmp_path):
+    path = tmp_path / "token"
+    path.write_text("  file-secret-1\n")
+    path.chmod(0o600)
+    config = Config.from_env({"JOBSEER_TOKEN_FILE": str(path)})
+    assert config.token == "file-secret-1"
+    assert "file-secret-1" not in repr(config)
+
+
+def test_token_precedence_is_value_then_file_then_command(tmp_path):
+    path = tmp_path / "token"
+    path.write_text("from-file")
+    path.chmod(0o600)
+    ran = []
+
+    def runner(command):
+        ran.append(command)
+        return "from-cmd"
+
+    both = {"JOBSEER_TOKEN_FILE": str(path), "JOBSEER_TOKEN_CMD": "x"}
+    assert Config.from_env(both, runner=runner).token == "from-file"
+    assert Config.from_env({**both, "JOBSEER_TOKEN": "from-env"}, runner=runner).token == "from-env"
+    assert Config.from_env({"JOBSEER_TOKEN_CMD": "x"}, runner=runner).token == "from-cmd"
+    assert ran == ["x"]
+
+
+def test_token_file_warns_when_others_can_read(tmp_path, capsys):
+    path = tmp_path / "token"
+    path.write_text("loose-secret")
+    path.chmod(0o644)
+    assert Config.from_env({"JOBSEER_TOKEN_FILE": str(path)}).token == "loose-secret"
+    seen = capsys.readouterr()
+    assert "readable by other users" in seen.err
+    assert "loose-secret" not in seen.err + seen.out
+
+
+def test_strict_mode_file_is_silent(tmp_path, capsys):
+    path = tmp_path / "token"
+    path.write_text("quiet-secret")
+    path.chmod(0o400)
+    Config.from_env({"JOBSEER_TOKEN_FILE": str(path)})
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("content", [b"", b"  \n", b"\xff\xfe\x00"])
+def test_bad_token_file_content_is_rejected(tmp_path, content):
+    path = tmp_path / "token"
+    path.write_bytes(content)
+    path.chmod(0o600)
+    with pytest.raises(ValueError):
+        Config.from_env({"JOBSEER_TOKEN_FILE": str(path)})
+
+
+def test_missing_token_file_error_does_not_echo_the_path_content(tmp_path):
+    with pytest.raises(ValueError) as caught:
+        Config.from_env({"JOBSEER_TOKEN_FILE": str(tmp_path / "absent")})
+    assert "could not be read" in str(caught.value)

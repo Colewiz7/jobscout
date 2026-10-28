@@ -2,7 +2,9 @@ import base64
 import ipaddress
 import os
 import shlex
+import stat
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -12,6 +14,7 @@ DEFAULT_URL = "http://127.0.0.1:8080"
 DEFAULT_USER = "cole"
 TRUE = {"1", "true", "yes", "on"}
 TOKEN_CMD_TIMEOUT = 5.0
+MAX_TOKEN_FILE = 8192
 HIDDEN = "[redacted]"
 
 
@@ -59,6 +62,32 @@ def run_token_cmd(command: str, timeout: float = TOKEN_CMD_TIMEOUT) -> str:
     return token
 
 
+# errors must not leak secret
+def read_token_file(path: str) -> str:
+    problem = None
+    token = ""
+    try:
+        with open(path, "rb") as handle:
+            if stat.S_IMODE(os.fstat(handle.fileno()).st_mode) & 0o077:
+                sys.stderr.write("jobseer-bridge: warning: JOBSEER_TOKEN_FILE is readable by other users\n")
+            raw = handle.read(MAX_TOKEN_FILE + 1)
+    except OSError:
+        raw = b""
+        problem = "JOBSEER_TOKEN_FILE could not be read"
+    if problem is None and len(raw) > MAX_TOKEN_FILE:
+        problem = "JOBSEER_TOKEN_FILE is too large"
+    if problem is None:
+        try:
+            token = raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            problem = "JOBSEER_TOKEN_FILE holds non-text data"
+    if problem is None and not token:
+        problem = "JOBSEER_TOKEN_FILE is empty"
+    if problem:
+        raise ValueError(problem)
+    return token
+
+
 @dataclass(frozen=True, repr=False)
 class Config:
     url: str = DEFAULT_URL
@@ -76,7 +105,10 @@ class Config:
         env = os.environ if env is None else env
         url = (env.get("JOBSEER_URL") or DEFAULT_URL).strip().rstrip("/")
         token = (env.get("JOBSEER_TOKEN") or "").strip() or None
+        path = (env.get("JOBSEER_TOKEN_FILE") or "").strip()
         command = (env.get("JOBSEER_TOKEN_CMD") or "").strip()
+        if token is None and path:
+            token = read_token_file(path)
         # skip prompts when token given
         if token is None and command:
             token = runner(command)
