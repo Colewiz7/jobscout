@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "../src/jobscout/static/selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, fitActions, loadLatest, moveGroup, pruneKeys, rangeSelection, restoreSlots, selectAllVisible, splitEligible, stepKey, toggleKey, visibleSelection } from "../src/jobscout/static/selection.js";
 
 const job = (key, status = "new", company = "Acme") => ({ dedupe_key: key, status, company });
 const keys = (jobs) => jobs.map((item) => item.dedupe_key);
@@ -154,4 +154,91 @@ test("visibleSelection drops jobs hidden by search or filter", () => {
   assert.deepEqual([...pruned], ["b"]);
   assert.deepEqual([...selected], ["a", "b", "gone"]);
   assert.equal(visibleSelection(new Set(["a"]), []).size, 0);
+});
+
+test("pruneKeys keeps only keys still on screen", () => {
+  const selected = new Set(["a", "b", "gone"]);
+  assert.deepEqual([...pruneKeys(selected, ["b", "c", "a"])], ["a", "b"]);
+  assert.deepEqual([...selected], ["a", "b", "gone"]);
+  assert.equal(pruneKeys(selected, []).size, 0);
+});
+
+test("toggleKey adds and removes without touching the input", () => {
+  const selected = new Set(["a"]);
+  assert.deepEqual([...toggleKey(selected, "b")], ["a", "b"]);
+  assert.deepEqual([...toggleKey(selected, "a")], []);
+  assert.deepEqual([...selected], ["a"]);
+});
+
+test("rangeSelection extends either way from the anchor", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  assert.deepEqual([...rangeSelection(order, new Set(), "b", "d")].sort(), ["b", "c", "d"]);
+  assert.deepEqual([...rangeSelection(order, new Set(), "d", "b")].sort(), ["b", "c", "d"]);
+  assert.deepEqual([...rangeSelection(order, new Set(), "c", "c")], ["c"]);
+});
+
+test("rangeSelection shrinks back to the base", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  const base = new Set(["e"]);
+  const wide = rangeSelection(order, base, "a", "c");
+  const narrow = rangeSelection(order, base, "a", "b");
+  assert.deepEqual([...wide].sort(), ["a", "b", "c", "e"]);
+  assert.deepEqual([...narrow].sort(), ["a", "b", "e"]);
+  assert.deepEqual([...base], ["e"]);
+});
+
+test("rangeSelection ignores an anchor that left the list", () => {
+  assert.deepEqual([...rangeSelection(["a", "b"], new Set(["x"]), "gone", "b")], ["x"]);
+  assert.deepEqual([...rangeSelection(["a", "b"], new Set(), "a", "gone")], []);
+});
+
+test("selectAllVisible adds every visible key once", () => {
+  assert.deepEqual([...selectAllVisible(new Set(["b"]), ["a", "b", "c"])].sort(), ["a", "b", "c"]);
+  assert.deepEqual([...selectAllVisible(new Set(), [])], []);
+});
+
+test("stepKey clamps at both ends and starts from an edge", () => {
+  const order = ["a", "b", "c"];
+  assert.equal(stepKey(order, "b", 1), "c");
+  assert.equal(stepKey(order, "c", 1), "c");
+  assert.equal(stepKey(order, "a", -1), "a");
+  assert.equal(stepKey(order, "", 1), "a");
+  assert.equal(stepKey(order, "gone", -1), "c");
+  assert.equal(stepKey([], "a", 1), "");
+});
+
+test("moveGroup keeps the picked jobs in queue order", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  assert.deepEqual(moveGroup(order, new Set(["d", "b"]), "top"), ["b", "d", "a", "c", "e"]);
+  assert.deepEqual(moveGroup(order, new Set(["d", "b"]), "bottom"), ["a", "c", "e", "b", "d"]);
+  assert.deepEqual(moveGroup(order, new Set(), "top"), order);
+});
+
+test("fitActions folds trailing actions behind More", () => {
+  assert.equal(fitActions([50, 50, 50], 150, 40), 3);
+  assert.equal(fitActions([50, 50, 50], 149, 40), 2);
+  assert.equal(fitActions([50, 50, 50], 120, 40), 1);
+  assert.equal(fitActions([50, 50, 50], 60, 40), 0);
+  assert.equal(fitActions([50, 50], 108, 40, 4), 2);
+  assert.equal(fitActions([50, 50], 103, 40, 4), 1);
+  assert.equal(fitActions([], 0, 40), 0);
+});
+
+test("restoreSlots keeps a move made after the save", () => {
+  // save B, move D to top, undo
+  assert.deepEqual(restoreSlots(["A", "B", "C", "D"], ["D", "A", "C"], new Set(["B"])), ["D", "A", "B", "C"]);
+});
+
+test("restoreSlots keeps neighbours together and handles the ends", () => {
+  const previous = ["A", "B", "C", "D", "E"];
+  assert.deepEqual(restoreSlots(previous, ["A", "D", "E"], new Set(["B", "C"])), ["A", "B", "C", "D", "E"]);
+  assert.deepEqual(restoreSlots(previous, ["C", "D", "E"], new Set(["A", "B"])), ["A", "B", "C", "D", "E"]);
+  assert.deepEqual(restoreSlots(previous, ["A", "B", "C"], new Set(["E"])), ["A", "B", "C", "E"]);
+  assert.deepEqual(restoreSlots(previous, [], new Set(["B", "D"])), ["B", "D"]);
+});
+
+test("restoreSlots moves a restored job out of the tail", () => {
+  // undo lands it at the end first
+  assert.deepEqual(restoreSlots(["A", "B", "C"], ["A", "C", "B"], new Set(["B"])), ["A", "B", "C"]);
+  assert.deepEqual(restoreSlots(["A", "B", "C"], ["C", "A"], new Set()), ["C", "A"]);
 });

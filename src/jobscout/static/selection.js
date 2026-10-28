@@ -41,6 +41,66 @@ export function companyLabel(companies) {
 }
 
 export function visibleSelection(selectedKeys, jobs) {
-  const visible = new Set(jobs.map((job) => job.dedupe_key));
+  return pruneKeys(selectedKeys, jobs.map((job) => job.dedupe_key));
+}
+
+export function pruneKeys(selectedKeys, keys) {
+  const visible = new Set(keys);
   return new Set([...selectedKeys].filter((key) => visible.has(key)));
+}
+
+export function toggleKey(selectedKeys, key) {
+  const next = new Set(selectedKeys);
+  if (next.has(key)) next.delete(key); else next.add(key);
+  return next;
+}
+
+// shrinks when the focus walks back
+export function rangeSelection(keys, base, anchorKey, focusKey) {
+  const from = keys.indexOf(anchorKey);
+  const to = keys.indexOf(focusKey);
+  const next = new Set(base);
+  if (from < 0 || to < 0) return next;
+  for (const key of keys.slice(Math.min(from, to), Math.max(from, to) + 1)) next.add(key);
+  return next;
+}
+
+export function selectAllVisible(selectedKeys, keys) {
+  return new Set([...selectedKeys, ...keys]);
+}
+
+export function stepKey(keys, key, delta) {
+  if (!keys.length) return "";
+  const index = keys.indexOf(key);
+  if (index < 0) return keys[delta < 0 ? keys.length - 1 : 0];
+  return keys[Math.max(0, Math.min(keys.length - 1, index + delta))];
+}
+
+// keeps the picked jobs in order
+export function moveGroup(keys, picked, edge) {
+  const chosen = keys.filter((key) => picked.has(key));
+  const rest = keys.filter((key) => !picked.has(key));
+  return edge === "top" ? [...chosen, ...rest] : [...rest, ...chosen];
+}
+
+// later actions fold first
+export function fitActions(widths, available, moreWidth, gap = 0) {
+  const total = (count) => widths.slice(0, count).reduce((sum, width) => sum + width, 0) + gap * Math.max(0, count - 1);
+  if (total(widths.length) <= available) return widths.length;
+  let count = widths.length - 1;
+  while (count > 0 && total(count) + gap + moreWidth > available) count -= 1;
+  return count;
+}
+
+// later moves keep their places
+export function restoreSlots(previous, current, restored) {
+  const order = current.filter((key) => !restored.has(key));
+  previous.forEach((key, index) => {
+    if (!restored.has(key)) return;
+    const before = previous.slice(0, index).reverse().find((other) => order.includes(other));
+    if (before) { order.splice(order.indexOf(before) + 1, 0, key); return; }
+    const after = previous.slice(index + 1).find((other) => order.includes(other));
+    order.splice(after ? order.indexOf(after) : order.length, 0, key);
+  });
+  return order;
 }
