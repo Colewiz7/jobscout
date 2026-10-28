@@ -4,7 +4,7 @@ import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
-import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
+import { Countdown, EditSessions, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
@@ -98,8 +98,8 @@ const state = {
   query: "", status: "new", sort: "score", source: "", remote: false, tag: "", focus: false,
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: "", rangeBase: new Set(), copySelectionMode: false,
   rowSelection: { queue: { keys: new Set(), anchor: "", base: new Set(), focus: "" }, tracker: { keys: new Set(), anchor: "", base: new Set(), focus: "" } }, scrollTop: 0,
-  entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
-  pending: new Set(), notesTimer: null, skeletonAt: 0, descriptions: new Map(),
+  entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [], savedViewsOrderRevision: 0,
+  pending: new Set(), notesTimer: null, notesDraft: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
   aiOverviewEnabled: false, overviews: new Map(), overviewCacheAttempted: new Set(), overviewPollTimers: new Map(),
   eligibility: new Map(),
@@ -111,14 +111,14 @@ const state = {
   quickFillSaveVersion: 0, quickFillSavedProfile: null,
   quickFillAliases: {}, quickFillProfileError: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
-  quickFillContextTimer: null, quickFillContextVersion: 0, quickFillSavedContext: null,
+  quickFillSavedContext: null,
   sessionStarting: false, statusSaving: new Set(),
   applySession: null, sessionTimer: null,
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
   trackerQuery: "",
   companiesData: null, companyLoadedName: null, companiesLoading: false,
-  companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
+  companiesError: "", companiesShowLoader: false, companyNoteTimer: null, companyNoteDraft: null,
   companiesReload: false, companiesFocusPending: false, companyQuery: "", companyShow: "all",
   rules: null, rulesLoading: false, rulesError: "", rulesOrderRevision: 0,
   companyLogos: {}, companyIconKeys: new Set(), pastInterviewsOpen: false,
@@ -134,6 +134,7 @@ let loadingTimer = null;
 let snackbarCurrent = null;
 const snackbarQueue = [];
 const undoStack = new UndoStack(20);
+const textSessions = new EditSessions();
 let jobViewTransition = null;
 let sessionCheckedAt = 0;
 let sessionCheckPromise = null;
@@ -393,7 +394,8 @@ function activeFilterChips() {
 
 function savedViewsMarkup() {
   if (!state.savedViews.length) return "";
-  return `<div class="saved-views" aria-label="Saved views"><span>Views</span>${state.savedViews.map((view, index) => `<span class="saved-view-wrap"><button class="saved-view interactive" type="button" data-saved-view="${index}">${escapeHtml(view.name)}</button><button class="saved-view-delete interactive" type="button" data-delete-saved-view="${view.id}" aria-label="Delete ${escapeHtml(view.name)} saved view">${icons.close}</button></span>`).join("")}</div>`;
+  const chip = (view, index) => `<li class="saved-view-wrap" data-saved-view-id="${view.id}"><button class="saved-view-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(view.name)}" title="Reorder ${escapeHtml(view.name)}">${icons.queue}</button><button class="saved-view interactive" type="button" data-saved-view="${index}">${escapeHtml(view.name)}</button>${moreButtonMarkup(`${view.name} view`)}</li>`;
+  return `<div class="saved-views"><span id="saved-views-label">Views</span><ul class="saved-view-list" aria-labelledby="saved-views-label">${state.savedViews.map(chip).join("")}</ul></div>`;
 }
 
 function initials(company) {
@@ -2080,27 +2082,66 @@ async function removeFollowUp(reminder) {
   showSnackbar("Follow-up removed.");
 }
 
-async function saveTrackerNextStep(key, value, input) {
+function writeNextStep(key, value, expected = null) {
+  const payload = expected === null ? { next_step: value } : { next_step: value, expected_next_step: expected };
+  return companyWrite(`/api/v1/applications/${encodeURIComponent(key)}/next-step`, { method: "PUT", body: JSON.stringify(payload) }, "The next step could not be saved.");
+}
+
+function placeNextStep(key, value, { force = false } = {}) {
   const job = state.trackerData?.applications?.find((item) => item.dedupe_key === key);
-  const previous = job?.next_step || "";
-  if (value === previous) return;
   if (job) job.next_step = value;
-  input?.setAttribute("aria-busy", "true");
-  try {
-    const response = await fetch(`/api/v1/applications/${encodeURIComponent(key)}/next-step`, {
-      method: "PUT", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ next_step: value }),
-    });
-    noticeHidden(response);
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The next step could not be saved.");
-    showSnackbar("Next step saved.");
-    await loadTrackerData({ background: true });
-  } catch (error) {
-    if (job) job.next_step = previous;
-    if (input) input.value = previous;
-    showSnackbar(`${error.message} Previous value restored.`);
-  } finally { input?.removeAttribute("aria-busy"); }
+  const input = document.querySelector(`[data-next-step="${CSS.escape(key)}"]`);
+  if (input && (force || input !== document.activeElement)) input.value = value;
+}
+
+// one write per job at a time
+const nextStepSaves = new Map();
+
+function queueNextStep(key, write) {
+  const run = (nextStepSaves.get(key) || Promise.resolve()).then(write);
+  nextStepSaves.set(key, run);
+  return run;
+}
+
+function saveTrackerNextStep(key, value, input) {
+  return queueNextStep(key, async () => {
+    // the model only holds committed steps
+    const previous = state.trackerData?.applications?.find((item) => item.dedupe_key === key)?.next_step || "";
+    if (value.trim() === previous) return;
+    input?.setAttribute("aria-busy", "true");
+    const { status, body, error } = await writeNextStep(key, value, previous);
+    input?.removeAttribute("aria-busy");
+    if (status === 409) {
+      placeNextStep(key, body.next_step ?? "", { force: true });
+      showSnackbar("The next step changed elsewhere, so it now shows that version.");
+      return;
+    }
+    if (error) {
+      placeNextStep(key, previous, { force: true });
+      showSnackbar(`${error} Previous value restored.`);
+      return;
+    }
+    const saved = body.next_step ?? value.trim();
+    placeNextStep(key, saved);
+    // a stale undo gets a 409
+    offerUndoSnackbar(saved ? "Next step saved." : "Next step cleared.", [`next-step:${key}`], () => undoNextStep(key, previous, saved), { latest: `next-step:${key}` });
+    loadTrackerData({ background: true });
+  });
+}
+
+function undoNextStep(key, before, after) {
+  return queueNextStep(key, async () => {
+    const { status, body, error } = await writeNextStep(key, before, after);
+    if (status === 409) {
+      placeNextStep(key, body.next_step ?? after, { force: true });
+      showSnackbar("Couldn't undo. The next step changed elsewhere, so it now shows that version.");
+      return;
+    }
+    if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+    placeNextStep(key, body.next_step ?? before, { force: true });
+    showSnackbar("Next step change undone.");
+    loadTrackerData({ background: true });
+  });
 }
 
 async function writeTrackerStatus(key, job, tracked, status) {
@@ -2199,22 +2240,66 @@ function exportTrackerCsv() {
   setTimeout(() => URL.revokeObjectURL(url), 0); showSnackbar("Tracker CSV exported.");
 }
 
-async function saveCompanyNote(company, body) {
+const companyNoteSaves = new Map();
+
+function queueCompanyNote(key, company, body) {
+  const run = (companyNoteSaves.get(key) || Promise.resolve()).then(() => saveCompanyNote(key, company, body));
+  companyNoteSaves.set(key, run);
+  return run;
+}
+
+function shownCompany(key) {
+  const company = state.companiesData?.company;
+  return company?.key === key ? company : null;
+}
+
+async function saveCompanyNote(key, company, body) {
   const status = document.querySelector("#company-note-state");
   if (status) status.textContent = "Saving…";
-  try {
-    const response = await fetch("/api/v1/companies/note", {
-      method: "PUT", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ company, body }),
-    });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The company note could not be saved.");
-    if (state.companiesData?.company) state.companiesData.company.note = (await response.json()).note;
-    if (document.querySelector("#company-note-state")) document.querySelector("#company-note-state").textContent = "Saved automatically";
-  } catch (error) {
+  const { body: result, error } = await companyWrite("/api/v1/companies/note", { method: "PUT", body: JSON.stringify({ company, body }) }, "The company note could not be saved.");
+  if (error) {
     if (status) status.textContent = "Not saved";
-    showSnackbar(error instanceof Error ? error.message : "The company note could not be saved.");
+    showSnackbar(error);
+    return;
   }
+  const shown = shownCompany(key);
+  if (shown) shown.note = result.note;
+  if (shown && document.querySelector("#company-note-state")) document.querySelector("#company-note-state").textContent = "Saved automatically";
+}
+
+async function settleCompanyNote(key, company) {
+  const before = textSessions.end(`company-note:${key}`);
+  if (state.companyNoteDraft?.key === key) {
+    clearTimeout(state.companyNoteTimer);
+    queueCompanyNote(key, company, state.companyNoteDraft.body);
+    state.companyNoteDraft = null;
+  }
+  await companyNoteSaves.get(key);
+  // unsaved typing isnt undoable
+  const shown = shownCompany(key);
+  const change = shown && textChange(before, shown.note?.body || "");
+  if (!change) return;
+  offerUndoSnackbar(change.after ? "Company note saved." : "Company note cleared.", [`company-note:${key}`], () => undoCompanyNote(key, company, change), { latest: `company-note:${key}` });
+}
+
+async function undoCompanyNote(key, company, { before, after }) {
+  const { status, body, error } = await companyWrite("/api/v1/companies/note", { method: "PUT", body: JSON.stringify({ company, body: before, expected_body: after }) }, "The company note could not be saved.");
+  if (status === 409 && body.note) {
+    placeCompanyNote(key, body.note);
+    showSnackbar("Couldn't undo. The note changed in another tab, so it now shows that version.");
+    return;
+  }
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  placeCompanyNote(key, body.note);
+  showSnackbar("Company note change undone.");
+}
+
+function placeCompanyNote(key, note) {
+  const shown = shownCompany(key);
+  if (!shown) return;
+  shown.note = { ...shown.note, ...note };
+  const field = document.querySelector("#company-note");
+  if (field && field !== document.activeElement) field.value = shown.note.body || "";
 }
 
 async function submitContact(form) {
@@ -2929,7 +3014,7 @@ async function loadInbox() {
     const wait = state.skeletonAt ? Math.max(0, 500 - (performance.now() - state.skeletonAt)) : 0;
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     if (jobLoads.current(read) || !state.loaded) adoptJobs(payload.jobs); // a queue reload already won
-    state.savedViews = Array.isArray(viewsPayload.saved_views) ? viewsPayload.saved_views : [];
+    adoptSavedViews(viewsPayload);
     state.refreshedAt = payload.refreshed_at || null;
     state.loaded = true;
     inboxLoadedAt = Date.now();
@@ -3215,6 +3300,14 @@ function bindQuickFillSurface(root, { popout = false } = {}) {
     if (event.target.closest("[data-quick-fill-close]")) {
       if (popout) state.quickFillPopout?.close(); else closeQuickFill();
     }
+  });
+  root.addEventListener("focusin", (event) => {
+    if (event.target.matches("[data-profile-kind]")) beginProfileTyping(event.target);
+    else if (event.target.matches("[data-context-kind]")) beginContextTyping(event.target);
+  });
+  root.addEventListener("focusout", (event) => {
+    if (event.target.matches("[data-profile-kind]")) settleProfileTyping(event.target);
+    else if (event.target.matches("[data-context-kind]")) settleContextTyping(event.target);
   });
   root.addEventListener("input", (event) => {
     if (event.target.matches("[data-context-kind]:not(select)")) {
@@ -4345,22 +4438,6 @@ function dropProfileItem({ key, to, keyboard }) {
   return c.surface?.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`) || null;
 }
 
-async function persistQuickFillContext(context, job) {
-  if (!job) throw new Error("Choose a job before saving its Quick-fill details.");
-  const response = await fetch("/api/v1/profile/context", {
-    method: "PUT", credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-    body: JSON.stringify({
-      dedupe_key: job.dedupe_key, company: job.company,
-      answer_overrides: context.answer_overrides,
-      company_account: context.company_account,
-    }),
-  });
-  noticeHidden(response);
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Job-specific Quick-fill details could not be saved.");
-  return (await response.json()).profile;
-}
-
 function updateQuickFillProfile(control) {
   const item = findProfileItem(control.dataset.profileKind, control.dataset.profileId);
   const property = control.dataset.profileProperty;
@@ -4376,49 +4453,175 @@ function updateQuickFillProfile(control) {
   state.quickFillSaveTimer = setTimeout(() => { state.quickFillSaveTimer = null; queueProfileSave(); }, 600);
 }
 
+function profileTyping(control) {
+  const { profileKind: kind, profileId: id, profileProperty: property } = control.dataset;
+  const ref = canonicalRef(`${kind}:${id}`);
+  return { kind, id, property, ref, scope: `typing:${ref}:${property}` };
+}
+
+function beginProfileTyping(control) {
+  const { kind, id, property, scope } = profileTyping(control);
+  const item = property && findProfileItem(kind, id);
+  if (item) textSessions.begin(scope, cloneJson(item[property] ?? ""));
+}
+
+// one undo per settled edit
+function settleProfileTyping(control) {
+  const { kind, id, property, ref, scope } = profileTyping(control);
+  const before = textSessions.end(scope);
+  const item = findProfileItem(kind, id);
+  const change = item && textChange(before, cloneJson(item[property] ?? ""));
+  if (!change) return;
+  const saved = state.quickFillSaveTimer ? (cancelAutosave(), queueProfileSave()) : profileSaves.busy ? queueProfileSave(0) : Promise.resolve(null);
+  const key = `profile:${ref}`;
+  const entry = { message: "Quick-fill edit saved.", keys: [key], latest: key, run: () => undoProfileTyping(kind, id, property, change) };
+  offerMoveSnackbar("Quick-fill edit saved.", "", entry, saved);
+}
+
+function undoProfileTyping(kind, id, property, { before, after }) {
+  const item = findProfileItem(kind, id);
+  if (!item) { showSnackbar("Couldn't undo. That item was deleted."); return; }
+  // a newer edit owns it now
+  if (textChange(after, item[property] ?? "")) { showSnackbar("Couldn't undo. It changed again since."); return; }
+  const result = applyProfileOp({ type: "update", kind, id, patch: { [property]: cloneJson(before) } });
+  if (result.error) { showSnackbar(`Couldn't undo. ${result.error}`); return; }
+  rerenderProfile();
+  saveProfileChange().then((error) => { if (!error) showSnackbar("Quick-fill edit undone."); });
+}
+
+// --- job and company details ---
+// each field saves alone, in order
+const contextSaves = new Map();
+const contextPending = new Map();
+const contextCommitted = new Map();
+const contextLast = new Map();
+const contextDrafts = new Map();
+
+function commitContext(field, value) { contextCommitted.set(field.scope, { record: field.record, value }); }
+
+function contextField(control, job) {
+  const kind = control.dataset.contextKind;
+  const name = kind === "override" ? control.dataset.contextKey : control.dataset.contextProperty;
+  const record = kind === "override" ? `job:${job.dedupe_key}` : `company:${job.company.trim().toLowerCase()}`;
+  return { kind, name, record, scope: `context:${record}:${kind}:${name}` };
+}
+
+function controlValue(control) {
+  if (control.dataset.contextProperty !== "account_exists") return control.value;
+  return control.value === "" ? null : control.value === "yes";
+}
+
+function contextValueIn(doc, { kind, name }) {
+  if (kind === "override") return doc?.answer_overrides?.[name] ?? "";
+  return doc?.company_account?.[name] ?? (name === "account_exists" ? null : "");
+}
+
+function setContextValue(doc, { kind, name }, value) {
+  if (!doc) return;
+  if (kind === "override") {
+    doc.answer_overrides ||= {};
+    if (value) doc.answer_overrides[name] = value; else delete doc.answer_overrides[name];
+    return;
+  }
+  doc.company_account ||= { account_exists: null, sign_in_email: "", password_manager_url: "" };
+  doc.company_account[name] = value;
+}
+
+const contextKeyOf = (job) => `${job.dedupe_key}\u0000${job.company}`;
+
+// only the details on screen
+function placeContextValue(job, field, value, { saved = true } = {}) {
+  if (state.quickFillContextKey !== contextKeyOf(job)) return;
+  setContextValue(state.quickFillProfile, field, value);
+  if (saved) setContextValue(state.quickFillSavedContext, field, value);
+}
+
 function updateQuickFillContext(control) {
   if (!state.quickFillProfile) return;
   const job = currentJob();
   if (!job) return;
-  const contextKey = `${job.dedupe_key}\u0000${job.company}`;
-  if (!state.quickFillProfile.answer_overrides) state.quickFillProfile.answer_overrides = {};
-  if (!state.quickFillProfile.company_account) state.quickFillProfile.company_account = {
-    account_exists: null, sign_in_email: "", password_manager_url: "",
-  };
-  if (control.dataset.contextKind === "override") {
-    const key = control.dataset.contextKey;
-    if (control.value) state.quickFillProfile.answer_overrides[key] = control.value;
-    else delete state.quickFillProfile.answer_overrides[key];
-  } else if (control.dataset.contextKind === "account") {
-    const property = control.dataset.contextProperty;
-    state.quickFillProfile.company_account[property] = property === "account_exists"
-      ? control.value === "" ? null : control.value === "yes"
-      : control.value;
-  }
-  state.quickFillContextVersion += 1;
-  const version = state.quickFillContextVersion;
-  const snapshot = profileContextDocument();
-  clearTimeout(state.quickFillContextTimer);
+  const field = contextField(control, job);
+  const value = controlValue(control);
+  if (!contextCommitted.has(field.scope)) commitContext(field, contextValueIn(state.quickFillSavedContext, field));
+  placeContextValue(job, field, value, { saved: false });
+  clearTimeout(contextDrafts.get(field.scope)?.timer);
+  const run = () => { contextDrafts.delete(field.scope); return queueContextField(job, field, value); };
+  contextDrafts.set(field.scope, { timer: setTimeout(run, 600), run });
   setQuickFillSaveState("Unsaved changes");
-  state.quickFillContextTimer = setTimeout(async () => {
-    setQuickFillSaveState("Saving…");
-    try {
-      const saved = await persistQuickFillContext(snapshot, job);
-      if (version === state.quickFillContextVersion && contextKey === state.quickFillContextKey) {
-        state.quickFillSavedContext = profileContextDocument(saved);
-        state.quickFillProfile.answer_overrides = saved.answer_overrides;
-        state.quickFillProfile.company_account = saved.company_account;
-        setQuickFillSaveState("Saved automatically");
-      }
-    } catch (error) {
-      if (version === state.quickFillContextVersion && contextKey === state.quickFillContextKey && state.quickFillSavedContext) {
-        Object.assign(state.quickFillProfile, cloneJson(state.quickFillSavedContext));
-        renderQuickFill();
-      }
-      assertiveRegion.textContent = `${error.message} Changes rolled back.`;
-      showSnackbar(`${error.message} Changes rolled back.`);
-    }
-  }, 600);
+}
+
+// resolves to the outcome
+function queueContextField(job, field, value, expected = undefined) {
+  contextPending.set(field.record, (contextPending.get(field.record) || 0) + 1);
+  const run = (contextSaves.get(field.record) || Promise.resolve()).then(() => sendContextField(job, field, value, expected));
+  contextSaves.set(field.record, run);
+  contextLast.set(field.scope, run);
+  run.then(() => contextPending.set(field.record, contextPending.get(field.record) - 1));
+  return run;
+}
+
+async function sendContextField(job, field, value, expected) {
+  // the last committed value
+  const prior = expected === undefined ? contextCommitted.get(field.scope)?.value : expected;
+  const undoing = expected !== undefined;
+  setQuickFillSaveState("Saving…");
+  const { status, body, error } = await companyWrite("/api/v1/profile/context", { method: "PUT", body: JSON.stringify({
+    dedupe_key: job.dedupe_key, company: job.company,
+    field: { kind: field.kind, name: field.name, value, ...(prior === undefined ? {} : { expected: prior }) },
+  }) }, "Job-specific Quick-fill details could not be saved.");
+  if (status === 409) {
+    commitContext(field, body.value);
+    placeContextValue(job, field, body.value);
+    rerenderProfile();
+    setQuickFillSaveState("Reloaded");
+    if (!undoing) showSnackbar("That detail changed elsewhere, so it now shows that version.");
+    return { conflict: true, value: body.value };
+  }
+  if (error) {
+    if (!undoing) placeContextValue(job, field, prior);
+    rerenderProfile();
+    setQuickFillSaveState("Not saved");
+    if (!undoing) { assertiveRegion.textContent = `${error} Change undone.`; showSnackbar(`${error} Change undone.`); }
+    return { error };
+  }
+  // write echoes it, skip reread
+  const saved = body.value;
+  commitContext(field, saved);
+  placeContextValue(job, field, saved);
+  setQuickFillSaveState("Saved automatically");
+  return { saved };
+}
+
+function beginContextTyping(control) {
+  const job = currentJob();
+  if (job) textSessions.begin(contextField(control, job).scope, controlValue(control));
+}
+
+// one undo per settled field
+async function settleContextTyping(control) {
+  const job = currentJob();
+  if (!job) return;
+  const field = contextField(control, job);
+  const before = textSessions.end(field.scope);
+  const draft = contextDrafts.get(field.scope);
+  if (draft) { clearTimeout(draft.timer); draft.run(); }
+  const outcome = await contextLast.get(field.scope);
+  if (!outcome || outcome.conflict || outcome.error) return;
+  const change = textChange(before, contextCommitted.get(field.scope)?.value);
+  if (!change) return;
+  offerUndoSnackbar("Quick-fill detail saved.", [field.scope], () => undoContextField(job, field, change), { latest: field.scope });
+}
+
+async function undoContextField(job, field, { before, after }) {
+  const outcome = await queueContextField(job, field, before, after);
+  if (outcome.conflict) showSnackbar("Couldn't undo. That detail changed elsewhere, so it now shows that version.");
+  else if (outcome.error) showSnackbar(`Couldn't undo. ${outcome.error}`);
+  else { rerenderProfile(); showSnackbar("Quick-fill detail change undone."); }
+}
+
+// a reload knows the latest
+function forgetCommittedContext() {
+  for (const [scope, { record }] of [...contextCommitted]) if (!contextPending.get(record)) contextCommitted.delete(scope);
 }
 
 function exportQuickFillProfile() {
@@ -4517,6 +4720,7 @@ async function loadQuickFillContext() {
     state.quickFillProfile = profile;
     state.quickFillSavedProfile = cloneJson(profile);
     state.quickFillSavedContext = profileContextDocument(profile);
+    forgetCommittedContext();
     state.copiedByJob.set(job.dedupe_key, new Set(profile.copied_fields || []));
     state.quickFillError = "";
   } catch (error) {
@@ -5077,16 +5281,23 @@ function clearInboxSelection() {
   return true;
 }
 
-async function patchJob(job, status, notes = job.notes || "", { notesOnly = false, expected = null } = {}) {
+// null status or notes keeps it
+async function patchJob(job, status, notes = null, { notesOnly = false, expected = null, expectedNotes = null } = {}) {
   const response = await secureWrite(`/api/v1/jobs/${encodeURIComponent(job.dedupe_key)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ status, ...(notes === null ? {} : { notes }), ...(expected ? { expected_status: expected } : {}) }),
+    body: JSON.stringify({
+      ...(status === null ? {} : { status }), ...(notes === null ? {} : { notes }),
+      ...(expected ? { expected_status: expected } : {}), ...(expectedNotes === null ? {} : { expected_notes: expectedNotes }),
+    }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     // lets undo skip newer moves
-    throw Object.assign(new Error(body.error || "The change could not be saved."), { conflict: expected && response.status === 409 ? body.status : "" });
+    throw Object.assign(new Error(body.error || "The change could not be saved."), {
+      conflict: expected && response.status === 409 ? body.status : "",
+      newerNotes: expectedNotes !== null && response.status === 409 ? body.notes ?? null : null,
+    });
   }
   if (!notesOnly) jobsWriteLanded(); // notes dont move jobs
   return response.json();
@@ -5103,7 +5314,7 @@ async function performDecision(status, label, targets = null, { note = "", scope
   const keys = targets || (state.selectedKeys.size ? [...state.selectedKeys] : [state.selectedKey]);
   const jobs = keys.map((key) => state.jobs.find((job) => job.dedupe_key === key)).filter(Boolean);
   if (!jobs.length || jobs.some((job) => state.pending.has(job.dedupe_key))) return;
-  const previous = jobs.map((job) => ({ key: job.dedupe_key, status: job.status, notes: job.notes || "" }));
+  const previous = jobs.map((job) => ({ key: job.dedupe_key, status: job.status }));
   const nextKey = nextKeyAfter(keys);
   jobs.forEach((job) => { state.pending.add(job.dedupe_key); job.status = status; });
   state.selectedKeys.clear(); state.selectedKey = nextKey || filteredJobs()[0]?.dedupe_key || ""; syncInboxUrl(); renderInbox();
@@ -5111,7 +5322,7 @@ async function performDecision(status, label, targets = null, { note = "", scope
   const failed = results.some((result) => result.status === "rejected");
   if (failed) {
     previous.forEach((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); if (job) job.status = snapshot.status; });
-    await Promise.allSettled(results.map((result, index) => result.status === "fulfilled" ? patchJob(jobs[index], previous[index].status, previous[index].notes) : Promise.resolve()));
+    await Promise.allSettled(results.map((result, index) => result.status === "fulfilled" ? patchJob(jobs[index], previous[index].status, null, { expected: result.value.status }) : Promise.resolve()));
     const reason = results.find((result) => result.status === "rejected")?.reason;
     assertiveRegion.textContent = `${reason?.message || "Couldn't save the change."} Change undone.`;
     showSnackbar(`${reason?.message || "Couldn't save the change."} Change undone.`);
@@ -5165,16 +5376,21 @@ function refreshJobView() {
   else if (routeRoot() === "tracker") loadTrackerData({ background: true });
 }
 
+// same conditional write as bulk undo
 async function undoDecision(undo) {
-  const snapshots = undo.previous;
-  snapshots.forEach((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); if (job) job.status = snapshot.status; });
-  if (routeRoot() === "inbox") { state.selectedKey = snapshots[0]?.key || state.selectedKey; syncInboxUrl(); }
-  refreshJobView();
-  const results = await Promise.allSettled(snapshots.map((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); return job ? patchJob(job, snapshot.status, snapshot.notes) : Promise.resolve(); }));
-  if (results.some((result) => result.status === "rejected")) {
-    undo.next.forEach((snapshot) => { const job = state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key); if (job) job.status = snapshot.status; });
-    showSnackbar("Couldn't undo. The original change remains."); refreshJobView();
-  } else showSnackbar("Decision undone.");
+  const landed = new Map(undo.next.map((snapshot) => [snapshot.key, snapshot.status]));
+  const entries = undo.previous.map((snapshot) => ({ job: state.jobs.find((candidate) => candidate.dedupe_key === snapshot.key), status: snapshot.status, now: landed.get(snapshot.key) })).filter((entry) => entry.job);
+  if (routeRoot() === "inbox") { state.selectedKey = undo.previous[0]?.key || state.selectedKey; syncInboxUrl(); }
+  await undoBulkStatus(entries, "Decision undone.", null);
+}
+
+// in order, last typing wins
+const noteSaves = new Map();
+
+function queueNotes(key, value) {
+  const run = (noteSaves.get(key) || Promise.resolve()).then(() => saveNotes(key, value));
+  noteSaves.set(key, run);
+  return run;
 }
 
 async function saveNotes(key, value) {
@@ -5185,12 +5401,49 @@ async function saveNotes(key, value) {
   const notesState = document.querySelector("#notes-state");
   if (notesState) notesState.textContent = "Saving…";
   try {
-    await patchJob(job, job.status || "new", value, { notesOnly: true });
+    // notes only, newer moves stay
+    await patchJob(job, null, value, { notesOnly: true });
     if (state.selectedKey === key && document.querySelector("#notes-state")) document.querySelector("#notes-state").textContent = "Saved automatically";
   } catch (error) {
     job.notes = oldNotes; assertiveRegion.textContent = `${error.message} Note restored.`; showSnackbar(`${error.message} Note restored.`);
     if (state.selectedKey === key) { renderInbox(); document.querySelector("#job-notes")?.focus(); }
   }
+}
+
+// a blur commits the typing
+async function settleNotes(key) {
+  const before = textSessions.end(`notes:${key}`);
+  if (state.notesDraft?.key === key) {
+    clearTimeout(state.notesTimer);
+    queueNotes(key, state.notesDraft.value);
+    state.notesDraft = null;
+  }
+  await noteSaves.get(key);
+  const change = textChange(before, state.jobs.find((job) => job.dedupe_key === key)?.notes || "");
+  if (!change) return;
+  offerUndoSnackbar(change.after ? "Notes saved." : "Notes cleared.", [`notes:${key}`], () => undoNotes(key, change), { latest: `notes:${key}` });
+}
+
+async function undoNotes(key, { before, after }) {
+  const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
+  if (!job) { showSnackbar("Couldn't undo. That job is no longer listed."); return; }
+  try {
+    // another tab may have typed since
+    await patchJob(job, null, before, { notesOnly: true, expectedNotes: after });
+    placeNotes(key, before);
+    showSnackbar("Notes change undone.");
+  } catch (error) {
+    if (error.newerNotes === null || error.newerNotes === undefined) { showSnackbar(`Couldn't undo. ${error.message}`); return; }
+    placeNotes(key, error.newerNotes);
+    showSnackbar("Couldn't undo. The notes changed in another tab, so they now show that version.");
+  }
+}
+
+function placeNotes(key, value) {
+  const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
+  if (job) job.notes = value;
+  const field = document.querySelector("#job-notes");
+  if (field && field !== document.activeElement && document.querySelector("#inbox-reading-pane")?.dataset.jobKey === key) field.value = value;
 }
 
 function moveSelection(delta) {
@@ -5216,56 +5469,153 @@ function applySavedView(index) {
   state.query = filters.query || ""; state.status = allowedStatuses.has(filters.status) ? filters.status : "all"; state.sort = allowedSorts.has(view.sort) ? view.sort : "score"; state.source = filters.source || ""; state.remote = Boolean(filters.remote); state.tag = filters.tag || ""; state.scrollTop = 0; syncInboxUrl(); renderInbox();
 }
 
+function currentViewFilters() {
+  return { query: state.query, status: state.status, source: state.source, remote: state.remote, tag: state.tag };
+}
+
+// a rerender rebuilds the chips
+function savedViewFocus(id, role = "button[data-menu-trigger]") {
+  return () => {
+    const chip = document.querySelector(`.saved-view-wrap[data-saved-view-id="${id}"]`);
+    (chip?.querySelector(role) || document.querySelector("[data-open-filters]"))?.focus({ preventScroll: true });
+  };
+}
+
+function placeSavedView(view) {
+  const index = state.savedViews.findIndex((item) => item.id === view.id);
+  if (index >= 0) state.savedViews[index] = view; else state.savedViews.push(view);
+  if (routeRoot() === "inbox") renderInbox();
+}
+
+async function loadSavedViews() {
+  try {
+    const response = await fetch("/api/v1/saved-views", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) return;
+    adoptSavedViews(await response.json());
+    if (routeRoot() === "inbox") renderInbox();
+  } catch { /* the next load retries */ }
+}
+
+function adoptSavedViews(payload) {
+  state.savedViews = Array.isArray(payload.saved_views) ? payload.saved_views : [];
+  state.savedViewsOrderRevision = payload.order_revision ?? 0;
+}
+
 async function saveCurrentView() {
   const name = savedViewName.value.trim();
   if (!name) { savedViewName.focus(); savedViewName.setAttribute("aria-invalid", "true"); return; }
   savedViewName.removeAttribute("aria-invalid");
-  try {
-    const response = await fetch("/api/v1/saved-views", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ name, filters: { query: state.query, status: state.status, source: state.source, remote: state.remote, tag: state.tag }, sort: state.sort, pinned: true }),
-    });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be saved.");
-    const saved = (await response.json()).saved_view;
-    const existing = state.savedViews.findIndex((candidate) => candidate.id === saved.id);
-    if (existing >= 0) state.savedViews[existing] = saved; else state.savedViews.push(saved);
-    filterDialog.close(); renderInbox(); showSnackbar(`Saved view “${name}”.`);
-  } catch (error) {
-    showSnackbar(error instanceof Error ? error.message : "The view could not be saved.");
+  const existing = state.savedViews.find((view) => view.name === name);
+  if (existing) { await replaceSavedView(existing); return; }
+  const { status, body, error } = await companyWrite("/api/v1/saved-views", { method: "POST", body: JSON.stringify({ name, filters: currentViewFilters(), sort: state.sort }) }, "The view could not be saved.");
+  // another tab took the name
+  if (status === 409 && body.saved_view) { placeSavedView(body.saved_view); await replaceSavedView(body.saved_view); return; }
+  if (error) { showSnackbar(error); return; }
+  state.savedViews.push(body.saved_view);
+  filterDialog.close(); renderInbox(); showSnackbar(`Saved view “${name}”.`);
+}
+
+// carrel names the object
+async function replaceSavedView(view) {
+  const trigger = document.querySelector("#save-view-button");
+  const replace = await confirmDelete({
+    title: `Replace the “${view.name}” view?`,
+    body: "A view with this name already exists. Replacing it swaps in the current filters and sort. You can undo right after. To keep both, pick another name.",
+    action: "Replace", cancel: "Pick another name", trigger,
+  });
+  if (!replace) { savedViewName.focus(); savedViewName.select(); return; }
+  const error = await saveViewEdit(view.id, { filters: currentViewFilters(), sort: state.sort }, { message: `Replaced the “${view.name}” view.`, undone: "Replace undone." });
+  if (error) { showSnackbar(error); return; }
+  savedViewName.value = "";
+  filterDialog.close();
+}
+
+function renameSavedView(view) {
+  openEditor({
+    title: `Rename ${view.name}`, focusBack: savedViewFocus(view.id),
+    fields: [{ name: "name", label: "Name", value: view.name, required: true, maxlength: 40 }],
+    save: (changes) => saveViewEdit(view.id, changes, { message: "View renamed.", undone: "Rename undone." }),
+  });
+}
+
+// undo sends the old view back
+async function saveViewEdit(id, payload, { message = "", undone = "", offer = true, aliasFrom = null } = {}) {
+  const known = state.savedViews.find((item) => item.id === id);
+  // a stale tab gets a 409
+  const sent = "expected_revision" in payload || !known ? payload : { ...payload, expected_revision: known.revision };
+  const { status, body, error } = await companyWrite(`/api/v1/saved-views/${id}`, { method: "PATCH", body: JSON.stringify(sent) }, "Couldn't save the view. Retry shortly.");
+  if (status === 404) { loadSavedViews(); return "This view was deleted in another tab."; }
+  if (status === 409 && body.view) { placeSavedView(body.view); return "It changed in another tab, so it now shows that version."; }
+  if (error) return error;
+  placeSavedView(body.view);
+  if (aliasFrom !== null) revisionAliases.set(`view:${id}@${aliasFrom}`, body.view.revision);
+  if (offer) {
+    const restore = pickFields(body.previous, Object.keys(payload).filter((name) => name !== "expected_revision"));
+    const after = body.view.revision;
+    offerUndoSnackbar(message, [`view:${id}`], async () => {
+      const failed = await saveViewEdit(id, { ...restore, expected_revision: currentRevision(`view:${id}`, after) }, { offer: false, aliasFrom: body.previous.revision });
+      showSnackbar(failed ? `Couldn't undo. ${failed}` : undone);
+    }, { latest: `view:${id}` });
   }
+  return "";
 }
 
 async function deleteSavedView(viewId) {
-  const index = state.savedViews.findIndex((view) => view.id === viewId);
-  const removed = state.savedViews[index];
-  const response = await fetch(`/api/v1/saved-views/${viewId}`, {
-    method: "DELETE", credentials: "same-origin",
-    headers: { "X-CSRF-Token": state.csrf, Accept: "application/json" },
-  });
-  if (!response.ok) { showSnackbar((await response.json().catch(() => ({}))).error || "The view could not be deleted."); return; }
+  const order = state.savedViews.map((view) => String(view.id));
+  const removed = state.savedViews.find((view) => view.id === viewId);
+  if (!removed) return;
+  const { status, error } = await companyWrite(`/api/v1/saved-views/${viewId}`, { method: "DELETE" }, "The view could not be deleted.");
+  if (error && status !== 404) { showSnackbar(error); return; }
+  const focus = focusAfterRemoval(order, [String(viewId)], ".saved-view-wrap", "data-saved-view-id", "[data-open-filters]");
   state.savedViews = state.savedViews.filter((view) => view.id !== viewId);
   renderInbox();
-  requestAnimationFrame(() => {
-    const target = document.querySelectorAll("[data-saved-view]")[Math.min(index, state.savedViews.length - 1)] || document.querySelector("[data-open-filters]");
-    target?.focus();
-  });
-  offerUndoSnackbar("Saved view deleted.", [`view:${removed?.name}`], () => restoreSavedView(removed));
+  requestAnimationFrame(focus);
+  if (status === 404) { showSnackbar("That view was already deleted in another tab."); return; }
+  offerUndoSnackbar(`Deleted the “${removed.name}” view.`, [`view:${viewId}`], () => restoreSavedView(viewId), { latest: `view:${viewId}` });
 }
 
-async function restoreSavedView(view) {
-  if (!view) return;
-  try {
-    const response = await fetch("/api/v1/saved-views", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ name: view.name, filters: view.filters, sort: view.sort, pinned: view.pinned }),
-    });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be restored.");
-    state.savedViews.push((await response.json()).saved_view);
-    if (routeRoot() === "inbox") renderInbox();
-    showSnackbar("Saved view restored.");
-  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The view could not be restored."); }
+// comes back in its old slot
+async function restoreSavedView(viewId) {
+  const { status, error } = await companyWrite(`/api/v1/saved-views/${viewId}/restore`, { method: "POST" }, "The view could not be restored.");
+  if (error) {
+    if (status === 404) loadSavedViews();
+    showSnackbar(`Couldn't undo. ${status === 404 ? "It was already restored in another tab." : error}`);
+    return;
+  }
+  await loadSavedViews();
+  if (routeRoot() === "inbox") savedViewFocus(viewId)();
+  showSnackbar("View restored.");
+}
+
+async function saveViewOrder(order, before, view, { offer = true, role = "button[data-menu-trigger]" } = {}) {
+  const byId = new Map(state.savedViews.map((item) => [item.id, item]));
+  const position = order.indexOf(view.id) + 1;
+  state.savedViews = order.map((id) => byId.get(id)).filter(Boolean);
+  if (routeRoot() === "inbox") { renderInbox(); savedViewFocus(view.id, role)(); }
+  announce(`${view.name} moved to position ${position} of ${order.length}.`);
+  const { status, body, error } = await companyWrite("/api/v1/saved-views/order", { method: "PUT", body: JSON.stringify({ ids: order, expected_revision: state.savedViewsOrderRevision }) }, "Couldn't reorder the views.");
+  if (error) {
+    const text = status === 409 ? "The views changed in another tab, so they've reloaded." : `${error} Change undone.`;
+    if (status === 409) await loadSavedViews();
+    else {
+      state.savedViews = before.map((id) => byId.get(id)).filter(Boolean);
+      if (routeRoot() === "inbox") { renderInbox(); savedViewFocus(view.id, role)(); }
+    }
+    assertiveRegion.textContent = text;
+    showSnackbar(text);
+    return false;
+  }
+  state.savedViewsOrderRevision = body.order_revision;
+  if (offer) offerUndoSnackbar(`Moved ${view.name} to position ${position}.`, ["views-order"], async () => {
+    if (await saveViewOrder(before, order, view, { offer: false })) showSnackbar("Move undone.");
+  }, { latest: "views-order" });
+  return true;
+}
+
+function moveSavedView(view, to, options) {
+  const before = state.savedViews.map((item) => item.id);
+  const order = moveId(before, view.id, to);
+  if (order.join() !== before.join()) saveViewOrder(order, before, view, options);
 }
 
 // --- snackbars and undo ---
@@ -5458,6 +5808,23 @@ const companyMenuItems = [
 ];
 
 const objectMenus = [
+  {
+    selector: ".saved-view-wrap[data-saved-view-id]", keyAttr: "data-saved-view-id", fallback: "[data-open-filters]",
+    label: (c) => `${c.view.name} view`,
+    context(el) {
+      const index = state.savedViews.findIndex((view) => String(view.id) === el.dataset.savedViewId);
+      return index < 0 ? null : { view: state.savedViews[index], index, count: state.savedViews.length };
+    },
+    items: [
+      { label: "Apply", run: (c) => applySavedView(c.index) },
+      { label: "Rename…", run: (c) => renameSavedView(c.view) },
+      { label: "Move left", divider: true, when: (c) => c.count > 1, disabled: (c) => c.index === 0, run: (c) => moveSavedView(c.view, c.index - 1) },
+      { label: "Move right", when: (c) => c.count > 1, disabled: (c) => c.index === c.count - 1, run: (c) => moveSavedView(c.view, c.index + 1) },
+      { label: "Move to start", when: (c) => c.count > 1, disabled: (c) => c.index === 0, run: (c) => moveSavedView(c.view, 0) },
+      { label: "Move to end", when: (c) => c.count > 1, disabled: (c) => c.index === c.count - 1, run: (c) => moveSavedView(c.view, c.count - 1) },
+      { label: "Delete", danger: true, divider: true, run: (c) => deleteSavedView(c.view.id) },
+    ],
+  },
   {
     selector: ".rule-card[data-rule-id]", keyAttr: "data-rule-id", fallback: "#rules-title",
     label: (c) => c.rule.name,
@@ -5871,8 +6238,6 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-clear-all-filters]")) { clearAllFilters(); return; }
   const savedView = event.target.closest("[data-saved-view]");
   if (savedView) { applySavedView(Number(savedView.dataset.savedView)); return; }
-  const deleteView = event.target.closest("[data-delete-saved-view]");
-  if (deleteView) { deleteSavedView(Number(deleteView.dataset.deleteSavedView)); return; }
   if (event.target.closest("[data-exit-focus]")) { state.focus = false; syncInboxUrl(); renderInbox({ focus: true }); return; }
   if (event.target.closest("[data-back-to-list]")) { state.focus = false; navigate(inboxUrl("")); return; }
   if (event.target.closest("[data-retry-jobs]")) { state.loaded = false; state.error = ""; renderInbox(); loadInbox(); return; }
@@ -6053,6 +6418,23 @@ bindDrag({
 });
 
 bindDrag({
+  handle: ".saved-view-handle", item: ".saved-view-wrap[data-saved-view-id]", axis: "x",
+  lists: () => [...document.querySelectorAll(".saved-view-list")],
+  key: (item) => item.dataset.savedViewId,
+  find: (key) => document.querySelector(`.saved-view-wrap[data-saved-view-id="${CSS.escape(key)}"]`),
+  drop: ({ key, to, keyboard }) => {
+    const view = state.savedViews.find((item) => String(item.id) === key);
+    if (view) moveSavedView(view, to.index, { role: keyboard ? ".saved-view-handle" : "button[data-menu-trigger]" });
+    return document.querySelector(`.saved-view-wrap[data-saved-view-id="${CSS.escape(key)}"]`);
+  },
+  announce,
+  lifted: (at) => `Picked up, position ${at.index + 1} of ${at.count}. Use the left and right arrow keys to move, Space to drop, Escape to cancel.`,
+  moved: (at) => moveAnnouncement(at.index, at.count),
+  dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
+  cancelled: (at) => cancelAnnouncement(at.index, at.count),
+});
+
+bindDrag({
   handle: ".profile-drag-handle", item: ".profile-item[data-profile-ref]",
   // only the lifted items own list
   lists: () => { const list = document.querySelector(".profile-item.is-lifted")?.parentElement; return list ? [list] : []; },
@@ -6088,7 +6470,9 @@ document.addEventListener("input", (event) => {
   } else if (event.target.id === "job-notes") {
     const key = state.selectedKey;
     const value = event.target.value;
-    clearTimeout(state.notesTimer); document.querySelector("#notes-state").textContent = "Unsaved changes"; state.notesTimer = setTimeout(() => saveNotes(key, value), 600);
+    clearTimeout(state.notesTimer); document.querySelector("#notes-state").textContent = "Unsaved changes";
+    state.notesDraft = { key, value };
+    state.notesTimer = setTimeout(() => { state.notesDraft = null; queueNotes(key, value); }, 600);
   } else if (event.target.id === "manual-description-text") {
     state.manualDescriptionDrafts.set(state.selectedKey, event.target.value);
   } else if (event.target.id === "tracker-search") {
@@ -6097,11 +6481,12 @@ document.addEventListener("input", (event) => {
   } else if (event.target.id === "company-search") {
     state.companyQuery = event.target.value; syncCompaniesUrl(); renderCompanyResults();
   } else if (event.target.id === "company-note") {
-    const company = state.companiesData?.company?.name;
+    const { key, name: company } = state.companiesData?.company || {};
     const body = event.target.value;
     if (document.querySelector("#company-note-state")) document.querySelector("#company-note-state").textContent = "Unsaved changes";
     clearTimeout(state.companyNoteTimer);
-    state.companyNoteTimer = setTimeout(() => saveCompanyNote(company, body), 600);
+    state.companyNoteDraft = { key, body };
+    state.companyNoteTimer = setTimeout(() => { state.companyNoteDraft = null; queueCompanyNote(key, company, body); }, 600);
   }
 });
 
@@ -6137,8 +6522,27 @@ document.addEventListener("error", (event) => {
   }
 }, true);
 
+// starts one undoable edit
+document.addEventListener("focusin", (event) => {
+  if (event.target.id === "job-notes") {
+    const key = document.querySelector("#inbox-reading-pane")?.dataset.jobKey;
+    const job = key && state.jobs.find((candidate) => candidate.dedupe_key === key);
+    if (job) textSessions.begin(`notes:${key}`, job.notes || "");
+  } else if (event.target.id === "company-note") {
+    const company = state.companiesData?.company;
+    if (company?.key) textSessions.begin(`company-note:${company.key}`, company.note?.body || "");
+  }
+});
+
 document.addEventListener("focusout", (event) => {
   if (event.target.matches("[data-next-step]")) saveTrackerNextStep(event.target.dataset.nextStep, event.target.value, event.target);
+  else if (event.target.id === "job-notes") {
+    const key = document.querySelector("#inbox-reading-pane")?.dataset.jobKey;
+    if (key) settleNotes(key);
+  } else if (event.target.id === "company-note") {
+    const company = state.companiesData?.company;
+    if (company?.key) settleCompanyNote(company.key, company.name);
+  }
 });
 
 document.addEventListener("submit", (event) => {

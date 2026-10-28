@@ -785,38 +785,70 @@ dialog[open]::backdrop {
   cursor: pointer;
 }
 
+.saved-view-list {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* chip holds handle, name and menu */
 .saved-view-wrap {
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
-  min-height: 32px;
+  min-height: var(--handle-size);
   flex: 0 0 auto;
-  align-items: stretch;
-  overflow: hidden;
+  align-items: center;
   border-radius: var(--r-sm);
   background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  transition: scale var(--spatial-fast);
+}
+
+.saved-view-wrap::before,
+.saved-view-wrap::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+}
+
+.saved-view-wrap::before {
+  z-index: -1;
+  background: currentColor;
+  transition: opacity var(--effects-fast);
+}
+
+.saved-view-wrap::after {
+  z-index: -2;
+  box-shadow: var(--shadow-float);
+  transition: opacity var(--spatial-fast);
 }
 
 .saved-view-wrap .saved-view {
+  min-height: var(--handle-size);
+  padding: 0 var(--s-1);
   border-radius: 0;
   background: transparent;
 }
 
-.saved-view-delete {
-  display: grid;
-  width: 32px;
-  place-items: center;
-  background: transparent;
-  color: var(--on-surface-faint);
-  cursor: pointer;
+.saved-view-wrap .drag-handle {
+  touch-action: pan-x;
 }
 
-.saved-view-delete:hover,
-.saved-view-delete:focus-visible {
-  color: var(--on-surface);
+.saved-view-wrap .drag-handle svg {
+  width: 18px;
+  height: 18px;
 }
 
-.saved-view-delete svg {
-  width: 14px;
-  height: 14px;
+.saved-view-wrap .more-button {
+  width: var(--handle-size);
+  height: var(--handle-size);
 }
 
 .job-search {
