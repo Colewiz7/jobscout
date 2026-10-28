@@ -545,6 +545,21 @@ MIGRATIONS = (
         insert into rule_order (id) values (true) on conflict (id) do nothing;
         """,
     ),
+    Migration(
+        24,
+        "job_tags",
+        """
+        create table if not exists job_tags (
+            id          bigserial primary key,
+            dedupe_key  text not null,
+            tag         text not null,
+            created_at  timestamptz not null default now(),
+            deleted_at  timestamptz
+        );
+        create unique index if not exists job_tags_job_tag_idx
+            on job_tags (dedupe_key, lower(tag)) where deleted_at is null;
+        """,
+    ),
 )
 
 

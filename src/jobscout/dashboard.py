@@ -346,7 +346,7 @@ def _annotate_rules(jobs: list[dict], rules: list[dict]) -> list[dict]:
     for job in jobs:
         title = database.normalise(str(job.get("title") or ""))
         company = database.company_key(str(job.get("company") or ""))
-        tags = []
+        tags: list[str] = []
         boost = 0
         for rule in active:
             pattern = database.normalise(str(rule.get("pattern") or ""))
@@ -356,7 +356,11 @@ def _annotate_rules(jobs: list[dict], rules: list[dict]) -> list[dict]:
                     tags.append(tag)
             elif rule.get("kind") == "boost_company" and pattern and pattern in company:
                 boost += int(rule.get("value") or 0)
-        job["tags"] = tags
+        # stored apart, so reruns keep them
+        manual = job.get("manual_tags") or []
+        job["rule_tags"] = tags
+        job["manual_tags"] = manual
+        job["tags"] = tags + [tag for tag in manual if tag.casefold() not in {item.casefold() for item in tags}]
         job["rule_boost"] = min(boost, 100)
     return jobs
 
@@ -461,6 +465,7 @@ class PostgresStore:
             active_rules = database.rules(conn)
             taglines = database.posting_taglines(conn)
             companies = database.companies(conn)
+            tags = database.manual_tags(conn)
         # Old rows are retained for audit/history, but a changed scout filter
         # must remove newly discovered out-of-scope rows from today's Inbox.
         jobs = _company_view([job for job in jobs if _visible_scoped_job(job, self._filter_config)], companies)
@@ -470,6 +475,7 @@ class PostgresStore:
             job["pay"] = extract_pay(description)
             job["pay_checked"] = description is not None
             job["tagline"] = taglines.get(job["dedupe_key"], "")
+            job["manual_tags"] = tags.get(job["dedupe_key"], [])
         return _annotate_rules(_annotate_reposts(jobs), active_rules), companies
 
     def company_icon_keys(self) -> list[str]:
@@ -541,6 +547,21 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.undo_rule_action(conn, action_id)
+
+    def tag_jobs(self, dedupe_keys: list[str], tag: str, *, remove: bool = False) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.tag_jobs(conn, dedupe_keys, tag, remove=remove)
+
+    def tag_row_keys(self, ids: list[int]) -> list[str]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.tag_row_keys(conn, ids)
+
+    def undo_tag_rows(self, ids: list[int], *, remove: bool) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.undo_tag_rows(conn, ids, remove=remove)
 
     def update_rule(self, rule_id: int, payload: dict) -> dict | None:
         payload = dict(payload)
@@ -1128,6 +1149,7 @@ class DemoStore:
         self._eligibility_overrides: dict[str, list[dict]] = {}
         self._rules: list[dict] = []
         self._rule_order_revision = 0
+        self._job_tags: list[dict] = []
         self._rule_action_history: set[tuple[int, str]] = set()
         self._next_rule_id = 1
         self._next_rule_action_id = 1
@@ -1179,6 +1201,7 @@ class DemoStore:
         for job in _company_view(jobs, self._company_registry()):
             job["connections_count"] = counts.get(job["company_key"], 0)
             job.setdefault("next_step", "")
+            job["manual_tags"] = [row["tag"] for row in self._job_tags if row["dedupe_key"] == job["dedupe_key"] and not row["deleted"]]
         return _annotate_rules(_annotate_reposts(jobs), self._live_rules())
 
     # mirrors the scout's companies upsert
@@ -1328,6 +1351,43 @@ class DemoStore:
         rule["updated_at"] = dt.datetime.now(dt.timezone.utc)
         self._apply_demo_rules()
         return self._public_rule(rule)
+
+    def _live_tag(self, key: str, tag: str) -> dict | None:
+        return next((row for row in self._job_tags if row["dedupe_key"] == key and not row["deleted"]
+                     and row["tag"].casefold() == tag.casefold()), None)
+
+    def tag_jobs(self, dedupe_keys: list[str], tag: str, *, remove: bool = False) -> dict | None:
+        tag = database.clean_tag(tag)
+        if not set(dedupe_keys) <= {row["dedupe_key"] for row in self.rows if not self._is_hidden(row)}:
+            return None
+        changed, ids = [], []
+        for key in dict.fromkeys(dedupe_keys):
+            found = self._live_tag(key, tag)
+            if remove and found is not None:
+                found["deleted"] = True
+            elif not remove and found is None:
+                found = {"id": len(self._job_tags) + 1, "dedupe_key": key, "tag": tag, "deleted": False}
+                self._job_tags.append(found)
+            else:
+                continue
+            changed.append(key)
+            ids.append(found["id"])
+        return {"changed": changed, "ids": sorted(ids)}
+
+    def tag_row_keys(self, ids: list[int]) -> list[str]:
+        return sorted({row["dedupe_key"] for row in self._job_tags if row["id"] in ids})
+
+    def undo_tag_rows(self, ids: list[int], *, remove: bool) -> dict:
+        hidden = {row["dedupe_key"] for row in self.rows if self._is_hidden(row)}
+        rows = []
+        for row in self._job_tags:
+            if row["id"] not in ids or row["deleted"] == remove or row["dedupe_key"] in hidden:
+                continue
+            if not remove and self._live_tag(row["dedupe_key"], row["tag"]) is not None:
+                continue
+            row["deleted"] = remove
+            rows.append(row)
+        return {"changed": sorted({row["dedupe_key"] for row in rows}), "ids": sorted(row["id"] for row in rows)}
 
     def update_rule(self, rule_id: int, payload: dict) -> dict | None:
         payload = dict(payload)
@@ -2785,6 +2845,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 log.exception("could not change hidden jobs")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")
+            return
+        if parsed.path == "/api/v1/job-tags":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                keys = payload.get("dedupe_keys")
+                if not isinstance(keys, list) or not keys or len(keys) > 500 or not all(isinstance(key, str) and key for key in keys):
+                    raise ValueError("dedupe_keys must be a list of job keys")
+                remove = payload.get("remove", False)
+                if not isinstance(remove, bool):
+                    raise ValueError("remove must be true or false")
+                if self._reject_hidden(*keys):
+                    return
+                tag = database.clean_tag(payload.get("tag"))
+                changed = self.app.store.tag_jobs(keys, tag, remove=remove)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not change job tags")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the tag. Retry shortly.")
+                return
+            if changed is None:
+                self._error(HTTPStatus.NOT_FOUND, "job not found")
+                return
+            self._json({"tag": tag, "remove": remove, **changed})
+            return
+        if parsed.path == "/api/v1/job-tags/undo":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                ids, remove = payload.get("ids"), payload.get("remove")
+                if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(type(item) is int for item in ids):
+                    raise ValueError("ids must be a list of tag ids")
+                if not isinstance(remove, bool):
+                    raise ValueError("remove must be true or false")
+                keys = self.app.store.tag_row_keys(ids)
+                if not keys:
+                    self._error(HTTPStatus.NOT_FOUND, "tags not found")
+                    return
+                if self._reject_hidden(*keys):
+                    return
+                result = self.app.store.undo_tag_rows(ids, remove=remove)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception:
+                log.exception("could not undo job tags")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't undo the tag. Retry shortly.")
+                return
+            # another tab got there first
+            if not result["ids"]:
+                self._json({"error": "These tags changed in another tab.", **result}, HTTPStatus.CONFLICT)
+                return
+            self._json(result)
             return
         edit_prefix = "/api/v1/posting-edits/"
         if parsed.path.startswith(edit_prefix) and parsed.path.endswith("/undo"):

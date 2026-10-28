@@ -29,6 +29,7 @@ def conn():
         cur.execute("drop table if exists overview_jobs")
         cur.execute("drop table if exists posting_taglines")
         cur.execute("drop table if exists company_assets")
+        cur.execute("drop table if exists job_tags")
         cur.execute("drop table if exists rule_actions")
         cur.execute("drop table if exists rules")
         cur.execute("drop table if exists rule_order")
@@ -101,6 +102,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 21, "name": "company_edits"},
             {"version": 22, "name": "company_links"},
             {"version": 23, "name": "rule_edits"},
+            {"version": 24, "name": "job_tags"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1482,6 +1484,58 @@ def test_deleted_rules_no_longer_archive_new_jobs(conn):
     database.upsert_open(conn, [_p(title="Senior Cloud Intern")])
     database.save_rule(conn, {"name": "Tags", "kind": "tag_title", "pattern": "Cloud", "value": "Infra"})
     assert database.dashboard_postings(conn)[0]["status"] == "new"
+
+
+def test_manual_tags_are_case_blind_and_report_what_changed(conn):
+    first, second = _p(), _p(url="https://acme.example/2", title="Systems Intern")
+    database.upsert_open(conn, [first, second])
+    keys = [first.dedupe_key, second.dedupe_key]
+    added = database.tag_jobs(conn, keys, " Dream  job ")
+    assert added["changed"] == keys and len(added["ids"]) == 2
+    assert database.tag_jobs(conn, keys, "dream JOB") == {"changed": [], "ids": []}
+    assert database.tag_jobs(conn, [first.dedupe_key], "Later")["changed"] == [first.dedupe_key]
+    assert database.manual_tags(conn) == {first.dedupe_key: ["Dream job", "Later"], second.dedupe_key: ["Dream job"]}
+    removed = database.tag_jobs(conn, keys, "DREAM JOB", remove=True)
+    assert removed == {"changed": keys, "ids": added["ids"]}
+    assert database.tag_jobs(conn, keys, "Dream job", remove=True) == {"changed": [], "ids": []}
+    assert database.tag_jobs(conn, [first.dedupe_key, "nope"], "Later") is None
+    with pytest.raises(ValueError):
+        database.tag_jobs(conn, keys, " ")
+    # a rule rerun leaves them alone
+    database.save_rule(conn, {"name": "Cloud", "kind": "archive_title", "pattern": "Cloud"})
+    assert database.manual_tags(conn) == {first.dedupe_key: ["Later"]}
+
+
+def test_tag_undo_goes_by_row_and_skips_hidden_jobs(conn):
+    first, second = _p(), _p(url="https://acme.example/2", title="Systems Intern")
+    database.upsert_open(conn, [first, second])
+    key = first.dedupe_key
+    added = database.tag_jobs(conn, [key], "Dream")
+    removed = database.tag_jobs(conn, [key], "Dream", remove=True)
+    readded = database.tag_jobs(conn, [key], "dream")
+    assert database.tag_row_keys(conn, added["ids"]) == [key]
+    # the old row is gone already
+    assert database.undo_tag_rows(conn, added["ids"], remove=True) == {"changed": [], "ids": []}
+    assert database.undo_tag_rows(conn, removed["ids"], remove=False) == {"changed": [], "ids": []}
+    assert database.manual_tags(conn) == {key: ["dream"]}
+    assert database.undo_tag_rows(conn, readded["ids"], remove=True) == {"changed": [key], "ids": readded["ids"]}
+    assert database.undo_tag_rows(conn, removed["ids"], remove=False) == {"changed": [key], "ids": removed["ids"]}
+    assert database.manual_tags(conn) == {key: ["Dream"]}
+
+    database.hide_jobs(conn, [key])
+    assert database.tag_jobs(conn, [key], "Later") is None
+    assert database.tag_jobs(conn, [second.dedupe_key, key], "Later") is None
+    assert database.undo_tag_rows(conn, removed["ids"], remove=True) == {"changed": [], "ids": []}
+
+
+def test_the_store_merges_rule_and_manual_tags(conn, monkeypatch):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    database.save_rule(conn, {"name": "Cloud", "kind": "tag_title", "pattern": "Cloud", "value": "Infra"})
+    database.tag_jobs(conn, [posting.dedupe_key], "infra")
+    database.tag_jobs(conn, [posting.dedupe_key], "Dream")
+    job = _store(monkeypatch).jobs()[0]
+    assert (job["rule_tags"], job["manual_tags"], job["tags"]) == (["Infra"], ["infra", "Dream"], ["Infra", "Dream"])
 
 
 def test_rule_runs_leave_hidden_jobs_and_their_aliases_alone(conn):

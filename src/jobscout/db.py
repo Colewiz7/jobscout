@@ -2676,6 +2676,105 @@ def record_eligibility_overrides(
     return eligibility_overrides(conn, dedupe_key)
 
 
+def clean_tag(value) -> str:
+    tag = " ".join(str(value or "").split())
+    if not tag or len(tag) > 40:
+        raise ValueError("A tag needs 1 to 40 characters")
+    return tag
+
+
+def manual_tags(conn: psycopg.Connection) -> dict[str, list[str]]:
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key, tag from job_tags where deleted_at is null order by created_at, id")
+        tags: dict[str, list[str]] = {}
+        for row in cur.fetchall():
+            tags.setdefault(row["dedupe_key"], []).append(row["tag"])
+        return tags
+
+
+_VISIBLE_TAG_JOB = """
+    not exists (select 1 from postings p where p.dedupe_key = job_tags.dedupe_key and p.hidden_by is not null)
+"""
+
+
+def tag_jobs(conn: psycopg.Connection, dedupe_keys: list[str], tag: str, *, remove: bool = False) -> dict | None:
+    """Returns the rows it changed, so undo touches only those."""
+    tag = clean_tag(tag)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select dedupe_key from postings where dedupe_key = any(%s)
+             group by dedupe_key having bool_and(hidden_by is null)
+            """,
+            (dedupe_keys,),
+        )
+        if len(cur.fetchall()) != len(set(dedupe_keys)):
+            return None
+        if remove:
+            # undo only lasts a moment
+            cur.execute("delete from job_tags where deleted_at < now() - interval '1 day'")
+            cur.execute(
+                """
+                update job_tags set deleted_at = now()
+                 where dedupe_key = any(%s) and lower(tag) = lower(%s) and deleted_at is null
+                returning id, dedupe_key
+                """,
+                (dedupe_keys, tag),
+            )
+        else:
+            cur.execute(
+                """
+                insert into job_tags (dedupe_key, tag)
+                select key, %s from unnest(%s::text[]) as key
+                on conflict (dedupe_key, lower(tag)) where deleted_at is null do nothing
+                returning id, dedupe_key
+                """,
+                (tag, dedupe_keys),
+            )
+        rows = cur.fetchall()
+    conn.commit()
+    changed = {row["dedupe_key"] for row in rows}
+    return {"changed": [key for key in dict.fromkeys(dedupe_keys) if key in changed], "ids": sorted(row["id"] for row in rows)}
+
+
+def tag_row_keys(conn: psycopg.Connection, ids: list[int]) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("select distinct dedupe_key from job_tags where id = any(%s)", (ids,))
+        return [row["dedupe_key"] for row in cur.fetchall()]
+
+
+def undo_tag_rows(conn: psycopg.Connection, ids: list[int], *, remove: bool) -> dict:
+    """Undo by row, never by name."""
+    with conn.cursor() as cur:
+        if remove:
+            cur.execute(
+                f"""
+                update job_tags set deleted_at = now()
+                 where id = any(%s) and deleted_at is null and {_VISIBLE_TAG_JOB}
+                returning id, dedupe_key
+                """,
+                (ids,),
+            )
+        else:
+            # a tag added since wins
+            cur.execute(
+                f"""
+                update job_tags set deleted_at = null
+                 where id = any(%s) and deleted_at is not null and {_VISIBLE_TAG_JOB}
+                   and not exists (
+                       select 1 from job_tags live
+                        where live.dedupe_key = job_tags.dedupe_key and lower(live.tag) = lower(job_tags.tag)
+                          and live.deleted_at is null
+                   )
+                returning id, dedupe_key
+                """,
+                (ids,),
+            )
+        rows = cur.fetchall()
+    conn.commit()
+    return {"changed": sorted({row["dedupe_key"] for row in rows}), "ids": sorted(row["id"] for row in rows)}
+
+
 RULE_KINDS = frozenset({"archive_title", "tag_title", "boost_company"})
 
 

@@ -1562,6 +1562,124 @@ def test_a_stale_tab_cannot_reorder_or_undo_over_a_newer_rule_order(dashboard):
     assert final["order_revision"] == other.json()["order_revision"]
 
 
+def _datadog(client):
+    return next(job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog")
+
+
+def test_manual_tags_sit_beside_rule_tags_and_survive_reruns(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        rule = _rule(client, csrf, name="Systems roles", kind="tag_title", pattern="Platform", value="Systems")
+        added = client.post("/api/v1/job-tags", headers=headers,
+                            json={"dedupe_keys": ["demo:1", "demo:2"], "tag": "  Dream   job "})
+        again = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:1", "demo:2"], "tag": "dream JOB"})
+        same_as_rule = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:2"], "tag": "systems"})
+        tagged = _datadog(client)
+        client.put(f"/api/v1/rules/{rule['id']}", headers=headers, json={"enabled": False})
+        client.put(f"/api/v1/rules/{rule['id']}", headers=headers, json={"enabled": True})
+        client.patch(f"/api/v1/rules/{rule['id']}", headers=headers, json={"value": "Infra"})
+        rerun = _datadog(client)
+        removed = client.post("/api/v1/job-tags", headers=headers,
+                              json={"dedupe_keys": ["demo:1", "demo:2"], "tag": "Dream job", "remove": True})
+        rule_only = client.post("/api/v1/job-tags", headers=headers,
+                                json={"dedupe_keys": ["demo:2"], "tag": "Infra", "remove": True})
+        after = _datadog(client)
+        restored = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": removed.json()["ids"], "remove": False})
+        final = _datadog(client)
+    finally:
+        client.close()
+
+    assert added.status_code == 200
+    assert added.json() == {"tag": "Dream job", "remove": False, "changed": ["demo:1", "demo:2"], "ids": [1, 2]}
+    assert again.json()["changed"] == []
+    assert same_as_rule.json()["changed"] == ["demo:2"]
+    assert tagged["rule_tags"] == ["Systems"]
+    assert tagged["manual_tags"] == ["Dream job", "systems"]
+    assert tagged["tags"] == ["Systems", "Dream job"]
+    assert rerun["manual_tags"] == ["Dream job", "systems"]
+    assert rerun["tags"] == ["Infra", "Dream job", "systems"]
+    assert removed.json()["changed"] == ["demo:1", "demo:2"]
+    assert rule_only.json()["changed"] == []
+    assert after["tags"] == ["Infra", "systems"]
+    assert restored.json() == {"changed": ["demo:1", "demo:2"], "ids": [1, 2]}
+    assert final["manual_tags"] == ["Dream job", "systems"]
+
+
+def test_a_stale_tag_undo_leaves_a_newer_hand_tag_alone(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    tag = {"dedupe_keys": ["demo:2"], "tag": "Dream"}
+    try:
+        added = client.post("/api/v1/job-tags", headers=headers, json=tag).json()
+        # another tab removes it and adds it back
+        removed = client.post("/api/v1/job-tags", headers=headers, json={**tag, "remove": True}).json()
+        readded = client.post("/api/v1/job-tags", headers=headers, json=tag).json()
+        stale_undo_add = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": added["ids"], "remove": True})
+        stale_undo_remove = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": removed["ids"], "remove": False})
+        kept = _datadog(client)["manual_tags"]
+        undo_readd = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": readded["ids"], "remove": True})
+        gone = _datadog(client)["manual_tags"]
+    finally:
+        client.close()
+
+    assert readded["ids"] != added["ids"]
+    assert stale_undo_add.status_code == 409
+    assert stale_undo_remove.status_code == 409
+    assert kept == ["Dream"]
+    assert undo_readd.json() == {"changed": ["demo:2"], "ids": readded["ids"]}
+    assert gone == []
+
+
+def test_tag_writes_check_auth_csrf_input_and_hidden_jobs(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    body = {"dedupe_keys": ["demo:1"], "tag": "Later"}
+    try:
+        no_auth = httpx.post(f"{base}/api/v1/job-tags", json=body, timeout=2)
+        no_csrf = client.post("/api/v1/job-tags", json=body)
+        blank = client.post("/api/v1/job-tags", headers=headers, json={**body, "tag": "  "})
+        long = client.post("/api/v1/job-tags", headers=headers, json={**body, "tag": "x" * 41})
+        no_keys = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": [], "tag": "Later"})
+        bad_remove = client.post("/api/v1/job-tags", headers=headers, json={**body, "remove": "yes"})
+        missing = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:1", "demo:404"], "tag": "Later"})
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:1", "demo:2"], "tag": "Later"})
+        untouched = client.get("/api/v1/jobs").json()["jobs"][0]
+        bad_ids = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": ["1"], "remove": True})
+        bad_undo_remove = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": [1], "remove": "yes"})
+        no_csrf_undo = client.post("/api/v1/job-tags/undo", json={"ids": [1], "remove": True})
+        unknown = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": [999], "remove": True})
+    finally:
+        client.close()
+    client, csrf = authenticated_client(base)
+    try:
+        client.post("/api/v1/hidden/undo", headers={"X-CSRF-Token": csrf}, json={"ids": [1]})
+        tagged = client.post("/api/v1/job-tags", headers={"X-CSRF-Token": csrf}, json={"dedupe_keys": ["demo:2"], "tag": "Later"}).json()
+        client.post("/api/v1/hidden", headers={"X-CSRF-Token": csrf}, json={"dedupe_keys": ["demo:2"]})
+        hidden_undo = client.post("/api/v1/job-tags/undo", headers={"X-CSRF-Token": csrf}, json={"ids": tagged["ids"], "remove": True})
+    finally:
+        client.close()
+
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert blank.status_code == 400
+    assert long.status_code == 400
+    assert no_keys.status_code == 400
+    assert bad_remove.status_code == 400
+    assert missing.status_code == 404
+    assert hidden.status_code == 410
+    assert untouched["manual_tags"] == []
+    assert bad_ids.status_code == 400
+    assert bad_undo_remove.status_code == 400
+    assert no_csrf_undo.status_code == 403
+    assert unknown.status_code == 404
+    assert hidden_undo.status_code == 410
+
+
 def test_tracker_and_company_writes_require_csrf(dashboard):
     base, _ = dashboard
     interview = httpx.post(
