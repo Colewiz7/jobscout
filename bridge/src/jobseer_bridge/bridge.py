@@ -9,6 +9,7 @@ from .confirm import Confirms
 from .registry import annotations, collect
 from .tools_apply import ApplyTools
 from .tools_confirm import ConfirmTools
+from .tools_profile import ProfileTools
 from .tools_read import ReadTools
 from .tools_records import RecordTools
 from .tools_write import WriteTools
@@ -19,7 +20,7 @@ def pack(payload) -> str:
     return json.dumps(payload, separators=(",", ":"), default=str)
 
 
-class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools):
+class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools):
     def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None):
         self.config = config
         self.confirms = confirms or Confirms()
