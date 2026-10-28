@@ -1,3 +1,4 @@
+from .audit import AuditLog
 from .bridge import Bridge
 from .config import Config
 from .ratelimit import RateLimiter
@@ -24,7 +25,8 @@ def build_remote(config: Config, settings, client=None, confirms=None, keys=None
 
     verifier = JwtVerifier(issuer=settings.issuer, audience=settings.audience, subject=settings.subject, scope=settings.scope, keys=keys or KeySet(settings.jwks_url))
     limit = RateLimiter(settings.rate_limit, settings.rate_window) if settings.rate_limit else None
-    bridge = Bridge(config, client, confirms, selection=settings.tools, limiter=limit, remote=True)
+    audit = AuditLog(settings.audit_log, config.scrub) if settings.audit_log else None
+    bridge = Bridge(config, client, confirms, selection=settings.tools, limiter=limit, remote=True, audit=audit)
     server = FastMCP(
         "jobseer",
         instructions=INSTRUCTIONS,

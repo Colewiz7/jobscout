@@ -23,13 +23,14 @@ def pack(payload) -> str:
 
 
 class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools):
-    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False):
+    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False, audit=None):
         self.config = config
         self.confirms = confirms or Confirms()
         self.client = client or Client(config)
         self.selection = selection
         self.limiter = limiter
         self.remote = remote
+        self.audit = audit
         if isinstance(selection, frozenset):
             unknown = selection - {spec.name for spec, _ in collect(self)}
             if unknown:
@@ -63,29 +64,63 @@ class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, Profi
     def label(self, data) -> dict:
         return {"target": self.config.origin, "data": data}
 
-    def guard(self, fn):
+    def guard(self, fn, spec=None):
         @functools.wraps(fn)
         def run(*args, **kwargs):
-            self.admit()
-            # raising outside keeps the raw error unreachable
-            failure = None
+            who = current_identity() if self.remote else None
+            subject = who[0] if who else None
             try:
-                return pack(self.config.scrub(self.label(fn(*args, **kwargs))))
-            except Conflict as conflict:
-                return pack(self.config.scrub({"target": self.config.origin, "ok": False, "conflict": True, "message": conflict.message, "current": conflict.current}))
-            except AuthError as error:
-                failure = "%s (on %s)" % (error.message, self.config.origin)
-            except ApiError as error:
-                failure = "%s (HTTP %d) on %s" % (self.config.redact(error.message), error.status, self.config.origin)
-            except httpx.TransportError as error:
-                failure = "cannot reach %s: %s" % (self.config.origin, self.config.redact(str(error)))
-            raise BridgeError(failure)
+                self.admit()
+            except BridgeError:
+                self.note(subject, spec, kwargs, "denied" if who is None else "rate_limited")
+                raise
+            try:
+                text, data = self.invoke(fn, args, kwargs)
+            except Exception:
+                self.note(subject, spec, kwargs, "error", "rejected" if kwargs.get("confirm_id") else None)
+                raise
+            self.note(subject, spec, kwargs, "ok", self.outcome(spec, kwargs, data))
+            return text
 
         run.__annotations__["return"] = str
         return run
+
+    def note(self, subject, spec, kwargs, status, confirm=None) -> None:
+        if self.audit and spec:
+            self.audit.record(subject, spec.name, kwargs, status, confirm)
+
+    def outcome(self, spec, kwargs, data):
+        if spec is None or spec.kind != "confirm":
+            return None
+        if isinstance(data, dict) and data.get("needs_confirmation"):
+            return "previewed"
+        return "applied" if kwargs.get("confirm_id") else None
+
+    def invoke(self, fn, args, kwargs):
+        # keeps raw errors unreachable
+        failure = None
+        try:
+            data = fn(*args, **kwargs)
+            return pack(self.config.scrub(self.label(data))), data
+        except Conflict as conflict:
+            text = pack(self.config.scrub({"target": self.config.origin, "ok": False, "conflict": True, "message": conflict.message, "current": conflict.current}))
+            return text, {"conflict": True}
+        except AuthError as error:
+            failure = "%s (on %s)" % (self.config.redact(error.message), self.config.origin)
+        except ApiError as error:
+            failure = "%s (HTTP %d) on %s" % (self.config.redact(error.message), error.status, self.config.origin)
+        except httpx.TransportError as error:
+            failure = "cannot reach %s: %s" % (self.config.origin, self.config.redact(str(error)))
+        except BridgeError as error:
+            failure = self.config.redact(str(error))
+        except Exception:
+            if not self.remote:
+                raise
+            failure = "unexpected error in the bridge"
+        raise BridgeError(failure)
 
     def register(self, server) -> None:
         from mcp.types import ToolAnnotations
 
         for spec, fn in self.tools():
-            server.add_tool(self.guard(fn), name=spec.name, description=spec.description, annotations=ToolAnnotations(**annotations(spec)), structured_output=False)
+            server.add_tool(self.guard(fn, spec), name=spec.name, description=spec.description, annotations=ToolAnnotations(**annotations(spec)), structured_output=False)

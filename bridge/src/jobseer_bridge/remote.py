@@ -126,6 +126,7 @@ class RemoteSettings:
     tools: object = "read"
     rate_limit: int = DEFAULT_RATE
     rate_window: int = DEFAULT_WINDOW
+    audit_log: str | None = None
 
     @classmethod
     def from_env(cls, env=None) -> "RemoteSettings":
@@ -149,6 +150,7 @@ class RemoteSettings:
             port=whole(env, "JOBSEER_BIND_PORT", DEFAULT_PORT, 1, 65535),
             max_body=whole(env, "JOBSEER_MAX_BODY", DEFAULT_BODY, 1024, 16777216),
             tools=parse_tools(env.get("JOBSEER_TOOLS")),
+            audit_log=(env.get("JOBSEER_AUDIT_LOG") or "").strip() or None,
             rate_limit=whole(env, "JOBSEER_RATE_LIMIT", DEFAULT_RATE, 0, 100000),
             rate_window=whole(env, "JOBSEER_RATE_WINDOW", DEFAULT_WINDOW, 1, 86400),
         )
