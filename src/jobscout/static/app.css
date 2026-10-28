@@ -1000,8 +1000,13 @@ dialog[open]::backdrop {
   contain: layout paint;
 }
 
-.job-row[aria-selected="true"] {
+.job-row[aria-current="true"] {
   background: color-mix(in srgb, var(--primary-container) 40%, transparent);
+}
+
+/* lighter, the check carries it */
+.job-row[aria-selected="true"]:not([aria-current="true"]) {
+  background: color-mix(in srgb, var(--primary-container) 24%, transparent);
 }
 
 .job-row:focus-visible {

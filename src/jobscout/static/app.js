@@ -12,7 +12,7 @@ import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
 import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, RULE_KINDS, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "./inbox-edit.js";
-import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, rangeSelection, selectAllVisible, splitEligible, stepKey, toggleKey, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
@@ -96,7 +96,7 @@ const commands = [
 const state = {
   jobs: [], loaded: false, loading: false, error: "", csrf: "", refreshedAt: null,
   query: "", status: "new", sort: "score", source: "", remote: false, tag: "", focus: false,
-  selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, copySelectionMode: false, scrollTop: 0,
+  selectedKey: "", selectedKeys: new Set(), rangeAnchor: "", rangeBase: new Set(), copySelectionMode: false, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), notesTimer: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
@@ -429,13 +429,13 @@ function jobRowMarkup(entry) {
   if (sources.length > 1) chips.push(`${sources.length} sources`);
   if (job.nonpublic_site) chips.unshift("Check apply site");
   const location = job.location ? `<span class="row-location">${escapeHtml(job.location)}</span>` : "";
-  return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${selected || bulkSelected}" tabindex="${selected ? "0" : "-1"}">
+  return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${bulkSelected}"${selected ? ' aria-current="true"' : ""} tabindex="${selected ? "0" : "-1"}">
     ${companyLogoMarkup(job.company)}
     ${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}
     <span class="job-row-copy"><span class="job-row-title">${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta"><span>${escapeHtml(job.company)}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
     <span class="row-more" data-menu-trigger aria-hidden="true">${icons.more}</span>
-    ${bulkSelected ? '<span class="selection-check" aria-label="Selected">✓</span>' : ""}
+    ${bulkSelected ? '<span class="selection-check" aria-hidden="true">✓</span>' : ""}
   </button>`;
 }
 
@@ -497,7 +497,7 @@ function copyInboxScope(scope) {
   const jobs = filteredJobs();
   if (scope === "multiple") {
     state.copySelectionMode = true;
-    state.rangeAnchor = -1;
+    state.rangeAnchor = "";
     renderInbox();
     document.querySelector("#job-viewport")?.focus({ preventScroll: true });
     return;
@@ -1097,10 +1097,11 @@ function syncVisibleJobSelection() {
   for (const row of document.querySelectorAll("#job-list-layer .job-row")) {
     const selected = row.dataset.jobKey === state.selectedKey;
     const bulkSelected = state.selectedKeys.has(row.dataset.jobKey);
-    row.setAttribute("aria-selected", String(selected || bulkSelected));
+    row.setAttribute("aria-selected", String(bulkSelected));
+    if (selected) row.setAttribute("aria-current", "true"); else row.removeAttribute("aria-current");
     row.tabIndex = selected ? 0 : -1;
     const check = row.querySelector(".selection-check");
-    if (bulkSelected && !check) row.insertAdjacentHTML("beforeend", '<span class="selection-check" aria-label="Selected">✓</span>');
+    if (bulkSelected && !check) row.insertAdjacentHTML("beforeend", '<span class="selection-check" aria-hidden="true">✓</span>');
     if (!bulkSelected) check?.remove();
   }
   const list = document.querySelector(".inbox-list");
@@ -4631,19 +4632,76 @@ function selectJob(key, { push = true, focusDetail = false } = {}) {
 }
 
 function handleRowSelection(row, event) {
-  const jobs = filteredJobs();
-  const index = Number(row.dataset.jobIndex);
   const key = row.dataset.jobKey;
-  if (event.shiftKey && state.rangeAnchor >= 0) {
-    const [start, end] = [state.rangeAnchor, index].sort((a, b) => a - b);
-    for (let cursor = start; cursor <= end; cursor += 1) state.selectedKeys.add(jobs[cursor].dedupe_key);
+  if (event.shiftKey && state.rangeAnchor) {
+    state.selectedKeys = rangeSelection(filteredJobs().map((job) => job.dedupe_key), state.rangeBase, state.rangeAnchor, key);
     state.selectedKey = key; syncInboxUrl(); renderInbox(); return;
   }
   if (state.copySelectionMode || event.ctrlKey || event.metaKey) {
-    if (state.selectedKeys.has(key)) state.selectedKeys.delete(key); else state.selectedKeys.add(key);
-    state.rangeAnchor = index; state.selectedKey = key; syncInboxUrl(); renderInbox(); return;
+    toggleInboxKey(key);
+    state.selectedKey = key; syncInboxUrl(); renderInbox(); return;
   }
-  state.selectedKeys.clear(); state.rangeAnchor = index; syncVisibleJobSelection(); selectJob(key);
+  state.selectedKeys.clear(); anchorInbox(key); syncVisibleJobSelection(); selectJob(key);
+}
+
+// shift extends from here
+function anchorInbox(key) {
+  state.rangeAnchor = key;
+  state.rangeBase = new Set(state.selectedKeys);
+}
+
+function toggleInboxKey(key) {
+  state.selectedKeys = toggleKey(state.selectedKeys, key);
+  anchorInbox(key);
+}
+
+// virtual rows mount on scroll
+function revealRow(key) {
+  const viewport = document.querySelector("#job-viewport");
+  const entry = state.entries.find((item) => item.type === "job" && item.job.dedupe_key === key);
+  if (!viewport || !entry) return null;
+  if (entry.offset < viewport.scrollTop) viewport.scrollTop = entry.offset;
+  else if (entry.offset + entry.height > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = entry.offset + entry.height - viewport.clientHeight;
+  state.scrollTop = viewport.scrollTop;
+  renderVirtualRows();
+  return viewport.querySelector(`.job-row[data-job-key="${CSS.escape(key)}"]`);
+}
+
+function listHasFocus() {
+  const active = document.activeElement;
+  return !active || active === document.body || Boolean(active.closest?.(".job-row, #job-viewport"));
+}
+
+function extendInbox(delta) {
+  const keys = filteredJobs().map((job) => job.dedupe_key);
+  const key = stepKey(keys, state.selectedKey, delta);
+  if (!key) return;
+  if (!state.rangeAnchor || !keys.includes(state.rangeAnchor)) anchorInbox(state.selectedKey || key);
+  state.selectedKeys = rangeSelection(keys, state.rangeBase, state.rangeAnchor, key);
+  state.selectedKey = key; syncInboxUrl({ replace: true }); renderSelectedJob();
+  revealRow(key)?.focus({ preventScroll: true });
+}
+
+function toggleFocusedInbox() {
+  if (!state.selectedKey) return;
+  toggleInboxKey(state.selectedKey);
+  syncVisibleJobSelection();
+}
+
+function selectAllInbox() {
+  const keys = filteredJobs().map((job) => job.dedupe_key);
+  if (!keys.length) return;
+  state.selectedKeys = selectAllVisible(state.selectedKeys, keys);
+  syncVisibleJobSelection();
+  announce(`${new Intl.NumberFormat().format(state.selectedKeys.size)} selected.`);
+}
+
+function clearInboxSelection() {
+  if (!state.selectedKeys.size && !state.copySelectionMode) return false;
+  state.selectedKeys.clear(); state.copySelectionMode = false; anchorInbox(state.selectedKey);
+  renderInbox();
+  (document.querySelector('#job-list-layer .job-row[tabindex="0"]') || document.querySelector(".inbox-list h1"))?.focus({ preventScroll: true });
+  return true;
 }
 
 async function patchJob(job, status, notes = job.notes || "", { notesOnly = false } = {}) {
@@ -4763,8 +4821,11 @@ function moveSelection(delta) {
   if (!jobs.length) return;
   const current = jobs.findIndex((job) => job.dedupe_key === state.selectedKey);
   const next = Math.min(jobs.length - 1, Math.max(0, (current < 0 ? 0 : current) + delta));
-  state.selectedKeys.clear(); syncVisibleJobSelection(); selectJob(jobs[next].dedupe_key);
-  document.querySelector(`[data-job-index="${next}"]`)?.scrollIntoView({ block: "nearest" });
+  const key = jobs[next].dedupe_key;
+  const follow = listHasFocus();
+  anchorInbox(key); selectJob(key);
+  const row = revealRow(key);
+  if (follow) row?.focus({ preventScroll: true });
 }
 
 function clearAllFilters() {
@@ -5204,6 +5265,12 @@ function resolveObjectMenu(target) {
   return null;
 }
 
+// native select-all elsewhere
+function selectAllShortcut() {
+  if (routeRoot() === "inbox" && state.loaded) { selectAllInbox(); return true; }
+  return false;
+}
+
 function shortcutScopeAllows(event) {
   const target = event.target;
   return !(target instanceof HTMLElement && (target.matches("input, textarea, select, [contenteditable='true'], [role='textbox']") || target.closest("[contenteditable='true']")));
@@ -5213,6 +5280,7 @@ function handleGlobalKeydown(event) {
   if (confirmDialog.open || editDialog.open) return; // escape must reach the dialog
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCommand(document.activeElement); return; }
   if (matchShortcut(event, "Mod+Z") && shortcutScopeAllows(event)) { event.preventDefault(); runUndo(undoStack.pop()); return; }
+  if (matchShortcut(event, "Mod+A") && shortcutScopeAllows(event) && !commandDialog.open && !shortcutDialog.open && !filterDialog.open && selectAllShortcut()) { event.preventDefault(); return; }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
   if (commandDialog.open || shortcutDialog.open || filterDialog.open || !shortcutScopeAllows(event)) return;
   if (event.key === "?") { event.preventDefault(); openShortcuts(document.activeElement); return; }
@@ -5232,7 +5300,15 @@ function handleGlobalKeydown(event) {
   }
   if (routeRoot() === "inbox" && state.loaded) {
     if (key === "/") { event.preventDefault(); document.querySelector("#job-search")?.focus(); return; }
-    if (key === "j" || key === "k") { event.preventDefault(); moveSelection(key === "j" ? 1 : -1); return; }
+    const arrow = (event.key === "ArrowDown" || event.key === "ArrowUp") && listHasFocus();
+    if (key === "j" || key === "k" || arrow) {
+      event.preventDefault();
+      const delta = key === "j" || event.key === "ArrowDown" ? 1 : -1;
+      if (event.shiftKey) extendInbox(delta); else moveSelection(delta);
+      return;
+    }
+    if (event.key === " " && listHasFocus()) { event.preventDefault(); toggleFocusedInbox(); return; }
+    if (event.key === "Escape" && clearInboxSelection()) { event.preventDefault(); return; }
     if (event.key === "Enter" && !event.target.closest("button:not(.job-row), a, summary")) { event.preventDefault(); document.querySelector("#job-title")?.focus({ preventScroll: true }); return; }
     if (key === "f") { event.preventDefault(); state.focus = !state.focus; syncInboxUrl(); renderInbox({ focus: true }); return; }
     if (key === "s") { event.preventDefault(); performDecision("saved", "Saved"); return; }
