@@ -9,15 +9,16 @@ const SETTLE = springTokens["spatial-default"];
 
 export const reducedMotion = () => document.documentElement.dataset.motion === "reduce";
 
-const onScreen = (rect) => rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+const onScreen = (rect, view = window) => rect.bottom > 0 && rect.top < view.innerHeight && rect.right > 0 && rect.left < view.innerWidth;
 
 // moveBefore keeps focus where supported
 export function moveNode(parent, node, before) {
-  const active = node.contains(document.activeElement) ? document.activeElement : null;
+  const doc = node.ownerDocument;
+  const active = node.contains(doc.activeElement) ? doc.activeElement : null;
   if (parent.moveBefore) {
     try { parent.moveBefore(node, before); } catch { parent.insertBefore(node, before); }
   } else parent.insertBefore(node, before);
-  if (active && document.activeElement !== active && active.isConnected) active.focus({ preventScroll: true });
+  if (active && doc.activeElement !== active && active.isConnected) active.focus({ preventScroll: true });
 }
 
 // moving the focused node would blur
@@ -46,6 +47,7 @@ export function placeNodes(parent, nodes, anchor = null) {
 export function flip(nodes, change) {
   if (reducedMotion()) { change(); return; }
   const first = new Map(nodes.map((node) => [node, node.getBoundingClientRect()]));
+  const view = nodes[0]?.ownerDocument.defaultView || window;
   change();
   const moves = [];
   for (const node of nodes) {
@@ -56,7 +58,7 @@ export function flip(nodes, change) {
     const dx = before.left - after.left;
     const dy = before.top - after.top;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-    if (!onScreen(before) && !onScreen(after)) continue; // content-visibility skips these
+    if (!onScreen(before, view) && !onScreen(after, view)) continue; // content-visibility skips these
     moves.push([node, dx, dy]);
   }
   play(moves);
@@ -98,21 +100,26 @@ function layoutRect(node) {
 function scrollers(node) {
   let x = null;
   let y = null;
-  for (let el = node.parentElement; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+  const doc = node.ownerDocument;
+  for (let el = node.parentElement; el && el !== doc.body && el !== doc.documentElement; el = el.parentElement) {
     const style = getComputedStyle(el);
     if (!x && /auto|scroll/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1) x = el;
     if (!y && /auto|scroll/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) y = el;
   }
-  const page = document.scrollingElement;
+  const page = doc.scrollingElement;
   return { x: x || page, y: y || page };
 }
 
 function edges(el) {
-  if (el === document.scrollingElement) return { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth };
+  const view = el.ownerDocument.defaultView;
+  if (el === el.ownerDocument.scrollingElement) return { top: 0, left: 0, bottom: view.innerHeight, right: view.innerWidth };
   return el.getBoundingClientRect();
 }
 
 export function bindDrag(config) {
+  // a popout window binds its own
+  const doc = config.doc || document;
+  const view = doc.defaultView;
   let pending = null;
   let drag = null;
   let settling = null;
@@ -123,7 +130,7 @@ export function bindDrag(config) {
 
   function finishSettle() {
     if (!settling) return;
-    cancelAnimationFrame(settling.frame);
+    view.cancelAnimationFrame(settling.frame);
     settling.done();
     settling = null;
   }
@@ -135,7 +142,7 @@ export function bindDrag(config) {
     const list = item.parentElement;
     item.getAnimations().forEach((animation) => animation.cancel());
     const rect = item.getBoundingClientRect();
-    const placeholder = document.createElement("div");
+    const placeholder = doc.createElement("div");
     placeholder.className = "drag-placeholder";
     placeholder.setAttribute("aria-hidden", "true");
     Object.assign(placeholder.style, { height: `${rect.height}px`, borderRadius: getComputedStyle(item).borderRadius });
@@ -143,14 +150,14 @@ export function bindDrag(config) {
     list.insertBefore(placeholder, item);
     Object.assign(item.style, { position: "fixed", left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, margin: "0", transformOrigin: `${x - rect.left}px ${y - rect.top}px` });
     item.classList.add("is-lifted");
-    document.documentElement.classList.add("is-dragging");
+    doc.documentElement.classList.add("is-dragging");
     try { handle.setPointerCapture(pointerId); } catch { /* touch already captures */ }
     const origin = { list, index: itemsOf(list, item).filter((el) => el.compareDocumentPosition(placeholder) & Node.DOCUMENT_POSITION_FOLLOWING).length };
     drag = { handle, item, pointerId, rect, placeholder, origin, at: { ...origin }, x, y, dx: 0, dy: 0, vx: new VelocityTracker(), vy: new VelocityTracker(), last: 0, frame: 0, zone: null };
     drag.vx.add(x, performance.now());
     drag.vy.add(y, performance.now());
     config.onLift?.(item);
-    drag.frame = requestAnimationFrame(tick);
+    drag.frame = view.requestAnimationFrame(tick);
   }
 
   function target(px, py) {
@@ -204,7 +211,7 @@ export function bindDrag(config) {
     const up = autoScrollSpeed(py - ey.top);
     const down = autoScrollSpeed(ey.bottom - py);
     if (up || down) y.scrollTop += autoScrollStep(down - up, dt);
-    if (x !== document.scrollingElement || document.scrollingElement.scrollWidth > window.innerWidth) {
+    if (x !== doc.scrollingElement || doc.scrollingElement.scrollWidth > view.innerWidth) {
       const ex = edges(x);
       const left = autoScrollSpeed(px - ex.left);
       const right = autoScrollSpeed(ex.right - px);
@@ -214,13 +221,13 @@ export function bindDrag(config) {
     placeAt(spot);
     highlight(spot);
     drag.spot = spot;
-    drag.frame = requestAnimationFrame(tick);
+    drag.frame = view.requestAnimationFrame(tick);
   }
 
   function teardown(session) {
-    cancelAnimationFrame(session.frame);
+    view.cancelAnimationFrame(session.frame);
     session.zone?.classList.remove("is-drop-target");
-    document.documentElement.classList.remove("is-dragging");
+    doc.documentElement.classList.remove("is-dragging");
     try { session.handle.releasePointerCapture(session.pointerId); } catch { /* already gone */ }
   }
 
@@ -261,9 +268,9 @@ export function bindDrag(config) {
       const { value: vy } = sy.sample(now);
       session.item.style.translate = `${vx}px ${vy}px`;
       if (sx.atRest(now) && sy.atRest(now)) { settling = null; cleanup(session); return; }
-      settling.frame = requestAnimationFrame(step);
+      settling.frame = view.requestAnimationFrame(step);
     };
-    settling.frame = requestAnimationFrame(step);
+    settling.frame = view.requestAnimationFrame(step);
   }
 
   function release() {
@@ -311,9 +318,9 @@ export function bindDrag(config) {
       }
       if (sx.atRest(now) && sy.atRest(now)) { settling = null; done(); return; }
       item.style.translate = `${sx.sample(now).value}px ${sy.sample(now).value}px`;
-      settling.frame = requestAnimationFrame(step);
+      settling.frame = view.requestAnimationFrame(step);
     };
-    settling.frame = requestAnimationFrame(step);
+    settling.frame = view.requestAnimationFrame(step);
   }
 
   function placeAtOrigin(session) {
@@ -329,8 +336,8 @@ export function bindDrag(config) {
     settle(session, { x: 0, y: 0 });
   }
 
-  document.addEventListener("pointerdown", (event) => {
-    const handle = event.target instanceof Element ? event.target.closest(config.handle) : null;
+  doc.addEventListener("pointerdown", (event) => {
+    const handle = event.target?.nodeType === 1 ? event.target.closest(config.handle) : null;
     if (!handle || drag || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
     const item = handle.closest(config.item);
     if (!item || !item.parentElement) return;
@@ -339,7 +346,7 @@ export function bindDrag(config) {
     if (event.pointerType === "touch") pending.timer = setTimeout(() => { if (pending) lift(); }, 400);
   });
 
-  document.addEventListener("pointermove", (event) => {
+  doc.addEventListener("pointermove", (event) => {
     if (pending && event.pointerId === pending.pointerId) {
       const verdict = startGesture({ pointerType: pending.type, dx: event.clientX - pending.x, dy: event.clientY - pending.y, elapsed: performance.now() - pending.t });
       if (verdict === "cancel") clearPending();
@@ -353,22 +360,22 @@ export function bindDrag(config) {
     drag.item.style.translate = `${drag.dx}px ${drag.dy}px`;
   });
 
-  document.addEventListener("pointerup", (event) => {
+  doc.addEventListener("pointerup", (event) => {
     if (pending && event.pointerId === pending.pointerId) clearPending();
     if (drag && event.pointerId === drag.pointerId) release();
   });
 
-  document.addEventListener("pointercancel", (event) => {
+  doc.addEventListener("pointercancel", (event) => {
     if (pending && event.pointerId === pending.pointerId) clearPending();
     if (drag && event.pointerId === drag.pointerId) cancel();
   });
 
   // no pointerup will ever come
-  document.addEventListener("lostpointercapture", (event) => { if (drag && event.pointerId === drag.pointerId) cancel(); }, true);
-  window.addEventListener("blur", () => { clearPending(); if (drag) cancel(); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) return; clearPending(); if (drag) cancel(); });
+  doc.addEventListener("lostpointercapture", (event) => { if (drag && event.pointerId === drag.pointerId) cancel(); }, true);
+  view.addEventListener("blur", () => { clearPending(); if (drag) cancel(); });
+  doc.addEventListener("visibilitychange", () => { if (!doc.hidden) return; clearPending(); if (drag) cancel(); });
 
-  document.addEventListener("keydown", (event) => {
+  doc.addEventListener("keydown", (event) => {
     if (!drag || event.key !== "Escape") return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -376,17 +383,17 @@ export function bindDrag(config) {
   }, true);
 
   // android long-press fires contextmenu too
-  document.addEventListener("contextmenu", (event) => {
+  doc.addEventListener("contextmenu", (event) => {
     if (!drag && !(pending && pending.type === "touch")) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   }, true);
 
   // links start a native drag
-  document.addEventListener("dragstart", (event) => { if (drag || pending) event.preventDefault(); }, true);
+  doc.addEventListener("dragstart", (event) => { if (drag || pending) event.preventDefault(); }, true);
 
   // page must not scroll mid drag
-  document.addEventListener("touchmove", (event) => { if (drag) event.preventDefault(); }, { passive: false });
+  doc.addEventListener("touchmove", (event) => { if (drag) event.preventDefault(); }, { passive: false });
 
   // --- keyboard lift ---
   let held = null;
@@ -423,10 +430,10 @@ export function bindDrag(config) {
     config.drop({ key: config.key(session.item), item: session.item, from: session.origin, to: at, keyboard: true });
   }
 
-  document.addEventListener("keydown", (event) => {
+  doc.addEventListener("keydown", (event) => {
     if (drag) return;
     if (!held) {
-      const handle = event.target instanceof Element ? event.target.closest(config.handle) : null;
+      const handle = event.target?.nodeType === 1 ? event.target.closest(config.handle) : null;
       if (!handle || (event.key !== " " && event.key !== "Enter") || event.repeat) return;
       const item = handle.closest(config.item);
       if (!item?.parentElement) return;
@@ -464,11 +471,11 @@ export function bindDrag(config) {
   }, true);
 
   // keyup space would click the handle
-  document.addEventListener("keyup", (event) => {
-    if (event.key === " " && event.target instanceof Element && event.target.closest(config.handle)) event.preventDefault();
+  doc.addEventListener("keyup", (event) => {
+    if (event.key === " " && event.target?.nodeType === 1 && event.target.closest(config.handle)) event.preventDefault();
   }, true);
 
-  document.addEventListener("focusout", (event) => {
+  doc.addEventListener("focusout", (event) => {
     if (held && !shifting && event.target === held.handle) dropHeld({ restore: true });
   });
 

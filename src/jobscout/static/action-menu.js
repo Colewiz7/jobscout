@@ -6,6 +6,8 @@ const LONG_PRESS = 500;
 const SLOP = 10;
 const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
+// a popout window gets its own
+const menus = new Map();
 let menu = null;
 let current = null;
 let buffer = "";
@@ -25,11 +27,12 @@ function focusItem(index) {
 }
 
 function activeIndex() {
-  return buttons().indexOf(document.activeElement);
+  return buttons().indexOf(menu.ownerDocument.activeElement);
 }
 
 function itemNode(item, index) {
-  const button = document.createElement("button");
+  const doc = menu.ownerDocument;
+  const button = doc.createElement("button");
   button.type = "button";
   button.className = `menu-item interactive${item.danger ? " is-danger" : ""}`;
   button.tabIndex = -1;
@@ -38,22 +41,22 @@ function itemNode(item, index) {
   if (item.checked !== undefined) button.setAttribute("aria-checked", String(item.checked));
   if (item.disabled) button.setAttribute("aria-disabled", "true");
   if (item.shortcut) button.setAttribute("aria-keyshortcuts", ariaKeyshortcuts(item.shortcut));
-  const check = document.createElement("span");
+  const check = doc.createElement("span");
   check.className = "menu-check";
   check.setAttribute("aria-hidden", "true");
   if (item.checked) check.textContent = "✓";
-  const label = document.createElement("span");
+  const label = doc.createElement("span");
   label.className = "menu-label";
   label.textContent = item.label;
   button.append(check, label);
   if (item.hint) {
-    const hint = document.createElement("span");
+    const hint = doc.createElement("span");
     hint.className = "menu-hint";
     hint.textContent = item.hint;
     button.append(hint);
   }
   if (item.shortcut) {
-    const key = document.createElement("kbd");
+    const key = doc.createElement("kbd");
     key.className = "menu-shortcut";
     key.setAttribute("aria-hidden", "true");
     key.textContent = formatShortcut([].concat(item.shortcut)[0], mac);
@@ -87,14 +90,19 @@ function activate(index) {
   closeMenu();
   item.run();
   // actions often rerender the row
-  requestAnimationFrame(() => {
-    if ((!document.activeElement || document.activeElement === document.body) && refocus) refocus();
+  const doc = menu.ownerDocument;
+  doc.defaultView.requestAnimationFrame(() => {
+    if ((!doc.activeElement || doc.activeElement === doc.body) && refocus) refocus();
   });
 }
 
-function ensure() {
-  if (menu) return menu;
-  menu = document.createElement("div");
+function ensure(doc) {
+  if (menus.has(doc)) { menu = menus.get(doc); return menu; }
+  const view = doc.defaultView;
+  menu = doc.createElement("div");
+  const own = menu;
+  menus.set(doc, own);
+  view.addEventListener("pagehide", () => { menus.delete(doc); if (menu === own) { current = null; menu = null; } }, { once: true });
   menu.className = "action-menu";
   menu.popover = "manual";
   menu.setAttribute("role", "menu");
@@ -110,29 +118,30 @@ function ensure() {
   });
   menu.addEventListener("pointermove", (event) => {
     const button = event.target.closest("[data-menu-index]");
-    if (button && button !== document.activeElement) button.focus({ preventScroll: true });
+    if (button && button !== menu.ownerDocument.activeElement) button.focus({ preventScroll: true });
   });
   menu.addEventListener("contextmenu", (event) => event.preventDefault());
-  document.addEventListener("pointerdown", (event) => {
+  doc.addEventListener("pointerdown", (event) => {
     if (!current || menu.contains(event.target)) return;
     if (current.trigger?.contains(event.target)) return; // the trigger toggles on click
     closeMenu();
   }, true);
-  document.addEventListener("scroll", (event) => { if (current && !menu.contains(event.target)) closeMenu({ restoreFocus: false }); }, true);
-  window.addEventListener("resize", () => closeMenu({ restoreFocus: false }));
-  window.addEventListener("blur", () => closeMenu({ restoreFocus: false }));
-  document.body.append(menu);
+  doc.addEventListener("scroll", (event) => { if (current && !menu.contains(event.target)) closeMenu({ restoreFocus: false }); }, true);
+  view.addEventListener("resize", () => closeMenu({ restoreFocus: false }));
+  view.addEventListener("blur", () => { if (menu === own) closeMenu({ restoreFocus: false }); });
+  doc.body.append(menu);
   return menu;
 }
 
 export function openMenu(items, { label, anchor = null, point = null, trigger = null, returnTo = null, refocus = null, align = "start" }) {
   if (!items.length) return;
-  ensure();
+  const doc = (anchor || trigger || returnTo)?.ownerDocument || document;
   if (current) closeMenu({ restoreFocus: false });
-  const previous = document.activeElement;
+  ensure(doc);
+  const previous = doc.activeElement;
   menu.replaceChildren();
   items.forEach((item, index) => {
-    if (item.divider && index) menu.append(Object.assign(document.createElement("div"), { className: "menu-divider", role: "separator" }));
+    if (item.divider && index) menu.append(Object.assign(doc.createElement("div"), { className: "menu-divider", role: "separator" }));
     menu.append(itemNode(item, index));
   });
   menu.setAttribute("aria-label", label);
@@ -143,10 +152,10 @@ export function openMenu(items, { label, anchor = null, point = null, trigger = 
   menu.showPopover();
   const box = point ? { left: point.x, right: point.x, top: point.y, bottom: point.y } : anchor.getBoundingClientRect();
   // offset sizes skip the entry scale
-  const place = placeMenu({ anchor: box, width: menu.offsetWidth, height: menu.offsetHeight, viewport: { width: window.innerWidth, height: window.innerHeight }, align, gap: point ? 0 : 4 });
+  const place = placeMenu({ anchor: box, width: menu.offsetWidth, height: menu.offsetHeight, viewport: { width: doc.defaultView.innerWidth, height: doc.defaultView.innerHeight }, align, gap: point ? 0 : 4 });
   Object.assign(menu.style, { left: `${place.left}px`, top: `${place.top}px`, maxHeight: `${place.maxHeight}px`, transformOrigin: place.origin });
   trigger?.setAttribute("aria-expanded", "true");
-  current = { items, trigger, returnTo: returnTo || trigger || (previous instanceof HTMLElement ? previous : null), refocus };
+  current = { items, trigger, returnTo: returnTo || trigger || (previous?.nodeType === 1 ? previous : null), refocus };
   openedAt = performance.now();
   focusItem(0);
 }
@@ -160,7 +169,7 @@ export function closeMenu({ restoreFocus = true } = {}) {
   menu.inert = true; // stays painted while it fades
   menu.hidePopover();
   if (restoreFocus && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
-  else if (menu.contains(document.activeElement)) document.activeElement.blur();
+  else if (menu.contains(menu.ownerDocument.activeElement)) menu.ownerDocument.activeElement.blur();
 }
 
 export function menuOpenFor(trigger) {
@@ -172,7 +181,7 @@ export function toggleMenu(trigger, items, options) {
   openMenu(items, { ...options, anchor: trigger, trigger, align: "end" });
 }
 
-export function bindObjectMenus(resolve) {
+export function bindObjectMenus(resolve, doc = document) {
   let press = null;
   let swallow = null;
   const show = (target, point) => {
@@ -183,21 +192,21 @@ export function bindObjectMenus(resolve) {
   };
   const cancelPress = () => { if (press) clearTimeout(press.timer); press = null; };
 
-  document.addEventListener("contextmenu", (event) => {
+  doc.addEventListener("contextmenu", (event) => {
     if (event.shiftKey || typing(event.target)) return; // shift keeps the browser menu
-    if (String(window.getSelection?.() || "").trim()) return;
+    if (String(doc.defaultView.getSelection?.() || "").trim()) return;
     if (current && performance.now() - openedAt < 700) { event.preventDefault(); return; } // dont open twice per gesture
     const point = event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : null;
     if (show(event.target, point)) event.preventDefault();
   });
 
-  document.addEventListener("keydown", (event) => {
+  doc.addEventListener("keydown", (event) => {
     if (!matchShortcut(event, "Shift+F10") && !matchShortcut(event, "ContextMenu")) return;
     if (typing(event.target)) return;
-    if (show(document.activeElement, null)) event.preventDefault();
+    if (show(doc.activeElement, null)) event.preventDefault();
   });
 
-  document.addEventListener("click", (event) => {
+  doc.addEventListener("click", (event) => {
     // only the long-press tap itself
     const late = swallow && (performance.now() > swallow.until || menu?.contains(event.target) || !(swallow.target.contains(event.target) || event.target.contains(swallow.target)));
     if (swallow && !late) { swallow = null; event.preventDefault(); event.stopPropagation(); return; }
@@ -211,7 +220,7 @@ export function bindObjectMenus(resolve) {
     if (spec?.items.length) openMenu(spec.items, { ...spec, anchor: trigger, trigger, returnTo: spec.returnTo || trigger, align: "end" });
   }, true);
 
-  document.addEventListener("pointerdown", (event) => {
+  doc.addEventListener("pointerdown", (event) => {
     swallow = null;
     cancelPress();
     if (event.pointerType !== "touch" || !event.isPrimary || typing(event.target)) return;
@@ -219,11 +228,11 @@ export function bindObjectMenus(resolve) {
     const { clientX: x, clientY: y, target } = event;
     press = { x, y, timer: setTimeout(() => { press = null; if (show(target, { x, y })) swallow = { target, until: performance.now() + 1500, lifting: true }; }, LONG_PRESS) };
   });
-  document.addEventListener("pointermove", (event) => {
+  doc.addEventListener("pointermove", (event) => {
     if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > SLOP) cancelPress();
   });
-  for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, cancelPress);
+  for (const type of ["pointerup", "pointercancel"]) doc.addEventListener(type, cancelPress);
   // no ghost mousedown stealing menu focus
-  document.addEventListener("touchend", (event) => { if (swallow?.lifting) { swallow.lifting = false; event.preventDefault(); } }, { passive: false });
-  document.addEventListener("scroll", cancelPress, true);
+  doc.addEventListener("touchend", (event) => { if (swallow?.lifting) { swallow.lifting = false; event.preventDefault(); } }, { passive: false });
+  doc.addEventListener("scroll", cancelPress, true);
 }

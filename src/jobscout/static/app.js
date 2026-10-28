@@ -3680,7 +3680,8 @@ function keptSelector(element) {
 // keep open cards, scroll and focus
 function keepSurface(surface, render) {
   if (!surface) { render(); return; }
-  const active = surface.contains(document.activeElement) ? document.activeElement : null;
+  const doc = surface.ownerDocument;
+  const active = surface.contains(doc.activeElement) ? doc.activeElement : null;
   const item = active?.closest(".profile-item");
   const open = new Set([...surface.querySelectorAll(".profile-item details[open]")].map((node) => canonicalRef(node.closest(".profile-item").dataset.profileRef)));
   const scroll = surface.querySelector(".quick-fill-editor")?.scrollTop || 0;
@@ -3692,14 +3693,15 @@ function keepSurface(surface, render) {
   for (const [selector, value] of adds) { const input = selector && surface.querySelector(selector); if (input && !input.disabled) input.value = value; }
   const editor = surface.querySelector(".quick-fill-editor");
   if (editor) editor.scrollTop = scroll;
-  if (!was || surface.contains(document.activeElement)) return;
+  if (!was || surface.contains(doc.activeElement)) return;
   if (was.ref) focusProfileTarget(surface, was);
   else if (was.selector) surface.querySelector(was.selector)?.focus({ preventScroll: true });
-  if (range && document.activeElement?.setSelectionRange && document.activeElement.type !== "email" && document.activeElement.type !== "url") document.activeElement.setSelectionRange(...range);
+  if (range && doc.activeElement?.setSelectionRange && doc.activeElement.type !== "email" && doc.activeElement.type !== "url") doc.activeElement.setSelectionRange(...range);
 }
 
 function focusProfileTarget(surface, target) {
-  if (target.soft && surface.contains(document.activeElement)) return;
+  const doc = surface.ownerDocument;
+  if (target.soft && surface.contains(doc.activeElement)) return;
   if (target.add) {
     const add = surface.querySelector(target.button ? `[data-profile-add="${target.add}"]:not(:disabled)` : `[data-profile-add-input="${target.add}"]:not(:disabled)`) || surface.querySelector(`[data-profile-section="${target.add}"] h3`);
     if (add && !add.matches("h3")) add.focus({ preventScroll: false });
@@ -3711,7 +3713,7 @@ function focusProfileTarget(surface, target) {
   if (!item) return;
   if (target.open) item.querySelector("details")?.setAttribute("open", "");
   const control = (target.role && item.querySelector(target.role)) || item.querySelector("[data-menu-trigger]");
-  if (control === document.activeElement) return;
+  if (control === doc.activeElement) return;
   control?.focus({ preventScroll: true });
   control?.scrollIntoView({ block: "nearest" });
 }
@@ -4559,8 +4561,8 @@ function openProfileItem(c, role) {
   focusProfileTarget(c.surface, { ref: `${c.kind}:${c.id}`, role, open: true });
 }
 
-function dropProfileItem({ key, to, keyboard }) {
-  const item = document.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`);
+function dropProfileItem({ key, item: dropped, to, keyboard }) {
+  const item = dropped?.isConnected ? dropped : document.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`);
   const c = item && profileContext(item);
   if (!c) return null;
   moveProfileItem(c, to.index, keyboard ? { role: "[data-drag-handle]" } : { pointer: true });
@@ -4794,7 +4796,7 @@ function renderQuickFill() {
   quickFillTrigger.setAttribute("aria-label", `${state.quickFillOpen ? "Close" : "Open"} Quick-fill`);
   if (state.quickFillPopout && !state.quickFillPopout.closed) {
     const popoutSheet = state.quickFillPopout.document.querySelector("#quick-fill-sheet");
-    if (popoutSheet) popoutSheet.innerHTML = quickFillInnerMarkup({ popout: true });
+    if (popoutSheet) keepSurface(popoutSheet, () => { popoutSheet.innerHTML = quickFillInnerMarkup({ popout: true }); });
   }
 }
 
@@ -4933,6 +4935,8 @@ async function copyQuickFillItem(index) {
   setTimeout(() => { if (state.copiedKey === item.key) { state.copiedKey = ""; renderQuickFill(); } }, 1500);
 }
 
+const popoutBound = new WeakSet();
+
 async function popOutQuickFill() {
   if (!state.quickFillEnabled) return;
   let target;
@@ -4946,6 +4950,12 @@ async function popOutQuickFill() {
   target.document.body.innerHTML = `<aside class="quick-fill-sheet" id="quick-fill-sheet" aria-label="Quick-fill" aria-hidden="false">${quickFillInnerMarkup({ popout: true })}</aside>`;
   state.quickFillPopout = target;
   bindQuickFillSurface(target.document.body, { popout: true });
+  // a reused window keeps its listeners
+  if (!popoutBound.has(target.document)) {
+    popoutBound.add(target.document);
+    bindObjectMenus(resolveObjectMenu, target.document);
+    bindProfileDrag(target.document);
+  }
   target.addEventListener("pagehide", () => { if (state.quickFillPopout === target) state.quickFillPopout = null; }, { once: true });
 }
 
@@ -6181,7 +6191,8 @@ function objectMenuAt(target) {
 }
 
 function resolveObjectMenu(target) {
-  if (!(target instanceof Element)) return null;
+  // popout nodes have another Element
+  if (target?.nodeType !== 1) return null;
   for (const type of objectMenus) {
     const el = target.closest(type.selector);
     if (!el) continue;
@@ -6190,11 +6201,12 @@ function resolveObjectMenu(target) {
     const items = menuItemsFor(type, context);
     const value = el.getAttribute(type.keyAttr);
     const focusTarget = (node) => node.matches(".job-row") ? node : node.querySelector("button[data-menu-trigger]");
-    const inside = el.contains(document.activeElement) && document.activeElement !== document.body ? document.activeElement : null;
+    const doc = el.ownerDocument;
+    const inside = el.contains(doc.activeElement) && doc.activeElement !== doc.body ? doc.activeElement : null;
     // the object may rerender or leave
     const refocus = () => {
-      const again = document.querySelector(`${type.selector}[${type.keyAttr}="${CSS.escape(value)}"]`) || document.querySelector(type.selector);
-      (again ? focusTarget(again) : document.querySelector(type.fallback))?.focus({ preventScroll: true });
+      const again = doc.querySelector(`${type.selector}[${type.keyAttr}="${CSS.escape(value)}"]`) || doc.querySelector(type.selector);
+      (again ? focusTarget(again) : doc.querySelector(type.fallback))?.focus({ preventScroll: true });
     };
     const trigger = el.querySelector("[data-menu-trigger]");
     return { label: type.label(context), items, anchor: trigger || el, align: trigger ? "end" : "start", returnTo: inside || focusTarget(el), refocus };
@@ -6630,19 +6642,23 @@ bindDrag({
   cancelled: (at) => cancelAnnouncement(at.index, at.count),
 });
 
-bindDrag({
-  handle: ".profile-drag-handle", item: ".profile-item[data-profile-ref]",
-  // only the lifted items own list
-  lists: () => { const list = document.querySelector(".profile-item.is-lifted")?.parentElement; return list ? [list] : []; },
-  key: (item) => item.dataset.profileRef,
-  find: (key) => document.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`),
-  drop: dropProfileItem,
-  announce,
-  lifted: (at) => liftAnnouncement(at.index, at.count),
-  moved: (at) => moveAnnouncement(at.index, at.count),
-  dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
-  cancelled: (at) => cancelAnnouncement(at.index, at.count),
-});
+function bindProfileDrag(doc) {
+  bindDrag({
+    doc, handle: ".profile-drag-handle", item: ".profile-item[data-profile-ref]",
+    // only the lifted items own list
+    lists: () => { const list = doc.querySelector(".profile-item.is-lifted")?.parentElement; return list ? [list] : []; },
+    key: (item) => item.dataset.profileRef,
+    find: (key) => doc.querySelector(`.profile-item[data-profile-ref="${CSS.escape(key)}"]`),
+    drop: dropProfileItem,
+    announce,
+    lifted: (at) => liftAnnouncement(at.index, at.count),
+    moved: (at) => moveAnnouncement(at.index, at.count),
+    dropped: (at) => `Dropped, position ${at.index + 1} of ${at.count}.`,
+    cancelled: (at) => cancelAnnouncement(at.index, at.count),
+  });
+}
+
+bindProfileDrag(document);
 
 bindDrag({
   handle: ".board-drag-handle", item: ".board-card[data-tracker-key]",
