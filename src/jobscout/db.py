@@ -2179,7 +2179,7 @@ def update_apply_session(conn: psycopg.Connection, session_id: int, changes: dic
         cur.execute(
             f"""
             update apply_sessions
-               set applied = coalesce(%s, applied), skipped = coalesce(%s, skipped),
+               set applied = coalesce(%s::text[], applied), skipped = coalesce(%s::jsonb, skipped),
                    started_at = case when %s::boolean is false and ended_at is not null
                        then started_at + (now() - ended_at) else started_at end,
                    ended_at = case
