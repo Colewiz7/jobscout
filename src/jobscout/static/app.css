@@ -3769,7 +3769,9 @@ body > .visually-hidden {
   text-decoration: none;
 }
 
+/* clear the handle and menu */
 .board-card > strong {
+  padding-right: calc(40px + var(--handle-size));
   font-size: 14px;
   font-weight: 500;
 }
@@ -4941,6 +4943,113 @@ body.quick-fill-popout {
   .queue-card-actions {
     grid-column: 2 / -1;
     flex-wrap: wrap;
+  }
+
+  /* peek hints at scrolling */
+  .tracker-board {
+    display: flex;
+    align-items: flex-start;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: var(--s-4);
+  }
+
+  .board-column {
+    flex: 0 0 calc(100% - var(--s-12));
+    min-height: 0;
+    scroll-snap-align: start;
+  }
+
+  /* nothing focusable, so order is safe */
+  .board-column:not(:has(.board-card)) {
+    flex-basis: 160px;
+    order: 1;
+  }
+
+  /* rows read badly as columns */
+  .tracker-table-wrap {
+    overflow: visible;
+  }
+
+  .tracker-table,
+  .tracker-table tbody {
+    display: block;
+    min-width: 0;
+  }
+
+  .tracker-table thead {
+    display: none;
+  }
+
+  .tracker-table tr {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) 48px;
+    align-items: center;
+    margin-bottom: var(--s-2);
+    padding: var(--s-2) 0;
+    border-radius: var(--r-md);
+    background: var(--surface-container-low);
+  }
+
+  .tracker-table tr.is-selected {
+    background: color-mix(in srgb, var(--primary-container) 40%, var(--surface-container-low));
+  }
+
+  .tracker-table td {
+    min-width: 0;
+    padding: var(--s-2) var(--s-4);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .tracker-table tr.is-selected td {
+    background: transparent;
+  }
+
+  .tracker-table td.select-cell,
+  .tracker-table td.row-menu-cell,
+  .tracker-table td.company-cell {
+    grid-row: 1;
+    padding: 0;
+  }
+
+  .tracker-table td.select-cell {
+    grid-column: 1;
+  }
+
+  .tracker-table td.company-cell {
+    grid-column: 2;
+    padding-block: var(--s-3);
+  }
+
+  .tracker-table td.row-menu-cell {
+    grid-column: 3;
+  }
+
+  .tracker-table td[data-label] {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: var(--s-3);
+    align-items: center;
+  }
+
+  .tracker-table td[data-label]::before {
+    content: attr(data-label);
+    color: var(--on-surface-variant);
+    font-size: 12px;
+  }
+
+  .tracker-table td[data-label]:empty {
+    display: none;
+  }
+
+  .tracker-table .next-step-input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tracker-table .status-editor select {
+    width: 100%;
   }
 
   /* one fact per line reads faster */
