@@ -676,7 +676,7 @@ function detailMarkup(job) {
   const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div data-activity-id="${item.id}">${statusMarkup(item.to_status)}<span class="activity-end"><time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time>${item.id ? `<button class="icon-button interactive activity-dismiss" type="button" data-dismiss-activity="${item.id}" aria-label="Dismiss ${escapeHtml(statusLabel(item.to_status))} from ${escapeHtml(formatAbsolute(item.changed_at))}" title="Dismiss from the timeline">${icons.close}</button>` : ""}</span></div>`).join("")}</div>` : "";
   const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>${item.cancelled_at ? "Cancelled interview" : "Interview"}</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
-  const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
+  const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong>Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>This link came from a non-public Workday site. ${job.public_apply_url ? "Apply opens the verified public RTX posting." : "No exact public posting was verified. Find it on the employer’s public careers site before applying."}</p>` : "";
   const applyingActions = job.status === "applying"
     ? `<button class="filled-button interactive" type="button" data-mark-applied="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Mark applied</button><button class="tonal-button interactive" type="button" data-move-to-queue="${escapeHtml(job.dedupe_key)}" ${pending || state.statusSaving.has(job.dedupe_key) ? "disabled" : ""}>Back to queue</button>`
@@ -1157,7 +1157,7 @@ function renderInbox({ focus = false } = {}) {
   if (state.error) routeView.innerHTML = errorMarkup(state.error);
   else if (!state.loaded) routeView.innerHTML = state.skeletonAt ? loadingMarkup() : "";
   else routeView.innerHTML = inboxMarkup();
-  document.title = "Inbox — JobSeer";
+  document.title = "Inbox · JobSeer";
   const pane = document.querySelector("#inbox-reading-pane");
   if (pane) pane.dataset.jobKey = state.selectedKey;
   const viewport = document.querySelector("#job-viewport");
@@ -1234,7 +1234,7 @@ function renderPlaceholder(root, { focus = false } = {}) {
   const description = isSession ? "Choose jobs from the queue before beginning a focused session." : page[2];
   const action = isSession ? ["Return to queue", "/queue"] : [page[3], page[4]];
   routeView.innerHTML = `<section class="page-shell" aria-labelledby="page-title"><div class="empty-state"><div class="empty-mark" aria-hidden="true">${icons[root] || icons.inbox}</div><h1 id="page-title" tabindex="-1">${escapeHtml(headline)}</h1><p>${escapeHtml(description)}</p>${action[1] === "shortcuts" ? `<button class="tonal-button interactive" type="button" data-open-shortcuts>${escapeHtml(action[0])}</button>` : `<a class="tonal-button interactive" href="${action[1]}" data-route>${escapeHtml(action[0])}</a>`}</div></section>`;
-  document.title = `${isSession ? "Session" : page[0]} — JobSeer`;
+  document.title = `${isSession ? "Session" : page[0]} · JobSeer`;
   if (focus) document.querySelector("#page-title")?.focus({ preventScroll: true });
 }
 
@@ -1272,7 +1272,7 @@ function queueCard(job, index, count) {
 }
 
 function renderQueue({ focus = false } = {}) {
-  document.title = "Queue — JobSeer";
+  document.title = "Queue · JobSeer";
   if (state.error) {
     routeView.innerHTML = errorMarkup(state.error);
   } else if (!state.loaded) {
@@ -1352,7 +1352,7 @@ function trackerInsights(applications) {
   const appliedWeek = applications.filter((job) => job.applied_at && now - new Date(job.applied_at) <= 7 * 86400000).length;
   const withDate = applications.filter((job) => job.applied_at);
   const responses = withDate.filter((job) => ["interviewing", "offer", "rejected"].includes(job.status)).length;
-  const responseRate = withDate.length ? `${Math.round((responses / withDate.length) * 100)}%` : "—";
+  const responseRate = withDate.length ? `${Math.round((responses / withDate.length) * 100)}%` : "None yet";
   const resumes = new Map();
   for (const job of withDate) {
     const name = job.resume_name || "Not recorded";
@@ -1409,7 +1409,7 @@ function interviewMarkup(item) {
 
 function interviewsMarkup(applications) {
   const { upcoming, past, scheduled } = splitInterviews(state.trackerData?.interviews || []);
-  const options = applications.map((job) => `<option value="${escapeHtml(job.dedupe_key)}">${escapeHtml(job.company)} — ${escapeHtml(job.title)}</option>`).join("");
+  const options = applications.map((job) => `<option value="${escapeHtml(job.dedupe_key)}">${escapeHtml(job.company)}, ${escapeHtml(job.title)}</option>`).join("");
   const pastMarkup = past.length ? `<details class="interview-past" ${state.pastInterviewsOpen ? "open" : ""}><summary>Past interviews (${new Intl.NumberFormat().format(past.length)})</summary><div class="interview-list">${past.map(interviewMarkup).join("")}</div></details>` : "";
   return `<section class="tracker-section" aria-labelledby="interviews-title"><div class="section-heading"><div><h2 id="interviews-title" tabindex="-1">Interviews</h2><p>${scheduled ? `${scheduled} upcoming.` : "Keep interview details with the application."}</p></div>${scheduled ? '<a class="outlined-button interactive" href="/api/v1/interviews.ics">Export .ics</a>' : ""}</div>${upcoming.length ? `<div class="interview-list">${upcoming.map(interviewMarkup).join("")}</div>` : ""}${pastMarkup}<details class="interview-add"><summary>Add interview</summary><form id="interview-form"><label>Application<select name="dedupe_key" required><option value="">Choose application</option>${options}</select></label><label>Starts<input name="starts_at" type="datetime-local" required></label><label>Ends <span>(optional)</span><input name="ends_at" type="datetime-local"></label><label>Location <span>(optional)</span><input name="location" type="text" maxlength="500" autocomplete="off"></label><label>Notes <span>(optional)</span><textarea name="notes" rows="3" maxlength="20000"></textarea></label><button class="outlined-button interactive" type="submit">Save interview</button></form></details></section>`;
 }
@@ -1450,7 +1450,7 @@ function trackerMarkup() {
 }
 
 function renderTracker({ focus = false } = {}) {
-  document.title = "Tracker — JobSeer";
+  document.title = "Tracker · JobSeer";
   parseTrackerUrl();
   if (state.trackerError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load the tracker.</h1><p>${escapeHtml(state.trackerError)}</p><button class="tonal-button interactive" type="button" data-retry-tracker>Retry</button></div></section>`;
   else if (!state.trackerData) routeView.innerHTML = state.trackerShowLoader ? '<section class="page-shell"><div class="tracker-skeleton skeleton"></div></section>' : "";
@@ -1651,7 +1651,7 @@ function restoreCompanyFocus(kept) {
 }
 
 function renderCompanies({ focus = false } = {}) {
-  document.title = `${state.companiesData?.company?.name || companyNameFromRoute() || "Companies"} — JobSeer`;
+  document.title = `${state.companiesData?.company?.name || companyNameFromRoute() || "Companies"} · JobSeer`;
   if (!companyNameFromRoute()) parseCompaniesUrl();
   const kept = focus ? null : companyFocusPath();
   if (state.companiesError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load companies.</h1><p>${escapeHtml(state.companiesError)}</p><button class="tonal-button interactive" type="button" data-retry-companies>Retry</button></div></section>`;
@@ -1680,7 +1680,7 @@ function profileMarkup() {
 }
 
 function renderProfile({ focus = false } = {}) {
-  document.title = "Profile — JobSeer";
+  document.title = "Profile · JobSeer";
   const kept = focus ? null : companyFocusPath();
   routeView.innerHTML = profileMarkup();
   if (focus) document.querySelector("#profile-title")?.focus({ preventScroll: true });
@@ -2830,7 +2830,7 @@ function sessionSummaryMarkup() {
 }
 
 function renderApplySession({ focus = false } = {}) {
-  document.title = "Apply session — JobSeer";
+  document.title = "Apply session · JobSeer";
   if (!state.loaded) {
     routeView.innerHTML = '<section class="page-shell"><div class="queue-skeleton skeleton" aria-label="Loading application session"></div></section>';
     return;
@@ -4949,7 +4949,7 @@ async function popOutQuickFill() {
     else target = window.open("", "jobseer-quick-fill", "popup,width=380,height=640");
   } catch { target = window.open("", "jobseer-quick-fill", "popup,width=380,height=640"); }
   if (!target) { showSnackbar("The browser blocked the Quick-fill window."); return; }
-  target.document.head.innerHTML = `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quick-fill — JobSeer</title><link rel="stylesheet" href="/static/tokens.css"><link rel="stylesheet" href="/static/app.css">`;
+  target.document.head.innerHTML = `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quick-fill · JobSeer</title><link rel="stylesheet" href="/static/tokens.css"><link rel="stylesheet" href="/static/app.css">`;
   target.document.body.className = "quick-fill-popout";
   target.document.body.innerHTML = `<aside class="quick-fill-sheet" id="quick-fill-sheet" aria-label="Quick-fill" aria-hidden="false">${quickFillInnerMarkup({ popout: true })}</aside>`;
   state.quickFillPopout = target;

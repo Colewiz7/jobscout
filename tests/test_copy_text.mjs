@@ -8,7 +8,7 @@ const job = { company: "Acme", title: "SRE Intern", location: "Austin, TX", url:
 test("jobs without taglines keep the one-line-per-job format", () => {
   assert.equal(
     inboxCopyText([job, { ...job, company: "Beta" }]),
-    "Acme — SRE Intern — Austin, TX — https://acme.example/1\nBeta — SRE Intern — Austin, TX — https://acme.example/1",
+    "Acme | SRE Intern | Austin, TX | https://acme.example/1\nBeta | SRE Intern | Austin, TX | https://acme.example/1",
   );
 });
 
@@ -18,13 +18,13 @@ test("a tagline goes under its job and listings are separated by a blank line", 
     { ...job, company: "Beta" },
   ]);
   assert.equal(text, [
-    "Acme — SRE Intern — Austin, TX — https://acme.example/1",
+    "Acme | SRE Intern | Austin, TX | https://acme.example/1",
     "🟢 High · Kubernetes SRE work · Summer 2027 · Austin, onsite",
     "",
-    "Beta — SRE Intern — Austin, TX — https://acme.example/1",
+    "Beta | SRE Intern | Austin, TX | https://acme.example/1",
   ].join("\n"));
 });
 
 test("missing fields and stray whitespace are dropped", () => {
-  assert.equal(inboxCopyText([{ company: " Acme ", title: "", url: "u", tagline: "  🟡 Med · x\n· y " }]), "Acme — u\n🟡 Med · x · y");
+  assert.equal(inboxCopyText([{ company: " Acme ", title: "", url: "u", tagline: "  🟡 Med · x\n· y " }]), "Acme | u\n🟡 Med · x · y");
 });

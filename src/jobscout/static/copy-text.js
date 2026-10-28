@@ -5,7 +5,7 @@ const clean = (value) => String(value).replace(/\s+/g, " ").trim();
 export function inboxCopyText(jobs) {
   const blocks = jobs.map((job) => {
     const headline = [job.company, job.title, job.location, job.url]
-      .filter(Boolean).map(clean).join(" — ");
+      .filter(Boolean).map(clean).join(" | ");
     return job.tagline ? `${headline}\n${clean(job.tagline)}` : headline;
   });
   return blocks.join(jobs.some((job) => job.tagline) ? "\n\n" : "\n");
