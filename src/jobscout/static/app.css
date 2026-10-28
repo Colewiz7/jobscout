@@ -1356,19 +1356,18 @@ body > .visually-hidden {
   text-align: center;
 }
 
-.reading-empty h2 {
-  margin: 0;
-  font: 400 22px/1.25 var(--font-serif);
-}
-
+/* users see one empty style */
+.reading-empty h2,
 .list-empty h2 {
   margin: 0;
-  font: 500 18px/1.35 var(--font-sans);
+  font: 400 22px/1.25 var(--font-serif);
+  text-wrap: balance;
 }
 
 .list-empty p,
 .reading-empty p {
-  margin: var(--s-2) auto var(--s-4);
+  max-width: 34rem;
+  margin: var(--s-3) auto var(--s-4);
   color: var(--on-surface-variant);
   font-size: 14px;
 }
