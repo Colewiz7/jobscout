@@ -2703,24 +2703,28 @@ def normalize_rule(payload: dict) -> dict:
     return {"name": name, "kind": kind, "pattern": pattern, "value": value}
 
 
+_RULE_COLUMNS = "id, name, kind, pattern, value, enabled, position, revision, created_at, updated_at"
+
+
 def rules(conn: psycopg.Connection) -> list[dict]:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            select id, name, kind, pattern, value, enabled, created_at, updated_at
-              from rules order by enabled desc, lower(name), id
-            """
-        )
+        cur.execute(f"select {_RULE_COLUMNS} from rules where deleted_at is null order by position, id")
         return cur.fetchall()
 
 
 def _apply_rules_cursor(cur) -> None:
-    cur.execute("select id, name, kind, pattern, value from rules where enabled order by id")
+    # first match in order claims it
+    cur.execute(
+        "select id, name, kind, pattern, value from rules where enabled and deleted_at is null order by position, id"
+    )
     active = cur.fetchall()
     archive_rules = [rule for rule in active if rule["kind"] == "archive_title"]
     if not archive_rules:
         return
-    cur.execute("select dedupe_key, min(title) as title from postings group by dedupe_key")
+    # one hidden row hides the job
+    cur.execute(
+        "select dedupe_key, min(title) as title from postings group by dedupe_key having bool_and(hidden_by is null)"
+    )
     for job in cur.fetchall():
         title = normalise(job["title"])
         for rule in archive_rules:
@@ -2774,10 +2778,10 @@ def save_rule(conn: psycopg.Connection, payload: dict) -> dict:
     clean = normalize_rule(payload)
     with conn.cursor() as cur:
         cur.execute(
-            """
-            insert into rules (name, kind, pattern, value)
-            values (%s, %s, %s, %s)
-            returning id, name, kind, pattern, value, enabled, created_at, updated_at
+            f"""
+            insert into rules (name, kind, pattern, value, position)
+            values (%s, %s, %s, %s, (select coalesce(max(position) + 1, 0) from rules))
+            returning {_RULE_COLUMNS}
             """,
             (clean["name"], clean["kind"], clean["pattern"], clean["value"]),
         )
@@ -2790,10 +2794,10 @@ def save_rule(conn: psycopg.Connection, payload: dict) -> dict:
 def set_rule_enabled(conn: psycopg.Connection, rule_id: int, enabled: bool) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             update rules set enabled = %s, updated_at = now()
-             where id = %s
-             returning id, name, kind, pattern, value, enabled, created_at, updated_at
+             where id = %s and deleted_at is null
+             returning {_RULE_COLUMNS}
             """,
             (enabled, rule_id),
         )
@@ -2802,6 +2806,90 @@ def set_rule_enabled(conn: psycopg.Connection, rule_id: int, enabled: bool) -> d
             _apply_rules_cursor(cur)
     conn.commit()
     return saved
+
+
+def update_rule(conn: psycopg.Connection, rule_id: int, changes: dict, expected: int | None = None) -> dict | None:
+    """Edit what a rule matches; past actions stay."""
+    with conn.cursor() as cur:
+        cur.execute(f"select {_RULE_COLUMNS} from rules where id = %s and deleted_at is null for update", (rule_id,))
+        previous = cur.fetchone()
+        if previous is None:
+            return None
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        clean = normalize_rule({**previous, **changes})
+        cur.execute(
+            f"""
+            update rules set name = %s, kind = %s, pattern = %s, value = %s,
+                   revision = revision + 1, updated_at = now()
+             where id = %s returning {_RULE_COLUMNS}
+            """,
+            (clean["name"], clean["kind"], clean["pattern"], clean["value"], rule_id),
+        )
+        rule = cur.fetchone()
+        if rule["enabled"]:
+            _apply_rules_cursor(cur)
+    conn.commit()
+    return {"rule": rule, "previous": previous}
+
+
+def delete_rule(conn: psycopg.Connection, rule_id: int) -> bool:
+    # rule actions still name it
+    with conn.cursor() as cur:
+        cur.execute(
+            "update rules set deleted_at = now() where id = %s and deleted_at is null returning id",
+            (rule_id,),
+        )
+        deleted = cur.fetchone() is not None
+    conn.commit()
+    return deleted
+
+
+def restore_rule(conn: psycopg.Connection, rule_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"update rules set deleted_at = null where id = %s and deleted_at is not null returning {_RULE_COLUMNS}",
+            (rule_id,),
+        )
+        rule = cur.fetchone()
+        if rule and rule["enabled"]:
+            _apply_rules_cursor(cur)
+    conn.commit()
+    return rule
+
+
+def rules_with_order(conn: psycopg.Connection) -> dict:
+    """The order and its revision from one moment."""
+    with conn.cursor() as cur:
+        # waits out a reorder in flight
+        cur.execute("select revision from rule_order for share")
+        revision = cur.fetchone()["revision"]
+        cur.execute(f"select {_RULE_COLUMNS} from rules where deleted_at is null order by position, id")
+        listed = cur.fetchall()
+    conn.commit()
+    return {"rules": listed, "order_revision": revision}
+
+
+def save_rule_order(conn: psycopg.Connection, rule_ids: list[int], expected: int) -> dict:
+    if len(rule_ids) != len(set(rule_ids)) or len(rule_ids) > 500:
+        raise ValueError("rule order contains duplicates or too many rules")
+    with conn.cursor() as cur:
+        cur.execute("select revision from rule_order for update")
+        revision = cur.fetchone()["revision"]
+        cur.execute("select id from rules where deleted_at is null for update")
+        # a stale tab has another order
+        if revision != expected or {row["id"] for row in cur.fetchall()} != set(rule_ids):
+            conn.rollback()
+            raise EditConflict("The rules changed in another tab. Reload and retry.")
+        cur.executemany(
+            "update rules set position = %s where id = %s",
+            list(enumerate(rule_ids)),
+        )
+        cur.execute("update rule_order set revision = revision + 1 returning revision")
+        revision = cur.fetchone()["revision"]
+    conn.commit()
+    return {"ids": rule_ids, "order_revision": revision}
 
 
 def undo_rule_action(conn: psycopg.Connection, action_id: int) -> dict | None:

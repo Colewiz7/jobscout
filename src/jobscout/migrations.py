@@ -527,6 +527,24 @@ MIGRATIONS = (
         create index if not exists company_links_company_idx on company_links (company_key, id);
         """,
     ),
+    Migration(
+        23,
+        "rule_edits",
+        """
+        alter table rules add column if not exists position integer;
+        alter table rules add column if not exists revision integer not null default 0;
+        alter table rules add column if not exists deleted_at timestamptz;
+        update rules set position = ranked.position
+          from (select id, row_number() over (order by id) - 1 as position from rules) ranked
+         where rules.id = ranked.id and rules.position is null;
+        alter table rules alter column position set not null;
+        create table if not exists rule_order (
+            id       boolean primary key default true check (id),
+            revision integer not null default 0
+        );
+        insert into rule_order (id) values (true) on conflict (id) do nothing;
+        """,
+    ),
 )
 
 

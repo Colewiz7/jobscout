@@ -31,6 +31,7 @@ def conn():
         cur.execute("drop table if exists company_assets")
         cur.execute("drop table if exists rule_actions")
         cur.execute("drop table if exists rules")
+        cur.execute("drop table if exists rule_order")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
         cur.execute("drop table if exists eligibility_overrides")
@@ -99,6 +100,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 20, "name": "contact_deletes"},
             {"version": 21, "name": "company_edits"},
             {"version": 22, "name": "company_links"},
+            {"version": 23, "name": "rule_edits"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1413,6 +1415,98 @@ def test_archive_rule_is_logged_and_reversibly_applied(conn):
     assert paused["enabled"] is False
     database.set_rule_enabled(conn, rule["id"], True)
     assert database.dashboard_postings(conn)[0]["status"] == "new"
+
+
+def test_rules_are_edited_reordered_and_soft_deleted(conn):
+    database.upsert_open(conn, [_p(title="Senior Cloud Intern")])
+    tag = database.save_rule(conn, {"name": "Cloud", "kind": "tag_title", "pattern": "Cloud", "value": "Infra"})
+    archive = database.save_rule(conn, {"name": "Seniors", "kind": "archive_title", "pattern": "Staff"})
+    assert [rule["position"] for rule in database.rules(conn)] == [0, 1]
+
+    edited = database.update_rule(conn, archive["id"], {"pattern": "Senior"}, archive["revision"])
+    assert edited["previous"]["pattern"] == "Staff"
+    assert edited["rule"]["revision"] == archive["revision"] + 1
+    assert database.dashboard_postings(conn)[0]["archived_by_rule"] == "Seniors"
+    with pytest.raises(database.RecordConflict) as conflict:
+        database.update_rule(conn, archive["id"], {"pattern": "Staff"}, archive["revision"])
+    assert conflict.value.record["pattern"] == "Senior"
+    with pytest.raises(ValueError):
+        database.update_rule(conn, tag["id"], {"value": ""})
+
+    assert database.rules_with_order(conn)["order_revision"] == 0
+    moved = database.save_rule_order(conn, [archive["id"], tag["id"]], 0)
+    assert moved == {"ids": [archive["id"], tag["id"]], "order_revision": 1}
+    assert [rule["id"] for rule in database.rules(conn)] == [archive["id"], tag["id"]]
+    with pytest.raises(database.EditConflict):
+        database.save_rule_order(conn, [tag["id"]], 1)
+    # a stale tab's order or undo
+    with pytest.raises(database.EditConflict):
+        database.save_rule_order(conn, [tag["id"], archive["id"]], 0)
+    assert [rule["id"] for rule in database.rules(conn)] == [archive["id"], tag["id"]]
+
+    assert database.delete_rule(conn, tag["id"]) is True
+    assert database.delete_rule(conn, tag["id"]) is False
+    assert [rule["id"] for rule in database.rules(conn)] == [archive["id"]]
+    assert database.update_rule(conn, tag["id"], {"name": "x"}) is None
+    # its archive label survives a delete
+    assert database.delete_rule(conn, archive["id"]) is True
+    assert database.dashboard_postings(conn)[0]["archived_by_rule"] == "Seniors"
+    assert database.restore_rule(conn, tag["id"])["id"] == tag["id"]
+    assert database.restore_rule(conn, tag["id"]) is None
+    added = database.save_rule(conn, {"name": "Later", "kind": "tag_title", "pattern": "Intern", "value": "Late"})
+    assert added["position"] == 2
+
+
+def test_the_rule_list_waits_for_a_reorder_in_flight(conn):
+    first = database.save_rule(conn, {"name": "First", "kind": "tag_title", "pattern": "Intern", "value": "One"})
+    second = database.save_rule(conn, {"name": "Second", "kind": "tag_title", "pattern": "Cloud", "value": "Two"})
+    # hold the reorder's lock open
+    with conn.cursor() as cur:
+        cur.execute("select revision from rule_order for update")
+        cur.execute("update rules set position = 0 where id = %s", (second["id"],))
+        cur.execute("update rules set position = 1 where id = %s", (first["id"],))
+        cur.execute("update rule_order set revision = revision + 1")
+    reader, outcome = _in_thread(database.rules_with_order)
+    reader.join(timeout=0.5)
+    assert reader.is_alive()
+    conn.commit()
+    reader.join(timeout=5)
+    assert "error" not in outcome
+    listed = outcome["value"]
+    assert ([rule["id"] for rule in listed["rules"]], listed["order_revision"]) == ([second["id"], first["id"]], 1)
+
+
+def test_deleted_rules_no_longer_archive_new_jobs(conn):
+    rule = database.save_rule(conn, {"name": "Seniors", "kind": "archive_title", "pattern": "Senior"})
+    database.delete_rule(conn, rule["id"])
+    database.upsert_open(conn, [_p(title="Senior Cloud Intern")])
+    database.save_rule(conn, {"name": "Tags", "kind": "tag_title", "pattern": "Cloud", "value": "Infra"})
+    assert database.dashboard_postings(conn)[0]["status"] == "new"
+
+
+def test_rule_runs_leave_hidden_jobs_and_their_aliases_alone(conn):
+    hidden = _p(title="Senior Cloud Intern", provider_id="gh:1")
+    alias = _p(source="greenhouse", title="Senior Cloud Intern", provider_id="gh:2", url="https://acme.example/2")
+    visible = _p(title="Senior Systems Intern", url="https://acme.example/3")
+    database.upsert_open(conn, [hidden, alias, visible])
+    assert alias.dedupe_key != hidden.dedupe_key
+    database.hide_jobs(conn, [hidden.dedupe_key])
+    assert database.hidden_keys(conn, [hidden.dedupe_key, alias.dedupe_key]) == {hidden.dedupe_key, alias.dedupe_key}
+
+    rule = database.save_rule(conn, {"name": "Seniors", "kind": "archive_title", "pattern": "Staff"})
+    database.update_rule(conn, rule["id"], {"pattern": "Senior"})
+    database.delete_rule(conn, rule["id"])
+    database.restore_rule(conn, rule["id"])
+    database.set_rule_enabled(conn, rule["id"], False)
+    database.set_rule_enabled(conn, rule["id"], True)
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from application_states where status = 'archived'")
+        archived = {row["dedupe_key"] for row in cur.fetchall()}
+        cur.execute("select dedupe_key from application_status_history")
+        history = {row["dedupe_key"] for row in cur.fetchall()}
+        cur.execute("select dedupe_key from rule_actions")
+        actions = {row["dedupe_key"] for row in cur.fetchall()}
+    assert archived == history == actions == {visible.dedupe_key}
 
 
 def test_quickfill_merge_adds_only_missing_rows(conn):

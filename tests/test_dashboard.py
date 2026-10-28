@@ -1423,6 +1423,145 @@ def test_inbox_rules_archive_tag_boost_and_undo(dashboard):
     assert after_reenable["status"] == "new"
 
 
+def _rule(client, csrf, **fields):
+    response = client.post("/api/v1/rules", headers={"X-CSRF-Token": csrf}, json=fields)
+    assert response.status_code == 201
+    return response.json()["rule"]
+
+
+def test_rules_are_edited_deleted_restored_and_reordered(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        tag = _rule(client, csrf, name="Systems roles", kind="tag_title", pattern="Platform", value="Systems")
+        boost = _rule(client, csrf, name="Prefer Datadog", kind="boost_company", pattern="Datadog", value="25")
+        edited = client.patch(f"/api/v1/rules/{tag['id']}", headers=headers,
+                              json={"value": "Infra", "expected_revision": tag["revision"]})
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+        undone = client.patch(f"/api/v1/rules/{tag['id']}", headers=headers,
+                              json={"value": "Systems", "expected_revision": edited.json()["rule"]["revision"]})
+        archive = client.patch(f"/api/v1/rules/{tag['id']}", headers=headers,
+                               json={"kind": "archive_title", "pattern": "Cloud Platform"})
+        archived = next(job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog")
+        reordered = client.put("/api/v1/rules/order", headers=headers, json={"ids": [boost["id"], tag["id"]], "expected_revision": 0})
+        listed = client.get("/api/v1/rules").json()
+        ordered = [rule["id"] for rule in listed["rules"]]
+        deleted = client.delete(f"/api/v1/rules/{boost['id']}", headers=headers)
+        after_delete = client.get("/api/v1/rules").json()["rules"]
+        boosted = next(job for job in client.get("/api/v1/jobs").json()["jobs"] if job["company"] == "Datadog")
+        again = client.delete(f"/api/v1/rules/{boost['id']}", headers=headers)
+        restored = client.post(f"/api/v1/rules/{boost['id']}/restore", headers=headers)
+        restored_again = client.post(f"/api/v1/rules/{boost['id']}/restore", headers=headers)
+        final = client.get("/api/v1/rules").json()["rules"]
+    finally:
+        client.close()
+
+    assert edited.status_code == 200
+    assert edited.json()["previous"]["value"] == "Systems"
+    assert next(job for job in jobs if job["company"] == "Datadog")["tags"] == ["Infra"]
+    assert undone.json()["rule"]["value"] == "Systems"
+    assert archive.json()["rule"]["value"] == ""
+    assert archived["status"] == "archived"
+    assert archived["archived_by_rule"] == "Systems roles"
+    assert reordered.json() == {"ids": [boost["id"], tag["id"]], "order_revision": 1}
+    assert ordered == [boost["id"], tag["id"]]
+    assert listed["order_revision"] == 1
+    assert deleted.status_code == 200
+    assert [rule["id"] for rule in after_delete] == [tag["id"]]
+    assert boosted["rule_boost"] == 0
+    assert again.status_code == 404
+    assert restored.status_code == 200
+    assert restored_again.status_code == 404
+    assert [rule["id"] for rule in final] == [boost["id"], tag["id"]]
+
+
+def test_rule_runs_skip_hidden_jobs(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        rule = _rule(client, csrf, name="Platform", kind="archive_title", pattern="Nothing")
+        client.patch(f"/api/v1/rules/{rule['id']}", headers=headers, json={"pattern": "Platform"})
+    finally:
+        client.close()
+    assert next(row for row in store.rows if row["dedupe_key"] == "demo:2")["status"] == "new"
+
+
+def test_rule_writes_check_auth_csrf_input_and_staleness(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        rule = _rule(client, csrf, name="Systems roles", kind="tag_title", pattern="Platform", value="Systems")
+        path = f"/api/v1/rules/{rule['id']}"
+        no_auth = httpx.patch(f"{base}{path}", json={"name": "x"}, timeout=2)
+        no_csrf = client.patch(path, json={"name": "x"})
+        no_csrf_delete = client.delete(path)
+        no_csrf_order = client.put("/api/v1/rules/order", json={"ids": [rule["id"]], "expected_revision": 0})
+        unknown = client.patch(path, headers=headers, json={"enabled": False})
+        blank = client.patch(path, headers=headers, json={"pattern": " "})
+        empty = client.patch(path, headers=headers, json={})
+        not_text = client.patch(path, headers=headers, json={"name": 5})
+        bad_value = client.patch(path, headers=headers, json={"kind": "boost_company", "value": "lots"})
+        missing = client.patch("/api/v1/rules/999", headers=headers, json={"name": "x"})
+        bad_id = client.delete("/api/v1/rules/nope", headers=headers)
+        moved = client.patch(path, headers=headers, json={"name": "Infra roles"})
+        stale = client.patch(path, headers=headers, json={"name": "Systems roles", "expected_revision": rule["revision"]})
+        partial = client.put("/api/v1/rules/order", headers=headers, json={"ids": [], "expected_revision": 0})
+        repeated = client.put("/api/v1/rules/order", headers=headers, json={"ids": [rule["id"], rule["id"]], "expected_revision": 0})
+        not_ids = client.put("/api/v1/rules/order", headers=headers, json={"ids": ["1"], "expected_revision": 0})
+        no_revision = client.put("/api/v1/rules/order", headers=headers, json={"ids": [rule["id"]]})
+    finally:
+        client.close()
+
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert no_csrf_delete.status_code == 403
+    assert no_csrf_order.status_code == 403
+    assert unknown.status_code == 400
+    assert blank.status_code == 400
+    assert empty.status_code == 400
+    assert not_text.status_code == 400
+    assert bad_value.status_code == 400
+    assert missing.status_code == 404
+    assert bad_id.status_code == 400
+    assert moved.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["rule"]["name"] == "Infra roles"
+    assert partial.status_code == 409
+    assert repeated.status_code == 400
+    assert not_ids.status_code == 400
+    assert no_revision.status_code == 400
+
+
+def test_a_stale_tab_cannot_reorder_or_undo_over_a_newer_rule_order(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        first = _rule(client, csrf, name="First", kind="tag_title", pattern="Intern", value="One")
+        second = _rule(client, csrf, name="Second", kind="tag_title", pattern="Cloud", value="Two")
+        ids = [first["id"], second["id"]]
+        seen = client.get("/api/v1/rules").json()["order_revision"]
+        # tab a moves, tab b moves back
+        moved = client.put("/api/v1/rules/order", headers=headers, json={"ids": ids[::-1], "expected_revision": seen})
+        other = client.put("/api/v1/rules/order", headers=headers, json={"ids": ids, "expected_revision": moved.json()["order_revision"]})
+        stale_undo = client.put("/api/v1/rules/order", headers=headers, json={"ids": ids, "expected_revision": moved.json()["order_revision"]})
+        stale_move = client.put("/api/v1/rules/order", headers=headers, json={"ids": ids[::-1], "expected_revision": seen})
+        final = client.get("/api/v1/rules").json()
+    finally:
+        client.close()
+
+    assert moved.status_code == 200
+    assert other.status_code == 200
+    assert stale_undo.status_code == 409
+    assert stale_move.status_code == 409
+    assert [rule["id"] for rule in final["rules"]] == ids
+    assert final["order_revision"] == other.json()["order_revision"]
+
+
 def test_tracker_and_company_writes_require_csrf(dashboard):
     base, _ = dashboard
     interview = httpx.post(

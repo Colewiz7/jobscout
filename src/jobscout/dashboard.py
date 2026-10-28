@@ -170,6 +170,17 @@ def _contact_changes(payload: dict) -> dict:
     return changes
 
 
+def _rule_changes(payload: dict) -> dict:
+    unknown = sorted(set(payload) - {"name", "kind", "pattern", "value"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    if not all(isinstance(value, str) for value in payload.values()):
+        raise ValueError("rule fields must be text")
+    if not payload:
+        raise ValueError("Change the name, action, match or value, then save")
+    return dict(payload)
+
+
 def _company_name(payload: dict) -> str:
     unknown = sorted(set(payload) - {"name"})
     if unknown:
@@ -530,6 +541,34 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.undo_rule_action(conn, action_id)
+
+    def update_rule(self, rule_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _rule_changes(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_rule(conn, rule_id, changes, expected)
+
+    def delete_rule(self, rule_id: int) -> bool:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.delete_rule(conn, rule_id)
+
+    def restore_rule(self, rule_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.restore_rule(conn, rule_id)
+
+    def rules_with_order(self) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.rules_with_order(conn)
+
+    def reorder_rules(self, rule_ids: list[int], expected: int) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_rule_order(conn, rule_ids, expected)
 
     def check_liveness(self, key: str, *, force: bool = False) -> LivenessResult:
         with database.connect(self.dsn) as conn:
@@ -1088,6 +1127,7 @@ class DemoStore:
         self._next_contact_id = 1
         self._eligibility_overrides: dict[str, list[dict]] = {}
         self._rules: list[dict] = []
+        self._rule_order_revision = 0
         self._rule_action_history: set[tuple[int, str]] = set()
         self._next_rule_id = 1
         self._next_rule_action_id = 1
@@ -1139,7 +1179,7 @@ class DemoStore:
         for job in _company_view(jobs, self._company_registry()):
             job["connections_count"] = counts.get(job["company_key"], 0)
             job.setdefault("next_step", "")
-        return _annotate_rules(_annotate_reposts(jobs), self._rules)
+        return _annotate_rules(_annotate_reposts(jobs), self._live_rules())
 
     # mirrors the scout's companies upsert
     def _company_registry(self) -> dict[str, dict]:
@@ -1232,14 +1272,27 @@ class DemoStore:
         return copy.deepcopy(row)
 
     def rules(self) -> list[dict]:
-        return copy.deepcopy(self._rules)
+        return copy.deepcopy(self._live_rules())
+
+    def _live_rules(self) -> list[dict]:
+        return sorted((rule for rule in self._rules if not rule.get("deleted")), key=lambda rule: (rule["position"], rule["id"]))
+
+    def _public_rule(self, rule: dict) -> dict:
+        return copy.deepcopy({key: value for key, value in rule.items() if key != "deleted"})
+
+    def _rule(self, rule_id: int, *, deleted: bool = False) -> dict | None:
+        return next((rule for rule in self._rules if rule["id"] == rule_id and bool(rule.get("deleted")) == deleted), None)
+
+    def _apply_demo_rules(self) -> None:
+        for rule in self._live_rules():
+            self._apply_demo_rule(rule)
 
     def _apply_demo_rule(self, rule: dict) -> None:
         if not rule.get("enabled") or rule.get("kind") != "archive_title":
             return
         pattern = database.normalise(rule["pattern"])
         for row in self.rows:
-            if pattern not in database.normalise(row["title"]) or row["status"] != "new":
+            if pattern not in database.normalise(row["title"]) or row["status"] != "new" or self._is_hidden(row):
                 continue
             history_key = (rule["id"], row["dedupe_key"])
             if history_key in self._rule_action_history:
@@ -1259,21 +1312,65 @@ class DemoStore:
         now = dt.datetime.now(dt.timezone.utc)
         rule = {
             "id": self._next_rule_id, **clean, "enabled": True,
-            "created_at": now, "updated_at": now,
+            "position": max((item["position"] for item in self._rules), default=-1) + 1,
+            "revision": 0, "created_at": now, "updated_at": now,
         }
         self._next_rule_id += 1
         self._rules.append(rule)
-        self._apply_demo_rule(rule)
-        return copy.deepcopy(rule)
+        self._apply_demo_rules()
+        return self._public_rule(rule)
 
     def set_rule_enabled(self, rule_id: int, enabled: bool) -> dict | None:
-        rule = next((item for item in self._rules if item["id"] == rule_id), None)
+        rule = self._rule(rule_id)
         if rule is None:
             return None
         rule["enabled"] = bool(enabled)
         rule["updated_at"] = dt.datetime.now(dt.timezone.utc)
-        self._apply_demo_rule(rule)
-        return copy.deepcopy(rule)
+        self._apply_demo_rules()
+        return self._public_rule(rule)
+
+    def update_rule(self, rule_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        changes = _rule_changes(payload)
+        rule = self._rule(rule_id)
+        if rule is None:
+            return None
+        previous = self._public_rule(rule)
+        if expected is not None and rule["revision"] != expected:
+            raise database.RecordConflict(previous)
+        rule.update(database.normalize_rule({**rule, **changes}), revision=rule["revision"] + 1,
+                    updated_at=dt.datetime.now(dt.timezone.utc))
+        self._apply_demo_rules()
+        return {"rule": self._public_rule(rule), "previous": previous}
+
+    def delete_rule(self, rule_id: int) -> bool:
+        rule = self._rule(rule_id)
+        if rule is not None:
+            rule["deleted"] = True
+        return rule is not None
+
+    def restore_rule(self, rule_id: int) -> dict | None:
+        rule = self._rule(rule_id, deleted=True)
+        if rule is None:
+            return None
+        rule["deleted"] = False
+        self._apply_demo_rules()
+        return self._public_rule(rule)
+
+    def rules_with_order(self) -> dict:
+        return {"rules": self.rules(), "order_revision": self._rule_order_revision}
+
+    def reorder_rules(self, rule_ids: list[int], expected: int) -> dict:
+        if len(rule_ids) != len(set(rule_ids)) or len(rule_ids) > 500:
+            raise ValueError("rule order contains duplicates or too many rules")
+        live = self._live_rules()
+        if expected != self._rule_order_revision or {rule["id"] for rule in live} != set(rule_ids):
+            raise database.EditConflict("The rules changed in another tab. Reload and retry.")
+        for position, rule_id in enumerate(rule_ids):
+            self._rule(rule_id)["position"] = position
+        self._rule_order_revision += 1
+        return {"ids": rule_ids, "order_revision": self._rule_order_revision}
 
     def undo_rule_action(self, action_id: int) -> dict | None:
         row = next((item for item in self.rows if item.get("rule_action_id") == action_id), None)
@@ -2281,7 +2378,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/v1/rules":
                 try:
-                    self._json({"rules": self.app.store.rules()})
+                    self._json(self.app.store.rules_with_order())
                 except Exception:
                     log.exception("could not load inbox rules")
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load rules. Retry shortly.")
@@ -2517,7 +2614,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return True
 
     def _record_route(self, path: str, method: str) -> bool:
-        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/"), ("link", "/api/v1/company-links/")):
+        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/"), ("link", "/api/v1/company-links/"), ("rule", "/api/v1/rules/")):
             if not path.startswith(prefix):
                 continue
             rest = path.removeprefix(prefix)
@@ -2921,6 +3018,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/rules/order":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                rule_ids = payload.get("ids")
+                if not isinstance(rule_ids, list) or not all(type(item) is int for item in rule_ids):
+                    raise ValueError("ids must be a list of rule ids")
+                # without it a stale tab wins
+                expected = _expected_revision(payload)
+                if expected is None:
+                    raise ValueError("expected_revision is required; reload the rules and retry")
+                order = self.app.store.reorder_rules(rule_ids, expected)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except database.EditConflict as error:
+                self._error(HTTPStatus.CONFLICT, str(error))
+                return
+            except Exception:
+                log.exception("could not reorder inbox rules")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't reorder the rules. Retry shortly.")
+                return
+            self._json(order)
+            return
         rule_prefix = "/api/v1/rules/"
         if parsed.path.startswith(rule_prefix):
             if not self._require_write_security():
