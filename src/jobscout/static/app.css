@@ -5017,7 +5017,7 @@ body.quick-fill-popout {
 
   .tracker-table td.company-cell {
     grid-column: 2;
-    padding-block: var(--s-3);
+    padding-block: 0;
   }
 
   .tracker-table td.row-menu-cell {
@@ -5388,6 +5388,11 @@ body.quick-fill-popout {
   .row-select {
     display: inline-grid;
     place-items: center;
+  }
+
+  /* align with corner controls */
+  .board-card {
+    padding-top: var(--s-1);
   }
 
   #interview-form :is(input, select) {
