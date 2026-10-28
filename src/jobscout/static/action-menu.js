@@ -106,7 +106,7 @@ function ensure(doc) {
   menu.className = "action-menu";
   menu.popover = "manual";
   menu.setAttribute("role", "menu");
-  menu.tabIndex = 0; // scroll region needs focus stop
+  menu.tabIndex = -1; // padding clicks keep focus
   menu.addEventListener("keydown", onKeydown);
   menu.addEventListener("focusout", (event) => {
     const to = event.relatedTarget;
@@ -154,6 +154,7 @@ export function openMenu(items, { label, anchor = null, point = null, trigger = 
   // offset sizes skip the entry scale
   const place = placeMenu({ anchor: box, width: menu.offsetWidth, height: menu.offsetHeight, viewport: { width: doc.defaultView.innerWidth, height: doc.defaultView.innerHeight }, align, gap: point ? 0 : 4 });
   Object.assign(menu.style, { left: `${place.left}px`, top: `${place.top}px`, maxHeight: `${place.maxHeight}px`, transformOrigin: place.origin });
+  menu.tabIndex = menu.scrollHeight > menu.clientHeight ? 0 : -1; // keyboard needs scroll access
   trigger?.setAttribute("aria-expanded", "true");
   current = { items, trigger, returnTo: returnTo || trigger || (previous?.nodeType === 1 ? previous : null), refocus };
   openedAt = performance.now();
