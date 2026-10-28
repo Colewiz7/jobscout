@@ -14,7 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest==9.1.1"]
+remote = ["pyjwt[crypto]>=2.8,<3"]
+test = ["pytest==9.1.1", "pyjwt[crypto]>=2.8,<3"]
 
 [project.scripts]
 jobseer-bridge = "jobseer_bridge.__main__:main"
