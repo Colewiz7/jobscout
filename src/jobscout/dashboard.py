@@ -63,6 +63,22 @@ def _queue_sort_key(job: dict) -> tuple:
     )
 
 
+def _session_keys(payload: dict) -> list[str] | None:
+    keys = payload.get("dedupe_keys")
+    if keys is None:
+        return None
+    if not isinstance(keys, list) or not keys or len(keys) > 500 or not all(isinstance(key, str) and key for key in keys):
+        raise ValueError("dedupe_keys must be a list of job keys")
+    return keys
+
+
+def _session_pick(jobs: list[dict], dedupe_keys: list[str] | None) -> list[dict]:
+    # a chosen run keeps its order
+    if dedupe_keys is None:
+        return jobs
+    queued = {job["dedupe_key"]: job for job in jobs}
+    return [queued[key] for key in dict.fromkeys(dedupe_keys) if key in queued]
+
 def _visible_scoped_job(job: dict, config: Config) -> bool:
     """Retain tracked history, but hide old out-of-scope rows from Inbox."""
     sources = [part.strip() for part in str(job.get("sources") or "").split(",") if part.strip()]
@@ -740,12 +756,12 @@ class PostgresStore:
             database.require_schema(conn)
             return database.save_board_order(conn, status, dedupe_keys)
 
-    def start_session(self) -> dict:
+    def start_session(self, dedupe_keys: list[str] | None = None) -> dict:
         # Do not probe the whole queue before showing the first job. A large
         # queue would make this request take minutes and appear blank to users.
         jobs = [job for job in self.jobs() if job["status"] == "queued"]
         jobs.sort(key=_queue_sort_key)
-        return {"jobs": jobs, "skipped": []}
+        return {"jobs": _session_pick(jobs, dedupe_keys), "skipped": []}
 
     def check_session_job(self, key: str) -> dict:
         job = next((item for item in self.jobs() if item["dedupe_key"] == key), None)
@@ -1665,10 +1681,10 @@ class DemoStore:
             row["board_position"] = positions.get(row["dedupe_key"])
         return dedupe_keys
 
-    def start_session(self) -> dict:
+    def start_session(self, dedupe_keys: list[str] | None = None) -> dict:
         queued = [dict(row) for row in self.rows if row["status"] == "queued"]
         queued.sort(key=_queue_sort_key)
-        return {"jobs": queued, "skipped": []}
+        return {"jobs": _session_pick(queued, dedupe_keys), "skipped": []}
 
     def check_session_job(self, key: str) -> dict:
         row = next((item for item in self.rows if item["dedupe_key"] == key and item["status"] == "queued"), None)
@@ -3415,7 +3431,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._require_write_security():
                 return
             try:
-                session = self.app.store.start_session()
+                sent = self.headers.get("Content-Length", "0") != "0"
+                keys = _session_keys(self._read_json()) if sent else None
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            if keys and self._reject_hidden(*keys):
+                return
+            try:
+                session = self.app.store.start_session(keys)
                 session["documents"] = self.app.store.documents() if self.app.quick_fill_enabled else []
             except Exception:
                 log.exception("could not start apply session")

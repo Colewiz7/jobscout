@@ -1934,3 +1934,19 @@ def test_tagline_batch_does_nothing_outside_the_morning_window(conn):
     afternoon = dt.datetime(2026, 10, 2, 20, 0, tzinfo=dt.timezone.utc)
     tagger = _FakeTagger()
     assert tagline.process(DSN, tagger, now=afternoon, pause=0)["ready"] == 0 and tagger.calls == []
+
+
+def test_a_chosen_session_keeps_the_given_order_against_postgres(conn, monkeypatch):
+    store = _store(monkeypatch)
+    postings = [_p(title=f"Intern {index}", url=f"https://acme.example/{index}") for index in range(3)]
+    database.upsert_open(conn, postings)
+    keys = [posting.dedupe_key for posting in postings]
+    for key in keys:
+        database.save_application_state(conn, key, "queued", "")
+    conn.commit()
+
+    whole = store.start_session()
+    chosen = store.start_session([keys[2], keys[0]])
+
+    assert {job["dedupe_key"] for job in whole["jobs"]} == set(keys)
+    assert [job["dedupe_key"] for job in chosen["jobs"]] == [keys[2], keys[0]]

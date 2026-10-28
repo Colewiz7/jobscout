@@ -2092,6 +2092,36 @@ def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     assert after_restore["answer_overrides"] == {"Why Datadog": "Datadog answer"}
 
 
+def test_session_runs_only_the_chosen_jobs_in_the_order_given(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        for key in ("demo%3A1", "demo%3A2"):
+            client.patch(f"/api/v1/jobs/{key}", headers=headers, json={"status": "queued", "notes": ""})
+        whole = client.post("/api/v1/queue/session", headers=headers)
+        chosen = client.post("/api/v1/queue/session", headers=headers,
+                             json={"dedupe_keys": ["demo:2", "missing", "demo:1", "demo:2"]})
+        client.patch("/api/v1/jobs/demo%3A1", headers=headers, json={"status": "saved", "notes": ""})
+        unqueued = client.post("/api/v1/queue/session", headers=headers, json={"dedupe_keys": ["demo:1"]})
+        empty = client.post("/api/v1/queue/session", headers=headers, json={"dedupe_keys": []})
+        wrong = client.post("/api/v1/queue/session", headers=headers, json={"dedupe_keys": "demo:2"})
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden = client.post("/api/v1/queue/session", headers=headers, json={"dedupe_keys": ["demo:2"]})
+    finally:
+        client.close()
+
+    assert whole.status_code == 201
+    assert {job["dedupe_key"] for job in whole.json()["jobs"]} == {"demo:1", "demo:2"}
+    assert chosen.status_code == 201
+    assert [job["dedupe_key"] for job in chosen.json()["jobs"]] == ["demo:2", "demo:1"]
+    # saved since the selection was made
+    assert unqueued.json()["jobs"] == []
+    assert empty.status_code == 400
+    assert wrong.status_code == 400
+    assert hidden.status_code == 410
+
+
 def test_apply_session_offers_the_default_document(quick_fill_dashboard):
     base, store = quick_fill_dashboard
     client, csrf = authenticated_client(base)
