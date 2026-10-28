@@ -6,6 +6,10 @@ import httpx
 from .config import Config
 
 
+class BridgeError(Exception):
+    pass
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str, body: dict | None = None):
         super().__init__(message)
