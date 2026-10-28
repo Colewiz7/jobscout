@@ -927,10 +927,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.restore_interview(conn, interview_id)
 
-    def save_next_step(self, key: str, value: str, expected: str | None = None) -> str | None:
+    def save_next_step(self, key: str, value: str, expected: str | None = None, reopen: list[dict] | None = None) -> dict | None:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_next_step(conn, key, value, expected)
+            return database.save_next_step(conn, key, value, expected, reopen)
 
     def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
         jobs, companies = self._jobs(include_closed=True)
@@ -1407,10 +1407,13 @@ class DemoStore:
             self._reminders.append({"id": self._next_reminder_id, "note": "", "revision": 0, **values})
             self._next_reminder_id += 1
 
-    def _complete_demo_followup(self, key: str) -> None:
+    def _complete_demo_followup(self, key: str) -> list[dict]:
+        closed = []
         for reminder in self._reminders:
             if reminder["dedupe_key"] == key and reminder["kind"] == "follow_up" and reminder["status"] != "done":
-                reminder.update(status="done", completed_at=dt.datetime.now(dt.timezone.utc))
+                reminder.update(status="done", completed_at=dt.datetime.now(dt.timezone.utc), revision=reminder.get("revision", 0) + 1)
+                closed.append({"id": reminder["id"], "revision": reminder["revision"]})
+        return closed
 
     def jobs(self, include_closed: bool = False) -> list[dict]:
         counts: dict[str, int] = {}
@@ -2021,7 +2024,7 @@ class DemoStore:
         self._complete_demo_followup(row["dedupe_key"])
         return copy.deepcopy(interview)
 
-    def save_next_step(self, key: str, value: str, expected: str | None = None) -> str | None:
+    def save_next_step(self, key: str, value: str, expected: str | None = None, reopen: list[dict] | None = None) -> dict | None:
         if len(value) > 1_000:
             raise ValueError("next step is too long")
         row = next((item for item in self.rows if item["dedupe_key"] == key), None)
@@ -2031,8 +2034,17 @@ class DemoStore:
             raise database.ValueConflict(row.get("next_step") or "")
         row["next_step"] = value.strip()
         row["application_updated_at"] = dt.datetime.now(dt.timezone.utc)
-        self._complete_demo_followup(key)
-        return row["next_step"]
+        closed = self._complete_demo_followup(key) if reopen is None else []
+        reopened = []
+        now = dt.datetime.now(dt.timezone.utc)
+        for item in reopen or []:
+            reminder = next((entry for entry in self._reminders if entry["id"] == item["id"] and entry["dedupe_key"] == key), None)
+            if reminder is None or reminder["revision"] != item["revision"] or reminder["status"] != "done":
+                continue
+            snoozed = reminder.get("snoozed_until") is not None and reminder["snoozed_until"] > now
+            reminder.update(status="snoozed" if snoozed else "pending", completed_at=None, revision=reminder["revision"] + 1)
+            reopened.append(reminder["id"])
+        return {"next_step": row["next_step"], "closed": closed, "reopened": reopened}
 
     def _company_counts(self) -> dict[str, dict]:
         counts: dict[str, dict] = {}
@@ -3881,7 +3893,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 expected = payload.get("expected_next_step")
                 if expected is not None and not isinstance(expected, str):
                     raise ValueError("expected_next_step must be text")
-                saved = self.app.store.save_next_step(key, str(payload.get("next_step") or ""), expected)
+                reopen = payload.get("reopen_follow_ups")
+                if reopen is not None and (not isinstance(reopen, list) or len(reopen) > 20 or not all(isinstance(item, dict) and type(item.get("id")) is int and type(item.get("revision")) is int for item in reopen)):
+                    raise ValueError("reopen_follow_ups must list follow-up ids and revisions")
+                saved = self.app.store.save_next_step(key, str(payload.get("next_step") or ""), expected, reopen)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
                 return
@@ -3895,7 +3910,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if saved is None:
                 self._error(HTTPStatus.NOT_FOUND, "application not found")
                 return
-            self._json({"ok": True, "next_step": saved})
+            self._json({"ok": True, "next_step": saved["next_step"], "closed_follow_ups": saved["closed"], "reopened_follow_ups": saved["reopened"]})
             return
         if parsed.path == "/api/v1/companies/note":
             if not self._require_write_security():

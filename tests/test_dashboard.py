@@ -1094,6 +1094,31 @@ def test_an_opened_job_can_be_rechecked_after_a_reload(dashboard):
         client.close()
 
 
+def test_undoing_a_next_step_reopens_its_follow_up(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    path = "/api/v1/applications/demo%3A2/next-step"
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        follow_up = lambda: next(item for item in client.get("/api/v1/tracker").json()["reminders"] + client.get("/api/v1/tracker").json()["done_reminders"] if item["dedupe_key"] == "demo:2" and item["kind"] == "follow_up")
+        saved = client.put(path, headers=headers, json={"next_step": "Send portfolio", "expected_next_step": ""}).json()
+        assert [item["id"] for item in saved["closed_follow_ups"]] == [follow_up()["id"]]
+        assert follow_up()["status"] == "done"
+        for bad in ("x", [1], [{"id": "1", "revision": 1}], [{"id": 1}]):
+            assert client.put(path, headers=headers, json={"next_step": "", "expected_next_step": "Send portfolio", "reopen_follow_ups": bad}).status_code == 400
+        assert client.put(path, json={"next_step": "", "reopen_follow_ups": []}).status_code == 403
+        undone = client.put(path, headers=headers, json={"next_step": "", "expected_next_step": "Send portfolio", "reopen_follow_ups": saved["closed_follow_ups"]})
+        assert undone.status_code == 200
+        assert undone.json()["reopened_follow_ups"] == [follow_up()["id"]]
+        assert follow_up()["status"] == "pending"
+        # a second undo finds it already open
+        again = client.put(path, headers=headers, json={"next_step": "", "expected_next_step": "", "reopen_follow_ups": saved["closed_follow_ups"]})
+        assert again.json()["reopened_follow_ups"] == []
+    finally:
+        client.close()
+
+
 def test_session_check_archives_closed_current_job(dashboard):
     base, store = dashboard
     client, csrf = authenticated_client(base)

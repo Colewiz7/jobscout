@@ -2085,8 +2085,8 @@ async function removeFollowUp(reminder) {
   showSnackbar("Follow-up removed.");
 }
 
-function writeNextStep(key, value, expected = null) {
-  const payload = expected === null ? { next_step: value } : { next_step: value, expected_next_step: expected };
+function writeNextStep(key, value, expected = null, reopen = null) {
+  const payload = { next_step: value, ...(expected === null ? {} : { expected_next_step: expected }), ...(reopen ? { reopen_follow_ups: reopen } : {}) };
   return companyWrite(`/api/v1/applications/${encodeURIComponent(key)}/next-step`, { method: "PUT", body: JSON.stringify(payload) }, "The next step could not be saved.");
 }
 
@@ -2125,16 +2125,19 @@ function saveTrackerNextStep(key, value, input) {
       return;
     }
     const saved = body.next_step ?? value.trim();
+    const closed = body.closed_follow_ups || [];
     placeNextStep(key, saved);
+    const message = `${saved ? "Next step saved" : "Next step cleared"}${closed.length ? ", follow-up marked done" : ""}.`;
     // a stale undo gets a 409
-    offerUndoSnackbar(saved ? "Next step saved." : "Next step cleared.", [`next-step:${key}`], () => undoNextStep(key, previous, saved), { latest: `next-step:${key}` });
+    offerUndoSnackbar(message, [`next-step:${key}`], () => undoNextStep(key, previous, saved, closed), { latest: `next-step:${key}` });
     loadTrackerData({ background: true });
   });
 }
 
-function undoNextStep(key, before, after) {
+function undoNextStep(key, before, after, closed = []) {
   return queueNextStep(key, async () => {
-    const { status, body, error } = await writeNextStep(key, before, after);
+    // an empty list still skips closing
+    const { status, body, error } = await writeNextStep(key, before, after, closed);
     if (status === 409) {
       placeNextStep(key, body.next_step ?? after, { force: true });
       showSnackbar("Couldn't undo. The next step changed elsewhere, so it now shows that version.");
@@ -2142,7 +2145,8 @@ function undoNextStep(key, before, after) {
     }
     if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
     placeNextStep(key, body.next_step ?? before, { force: true });
-    showSnackbar("Next step change undone.");
+    const reopened = (body.reopened_follow_ups || []).length;
+    showSnackbar(!closed.length ? "Next step change undone." : reopened === closed.length ? "Next step change undone, follow-up reopened." : "Next step change undone. The follow-up changed since, so it stays done.");
     loadTrackerData({ background: true });
   });
 }

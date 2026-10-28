@@ -2530,8 +2530,9 @@ def restore_interview(conn: psycopg.Connection, interview_id: int) -> dict | Non
 
 
 def save_next_step(
-    conn: psycopg.Connection, dedupe_key: str, value: str, expected: str | None = None
-) -> str | None:
+    conn: psycopg.Connection, dedupe_key: str, value: str, expected: str | None = None,
+    reopen: list[dict] | None = None,
+) -> dict | None:
     # none means no application
     if len(value) > 1_000:
         raise ValueError("next step is too long")
@@ -2559,15 +2560,32 @@ def save_next_step(
             (value.strip(), dedupe_key),
         )
         saved = cur.fetchone()["next_step"]
-        cur.execute(
-            """
-            update reminders set status = 'done', completed_at = now()
-             where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
-            """,
-            (dedupe_key,),
-        )
+        closed, reopened = [], []
+        # an undo only reopens
+        if reopen is None:
+            cur.execute(
+                """
+                update reminders set status = 'done', completed_at = now(), revision = revision + 1
+                 where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
+                returning id, revision
+                """,
+                (dedupe_key,),
+            )
+            closed = cur.fetchall()
+        for item in reopen or []:
+            # a later edit keeps it done
+            cur.execute(
+                """
+                update reminders set status = case when snoozed_until > now() then 'snoozed' else 'pending' end,
+                       completed_at = null, revision = revision + 1
+                 where id = %s and dedupe_key = %s and revision = %s and status = 'done'
+                returning id
+                """,
+                (item["id"], dedupe_key, item["revision"]),
+            )
+            reopened += [row["id"] for row in cur.fetchall()]
     conn.commit()
-    return saved
+    return {"next_step": saved, "closed": closed, "reopened": reopened}
 
 
 _CONTACT_COLUMNS = "id, company_name, name, title, email, linkedin_url, source, created_at, updated_at, revision"

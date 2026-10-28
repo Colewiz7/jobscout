@@ -725,6 +725,23 @@ def test_an_apply_session_saves_conditionally_and_pauses_while_ended(conn):
     assert database.update_apply_session(conn, 999, {"ended": True}, 0) is None
 
 
+def test_undoing_a_next_step_reopens_the_follow_up_it_closed(conn):
+    posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    database.save_application_state(conn, key, "applied", "")
+    saved = database.save_next_step(conn, key, "Email Sam")
+    assert len(saved["closed"]) == 1
+    status = lambda: database.tracker_support(conn)["reminders"]
+    assert all(item["dedupe_key"] != key for item in status())
+    stale = [{"id": saved["closed"][0]["id"], "revision": saved["closed"][0]["revision"] - 1}]
+    assert database.save_next_step(conn, key, "", "Email Sam", stale)["reopened"] == []
+    database.save_next_step(conn, key, "Email Sam", "")
+    undone = database.save_next_step(conn, key, "", "Email Sam", saved["closed"])
+    assert undone["reopened"] == [saved["closed"][0]["id"]] and undone["closed"] == []
+    assert any(item["dedupe_key"] == key and item["status"] == "pending" for item in status())
+
+
 def test_queue_order_skips_hidden_jobs(conn):
     kept = _p(url="https://boards.greenhouse.io/acme/jobs/1")
     gone = _p(title="Data Intern", url="https://boards.greenhouse.io/acme/jobs/2")
@@ -802,11 +819,11 @@ def test_notes_and_next_step_undo_refuse_newer_text(conn):
     assert notes.value.value == "second"
     database.save_application_state(conn, key, None, "first", expected_notes="second")
 
-    assert database.save_next_step(conn, key, "  Email Sam ") == "Email Sam"
+    assert database.save_next_step(conn, key, "  Email Sam ")["next_step"] == "Email Sam"
     with pytest.raises(database.ValueConflict) as step:
         database.save_next_step(conn, key, "", "Something else")
     assert step.value.value == "Email Sam"
-    assert database.save_next_step(conn, key, "", "Email Sam") == ""
+    assert database.save_next_step(conn, key, "", "Email Sam")["next_step"] == ""
     assert database.save_next_step(conn, "missing", "x") is None
     row = next(item for item in database.dashboard_postings(conn) if item["dedupe_key"] == key)
     assert (row["status"], row["notes"]) == ("applied", "first")
