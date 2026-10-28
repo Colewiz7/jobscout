@@ -451,6 +451,104 @@ def test_eligibility_verdict_and_override_are_feature_gated_and_logged():
         thread.join(timeout=2)
 
 
+@pytest.fixture
+def blocked_dashboard():
+    store = DemoStore()
+    store._profile["fields"] = [{"key": "work_authorization", "value": "Requires employment sponsorship"}]
+    text = "Python is required. We will not provide visa sponsorship."
+    store.description = lambda key: None if key not in {"demo:1", "demo:2"} else {
+        "description_text": text, "sections": [{"key": "requirements", "text": "Python is required"}],
+    }
+    try:
+        server = DashboardServer(("127.0.0.1", 0), store, require_auth=True, authentik_user="cole", quick_fill_enabled=True)
+    except PermissionError:
+        pytest.skip("the test sandbox does not permit a loopback listener")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield "http://127.0.0.1:%d" % server.server_address[1], store
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+def test_an_override_keeps_its_note_and_is_revoked_and_restored(blocked_dashboard):
+    base, store = blocked_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1/eligibility/override"
+    try:
+        made = client.post(path, headers=headers, json={"note": "  Recruiter said they sponsor interns "})
+        ids = made.json()["override_ids"]
+        undone = client.request("DELETE", path, headers=headers, json={"ids": ids})
+        stale_undo = client.request("DELETE", path, headers=headers, json={"ids": ids})
+        blocked = client.patch("/api/v1/jobs/demo%3A1", headers=headers, json={"status": "queued", "notes": ""})
+        redone = client.post(f"{path}/restore", headers=headers, json={"ids": ids})
+        stale_redo = client.post(f"{path}/restore", headers=headers, json={"ids": ids})
+        revoked = client.delete(path, headers=headers)
+        nothing_left = client.delete(path, headers=headers)
+        restored = client.post(f"{path}/restore", headers=headers, json={"ids": revoked.json()["ids"]})
+    finally:
+        client.close()
+
+    assert made.status_code == 201
+    assert made.json()["eligibility"]["overridden"] is True
+    assert made.json()["eligibility"]["overrides"][0]["note"] == "Recruiter said they sponsor interns"
+    assert undone.status_code == 200
+    assert undone.json()["ids"] == ids
+    assert undone.json()["eligibility"]["verdict"] == "do_not_apply"
+    assert undone.json()["eligibility"]["overrides"] == []
+    assert stale_undo.status_code == 409
+    assert stale_undo.json()["eligibility"]["verdict"] == "do_not_apply"
+    assert blocked.status_code == 409
+    assert redone.json()["eligibility"]["overridden"] is True
+    assert stale_redo.status_code == 409
+    assert revoked.json()["ids"] == ids
+    assert nothing_left.status_code == 409
+    assert restored.json()["eligibility"]["overridden"] is True
+    # revoked rows stay as evidence
+    assert len(store._eligibility_overrides["demo:1"]) == 1
+
+
+def test_override_writes_check_gating_auth_csrf_input_and_hidden_jobs(blocked_dashboard, dashboard):
+    base, _ = blocked_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1/eligibility/override"
+    try:
+        no_auth = httpx.delete(f"{base}{path}", timeout=2)
+        no_csrf = client.delete(path)
+        no_csrf_restore = client.post(f"{path}/restore", json={"ids": [1]})
+        bad_note = client.post(path, headers=headers, json={"note": ["x"]})
+        long_note = client.post(path, headers=headers, json={"note": "x" * 1_001})
+        bad_ids = client.request("DELETE", path, headers=headers, json={"ids": "1"})
+        no_ids = client.post(f"{path}/restore", headers=headers, json={})
+        missing = client.delete("/api/v1/jobs/demo%3A404/eligibility/override", headers=headers)
+        made = client.post("/api/v1/jobs/demo%3A2/eligibility/override", headers=headers, json={"note": ""})
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden_revoke = client.delete("/api/v1/jobs/demo%3A2/eligibility/override", headers=headers)
+        hidden_restore = client.post("/api/v1/jobs/demo%3A2/eligibility/override/restore", headers=headers, json={"ids": made.json()["override_ids"]})
+    finally:
+        client.close()
+    plain, plain_csrf = authenticated_client(dashboard[0])
+    try:
+        gated = plain.delete(path, headers={"X-CSRF-Token": plain_csrf})
+    finally:
+        plain.close()
+
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert no_csrf_restore.status_code == 403
+    assert bad_note.status_code == 400
+    assert long_note.status_code == 400
+    assert bad_ids.status_code == 400
+    assert no_ids.status_code == 400
+    assert missing.status_code == 404
+    assert made.status_code == 201
+    assert hidden_revoke.status_code == 410
+    assert hidden_restore.status_code == 410
+    assert gated.status_code == 404
+
+
 def test_quick_fill_profile_requires_explicit_feature_flag():
     store = DemoStore()
     try:

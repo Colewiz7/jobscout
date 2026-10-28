@@ -181,6 +181,23 @@ def _rule_changes(payload: dict) -> dict:
     return dict(payload)
 
 
+# the ui shows and revokes these
+def _with_overrides(result: dict, overrides: list[dict]) -> dict:
+    result["overrides"] = [
+        {name: item.get(name) for name in ("id", "blocker_key", "note", "created_at")} for item in overrides
+    ]
+    return result
+
+
+def _override_ids(payload: dict, *, required: bool) -> list[int] | None:
+    ids = payload.get("ids")
+    if ids is None and not required:
+        return None
+    if not isinstance(ids, list) or not ids or len(ids) > 20 or not all(type(item) is int for item in ids):
+        raise ValueError("ids must be a list of override ids")
+    return ids
+
+
 def _company_name(payload: dict) -> str:
     unknown = sorted(set(payload) - {"name"})
     if unknown:
@@ -900,12 +917,12 @@ class PostgresStore:
             database.require_schema(conn)
             profile = database.profile_data(conn)
             overrides = database.eligibility_overrides(conn, key)
-        return analyze_eligibility(
+        return _with_overrides(analyze_eligibility(
             text=str(description.get("description_text") or ""),
             sections=description.get("sections") or [],
             profile=profile,
             overrides=overrides,
-        )
+        ), overrides)
 
     def override_eligibility(self, key: str, note: str = "") -> dict | None:
         result = self.eligibility(key)
@@ -914,8 +931,22 @@ class PostgresStore:
         blockers = [item for item in result["blockers"] if not item.get("overridden")]
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            database.record_eligibility_overrides(conn, key, blockers, note)
-        return self.eligibility(key)
+            ids = database.record_eligibility_overrides(conn, key, blockers, note)
+        return {"eligibility": self.eligibility(key), "override_ids": ids}
+
+    def revoke_eligibility(self, key: str, ids: list[int] | None = None) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            changed = database.revoke_eligibility_overrides(conn, key, ids)
+        result = self.eligibility(key)
+        return result and {"eligibility": result, "ids": changed}
+
+    def restore_eligibility(self, key: str, ids: list[int]) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            changed = database.restore_eligibility_overrides(conn, key, ids)
+        result = self.eligibility(key)
+        return result and {"eligibility": result, "ids": changed}
 
     def healthy(self) -> bool:
         try:
@@ -1147,6 +1178,7 @@ class DemoStore:
         self._next_interview_id = 1
         self._next_contact_id = 1
         self._eligibility_overrides: dict[str, list[dict]] = {}
+        self._next_override_id = 1
         self._rules: list[dict] = []
         self._rule_order_revision = 0
         self._job_tags: list[dict] = []
@@ -2049,12 +2081,29 @@ class DemoStore:
         description = self.description(key)
         if description is None:
             return None
-        return analyze_eligibility(
+        overrides = [item for item in self._eligibility_overrides.get(key, []) if not item.get("revoked")]
+        return _with_overrides(analyze_eligibility(
             text=str(description.get("description_text") or ""),
             sections=description.get("sections") or [],
             profile=self._profile,
-            overrides=self._eligibility_overrides.get(key, []),
-        )
+            overrides=overrides,
+        ), overrides)
+
+    def _flip_overrides(self, key: str, ids: list[int] | None, revoked: bool) -> dict | None:
+        changed = []
+        hidden = any(row["dedupe_key"] == key and self._is_hidden(row) for row in self.rows)
+        for item in [] if hidden else self._eligibility_overrides.get(key, []):
+            if bool(item.get("revoked")) != revoked and (ids is None or item["id"] in ids):
+                item["revoked"] = revoked
+                changed.append(item["id"])
+        result = self.eligibility(key)
+        return result and {"eligibility": result, "ids": sorted(changed)}
+
+    def revoke_eligibility(self, key: str, ids: list[int] | None = None) -> dict | None:
+        return self._flip_overrides(key, ids, True)
+
+    def restore_eligibility(self, key: str, ids: list[int]) -> dict | None:
+        return self._flip_overrides(key, ids, False)
 
     def override_eligibility(self, key: str, note: str = "") -> dict | None:
         if len(note) > 1_000:
@@ -2066,11 +2115,14 @@ class DemoStore:
         if not blockers:
             raise ValueError("there are no active blockers to override")
         now = dt.datetime.now(dt.timezone.utc)
-        self._eligibility_overrides.setdefault(key, []).extend({
-            "blocker_key": item["key"], "evidence": item["evidence"],
+        stored = self._eligibility_overrides.setdefault(key, [])
+        ids = list(range(self._next_override_id, self._next_override_id + len(blockers)))
+        self._next_override_id += len(blockers)
+        stored.extend({
+            "id": override_id, "blocker_key": item["key"], "evidence": item["evidence"],
             "comparison": item["comparison"], "note": note.strip(), "created_at": now,
-        } for item in blockers)
-        return self.eligibility(key)
+        } for override_id, item in zip(ids, blockers))
+        return {"eligibility": self.eligibility(key), "override_ids": ids}
 
     def healthy(self) -> bool:
         return True
@@ -2293,6 +2345,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if hidden:
             self._error(HTTPStatus.GONE, HIDDEN_WRITE)
         return hidden
+
+    # revoke and its undo share this
+    def _change_override(self, key: str, *, restore: bool) -> None:
+        if not self._require_quick_fill_write() or self._reject_hidden(key):
+            return
+        try:
+            sent = self.headers.get("Content-Length", "0") != "0"
+            ids = _override_ids(self._read_json() if sent else {}, required=restore)
+            store = self.app.store
+            result = store.restore_eligibility(key, ids) if restore else store.revoke_eligibility(key, ids)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not change eligibility override")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't change the override. Retry shortly.")
+            return
+        if result is None:
+            self._error(HTTPStatus.NOT_FOUND, "job not found")
+        elif not result["ids"]:
+            self._json({
+                "error": "The override changed in another tab.", "eligibility": result["eligibility"],
+            }, HTTPStatus.CONFLICT)
+        else:
+            self._json(result)
 
     def _require_quick_fill_write(self) -> bool:
         if self._require_api_auth() is None:
@@ -2976,9 +3053,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if self._reject_hidden(key):
                 return
             try:
-                result = self.app.store.override_eligibility(
-                    key, str(self._read_json().get("note") or "")
-                )
+                note = self._read_json().get("note") or ""
+                if not isinstance(note, str):
+                    raise ValueError("note must be text")
+                result = self.app.store.override_eligibility(key, note)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
                 return
@@ -2989,7 +3067,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if result is None:
                 self._error(HTTPStatus.NOT_FOUND, "job not found")
                 return
-            self._json({"eligibility": result}, HTTPStatus.CREATED)
+            self._json(result, HTTPStatus.CREATED)
+            return
+        restore_suffix = "/eligibility/override/restore"
+        if parsed.path.startswith(eligibility_prefix) and parsed.path.endswith(restore_suffix):
+            self._change_override(urllib.parse.unquote(parsed.path[len(eligibility_prefix):-len(restore_suffix)].rstrip("/")), restore=True)
             return
         if self._record_route(parsed.path, "POST") or self._company_route(parsed.path, "POST"):
             return
@@ -3325,6 +3407,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         if self._record_route(parsed.path, "DELETE"):
+            return
+        override_prefix, override_suffix = "/api/v1/jobs/", "/eligibility/override"
+        if parsed.path.startswith(override_prefix) and parsed.path.endswith(override_suffix):
+            self._change_override(urllib.parse.unquote(parsed.path[len(override_prefix):-len(override_suffix)].rstrip("/")), restore=False)
             return
         prefix = "/api/v1/saved-views/"
         if not parsed.path.startswith(prefix):

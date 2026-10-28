@@ -560,6 +560,13 @@ MIGRATIONS = (
             on job_tags (dedupe_key, lower(tag)) where deleted_at is null;
         """,
     ),
+    Migration(
+        25,
+        "eligibility_override_revokes",
+        """
+        alter table eligibility_overrides add column if not exists revoked_at timestamptz;
+        """,
+    ),
 )
 
 

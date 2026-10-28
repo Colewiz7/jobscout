@@ -103,6 +103,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 22, "name": "company_links"},
             {"version": 23, "name": "rule_edits"},
             {"version": 24, "name": "job_tags"},
+            {"version": 25, "name": "eligibility_override_revokes"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -1391,9 +1392,34 @@ def test_eligibility_overrides_are_append_only_evidence_records(conn):
         "evidence": "We will not provide visa sponsorship.",
         "comparison": "Profile says sponsorship is required.",
     }], "Reviewed manually")
-    assert len(saved) == 1
-    assert saved[0]["blocker_key"] == "sponsorship"
-    assert saved[0]["note"] == "Reviewed manually"
+    active = database.eligibility_overrides(conn, posting.dedupe_key)
+    assert [row["id"] for row in active] == saved
+    assert active[0]["blocker_key"] == "sponsorship"
+    assert active[0]["note"] == "Reviewed manually"
+
+
+def test_revoked_overrides_stay_on_record_and_can_return(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    blocker = {"key": "sponsorship", "evidence": "No sponsorship.", "comparison": "Needs it."}
+    first = database.record_eligibility_overrides(conn, posting.dedupe_key, [blocker], "One")
+    second = database.record_eligibility_overrides(conn, posting.dedupe_key, [blocker], "Two")
+    assert database.revoke_eligibility_overrides(conn, posting.dedupe_key, first) == first
+    assert database.revoke_eligibility_overrides(conn, posting.dedupe_key, first) == []
+    assert database.revoke_eligibility_overrides(conn, "other", second) == []
+    assert [row["note"] for row in database.eligibility_overrides(conn, posting.dedupe_key)] == ["Two"]
+    assert database.revoke_eligibility_overrides(conn, posting.dedupe_key) == second
+    assert database.eligibility_overrides(conn, posting.dedupe_key) == []
+    assert database.restore_eligibility_overrides(conn, posting.dedupe_key, first + second) == first + second
+    assert database.restore_eligibility_overrides(conn, posting.dedupe_key, first) == []
+    with conn.cursor() as cur:
+        cur.execute("select count(*) as count from eligibility_overrides")
+        assert cur.fetchone()["count"] == 2
+
+    # a hidden job's overrides stay put
+    database.hide_jobs(conn, [posting.dedupe_key])
+    assert database.revoke_eligibility_overrides(conn, posting.dedupe_key) == []
+    assert database.restore_eligibility_overrides(conn, posting.dedupe_key, first) == []
 
 
 def test_archive_rule_is_logged_and_reversibly_applied(conn):

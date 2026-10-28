@@ -2633,7 +2633,7 @@ def eligibility_overrides(conn: psycopg.Connection, dedupe_key: str) -> list[dic
             """
             select id, blocker_key, evidence, comparison, note, created_at
               from eligibility_overrides
-             where dedupe_key = %s
+             where dedupe_key = %s and revoked_at is null
              order by created_at, id
             """,
             (dedupe_key,),
@@ -2646,7 +2646,7 @@ def record_eligibility_overrides(
     dedupe_key: str,
     blockers: list[dict],
     note: str = "",
-) -> list[dict]:
+) -> list[int]:
     if len(note) > 1_000:
         raise ValueError("override note is too long")
     if not blockers or len(blockers) > 4:
@@ -2664,16 +2664,57 @@ def record_eligibility_overrides(
         cur.execute("select 1 from postings where dedupe_key = %s limit 1", (dedupe_key,))
         if cur.fetchone() is None:
             raise ValueError("job not found")
-        cur.executemany(
-            """
-            insert into eligibility_overrides
-                (dedupe_key, blocker_key, evidence, comparison, note)
-            values (%s, %s, %s, %s, %s)
-            """,
-            rows,
-        )
+        ids = []
+        for row in rows:
+            cur.execute(
+                """
+                insert into eligibility_overrides
+                    (dedupe_key, blocker_key, evidence, comparison, note)
+                values (%s, %s, %s, %s, %s) returning id
+                """,
+                row,
+            )
+            ids.append(cur.fetchone()["id"])
     conn.commit()
-    return eligibility_overrides(conn, dedupe_key)
+    return ids
+
+
+_VISIBLE_OVERRIDE_JOB = """
+    not exists (select 1 from postings p where p.dedupe_key = eligibility_overrides.dedupe_key and p.hidden_by is not null)
+"""
+
+
+def revoke_eligibility_overrides(conn: psycopg.Connection, dedupe_key: str, ids: list[int] | None = None) -> list[int]:
+    """Revoked rows stay as evidence."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            update eligibility_overrides set revoked_at = now()
+             where dedupe_key = %s and revoked_at is null and (%s::bigint[] is null or id = any(%s::bigint[]))
+               and {_VISIBLE_OVERRIDE_JOB}
+            returning id
+            """,
+            (dedupe_key, ids, ids),
+        )
+        revoked = sorted(row["id"] for row in cur.fetchall())
+    conn.commit()
+    return revoked
+
+
+def restore_eligibility_overrides(conn: psycopg.Connection, dedupe_key: str, ids: list[int]) -> list[int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            update eligibility_overrides set revoked_at = null
+             where dedupe_key = %s and revoked_at is not null and id = any(%s::bigint[])
+               and {_VISIBLE_OVERRIDE_JOB}
+            returning id
+            """,
+            (dedupe_key, ids),
+        )
+        restored = sorted(row["id"] for row in cur.fetchall())
+    conn.commit()
+    return restored
 
 
 def clean_tag(value) -> str:
