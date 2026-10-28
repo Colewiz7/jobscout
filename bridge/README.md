@@ -33,7 +33,8 @@ venv script, since the system python does not have the protocol library and the 
     }
 
 Drop `JOBSEER_READONLY` to enable writes. Most clients also have a command-line add form that
-takes the same command and env pairs; check your client's docs for it. No secrets go in this config.
+takes the same command and env pairs; check your client's docs for it. Keep the token itself out of
+this config; use `JOBSEER_TOKEN_CMD` below.
 
 - The profile tools (`profile_get`, `profile_update`, `profile_context_set`) need
   `JOBSCOUT_QUICK_FILL_ENABLED=1` on the dashboard. It is off in a plain `--demo` run.
@@ -46,11 +47,43 @@ takes the same command and env pairs; check your client's docs for it. No secret
 | `JOBSEER_URL` | dashboard address, default `http://127.0.0.1:8080` |
 | `JOBSEER_READONLY` | `1` registers only the read tools and refuses writes |
 | `JOBSEER_CACHE_TTL` | seconds to reuse the inbox list, default 10 |
+| `JOBSEER_TOKEN` | app password, sent as HTTP Basic auth on every request |
+| `JOBSEER_TOKEN_CMD` | command whose output is the token, run once at startup |
+| `JOBSEER_USER` | Basic auth user name, default `cole` |
 | `JOBSEER_AUTHENTIK_USER` | send the proxy headers, for a local non-demo server only |
 | `JOBSEER_AUTHENTIK_APP`, `JOBSEER_AUTHENTIK_OUTPOST` | header values, defaults `jobseer` and `local` |
 
-There is no token handling and no live address built in. Every result is wrapped as
+There is no live address built in. Every result is wrapped as
 `{"target": <url>, "data": ...}` so you can see which server answered.
+
+## Live access with an app password
+
+To reach a server behind the identity proxy, create an app password for your user and point
+the bridge at the public https address. Prefer a command that reads it from a password manager:
+
+    JOBSEER_URL=https://jobseer.example.com
+    JOBSEER_USER=cole
+    JOBSEER_TOKEN_CMD='op read op://VAULT/ITEM/password'
+
+Then verify access before registering the server:
+
+    JOBSEER_URL=... JOBSEER_TOKEN_CMD=... .venv/bin/jobseer-bridge check
+
+`check` makes one read-only call (`GET /api/v1/session`) and prints the target, HTTP status,
+whether auth was accepted and the session user. It exits 0 on success and never prints the token.
+
+- `JOBSEER_TOKEN_CMD` is split into words and run without a shell, once, with a 5 second timeout.
+  Its stderr is discarded. If `JOBSEER_TOKEN` is also set, that value is used and the command is skipped.
+- With a token, a non-loopback target must use https. Plain http is allowed only for localhost,
+  `127.0.0.0/8` and `::1`.
+- A token turns off the proxy header mode, so the two are never sent together.
+- A 401, a redirect to sign-in or a challenge page fails once with the status and the hop that
+  answered, and is not retried. Response bodies are never shown.
+- The token is kept out of logs, errors, tool results and the target label.
+- The app password acts as your user everywhere the proxy lets you in, not just in this bridge.
+  Treat it like a password and keep `JOBSEER_READONLY=1` on until you need writes.
+- App passwords expire. When `check` starts reporting 401, create a new one, update the vault
+  item and run `check` again. Nothing else needs to change if you use `JOBSEER_TOKEN_CMD`.
 
 ## Behaviour
 
