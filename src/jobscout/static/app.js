@@ -11,7 +11,7 @@ import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, n
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
-import { moveId, RULE_KINDS, ruleValueHelp } from "./inbox-edit.js";
+import { cleanTag, hasTag, moveId, removableTags, RULE_KINDS, ruleValueHelp, tagOptions, withManualTag } from "./inbox-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -23,6 +23,8 @@ const filterDialog = document.querySelector("#filter-dialog");
 const filterForm = document.querySelector("#filter-form");
 const sourceOptions = document.querySelector("#source-options");
 const remoteFilter = document.querySelector("#remote-filter");
+const tagGroup = document.querySelector("#tag-filter-group");
+const tagOptionsList = document.querySelector("#tag-options");
 const savedViewName = document.querySelector("#saved-view-name");
 const snackbarRegion = document.querySelector("#snackbar-region");
 const assertiveRegion = document.querySelector("#assertive-region");
@@ -93,7 +95,7 @@ const commands = [
 
 const state = {
   jobs: [], loaded: false, loading: false, error: "", csrf: "", refreshedAt: null,
-  query: "", status: "new", sort: "score", source: "", remote: false, focus: false,
+  query: "", status: "new", sort: "score", source: "", remote: false, tag: "", focus: false,
   selectedKey: "", selectedKeys: new Set(), rangeAnchor: -1, copySelectionMode: false, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), notesTimer: null, skeletonAt: 0, descriptions: new Map(),
@@ -236,6 +238,7 @@ function parseInboxUrl() {
   state.sort = allowedSorts.has(params.get("sort")) ? params.get("sort") : "score";
   state.source = params.get("source") || "";
   state.remote = params.get("remote") === "1";
+  state.tag = params.get("tag") || "";
   state.focus = params.get("focus") === "1";
   state.selectedKey = selectedKeyFromPath();
 }
@@ -248,6 +251,7 @@ function inboxUrl(selectedKey = state.selectedKey) {
   if (state.sort !== "score") params.set("sort", state.sort);
   if (state.source) params.set("source", state.source);
   if (state.remote) params.set("remote", "1");
+  if (state.tag) params.set("tag", state.tag);
   if (state.focus) params.set("focus", "1");
   return `${path}${params.size ? `?${params}` : ""}`;
 }
@@ -332,7 +336,8 @@ function filteredJobs() {
   })).filter(({ job, fuzzy }) => fuzzy >= 0
     && (state.status === "all" || job.status === state.status)
     && (!state.source || sourceList(job).includes(state.source))
-    && (!state.remote || isRemote(job)));
+    && (!state.remote || isRemote(job))
+    && (!state.tag || hasTag(job, state.tag)));
   matches.sort((left, right) => {
     if (query && right.fuzzy !== left.fuzzy) return right.fuzzy - left.fuzzy;
     if (state.sort === "company") return `${left.job.company} ${left.job.title}`.localeCompare(`${right.job.company} ${right.job.title}`);
@@ -380,6 +385,7 @@ function activeFilterChips() {
   if (state.query) chips.push(["query", `Search: ${state.query}`]);
   if (state.source) chips.push(["source", state.source]);
   if (state.remote) chips.push(["remote", "Remote"]);
+  if (state.tag) chips.push(["tag", `Tag: ${state.tag}`]);
   return chips.map(([key, label]) => `<button class="filter-chip interactive" type="button" data-clear-filter="${key}" aria-label="Remove ${escapeHtml(label)} filter"><span>${escapeHtml(label)}</span>${icons.close}</button>`).join("");
 }
 
@@ -464,9 +470,9 @@ function renderVirtualRows() {
 }
 
 function emptyListMarkup() {
-  const archive = state.status === "archived" && !state.query && !state.source && !state.remote;
+  const archive = state.status === "archived" && !state.query && !state.source && !state.remote && !state.tag;
   if (archive) return '<div class="list-empty"><h2>Nothing archived.</h2><p>Roles you dismiss wait here in case you change your mind.</p></div>';
-  const filtered = Boolean(state.query || state.source || state.remote || state.status !== "new");
+  const filtered = Boolean(state.query || state.source || state.remote || state.tag || state.status !== "new");
   return `<div class="list-empty"><h2>${filtered ? "No roles match this view." : "Your inbox is clear."}</h2><p>${filtered ? "Change or clear the active filters." : "New roles will appear here when the scout finds them."}</p>${filtered ? '<button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button>' : ""}</div>`;
 }
 
@@ -676,7 +682,7 @@ function detailMarkup(job) {
       ${atGlanceMarkup(job)}
       ${skillMatchMarkup(job)}
       ${descriptionMarkup(job)}
-      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl><div class="posting-detail-actions">${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}<button class="text-button interactive" type="button" data-edit-posting ${pending ? 'aria-disabled="true"' : ""}>Edit posting</button></div></section>
+      <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.manual_tags || []).join(", "))}${factItem("Rule tags", (job.rule_tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl><div class="posting-detail-actions">${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}<button class="text-button interactive" type="button" data-edit-posting ${pending ? 'aria-disabled="true"' : ""}>Edit posting</button><button class="text-button interactive" type="button" data-add-tag>Add tag</button></div></section>
       <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><div class="activity-status-control"><span>Correct status</span>${statusSelectMarkup(job, "data-job-status-select")}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
@@ -694,7 +700,7 @@ function bulkBarMarkup() {
   const actions = selectionArchived()
     ? '<button class="text-button interactive" type="button" data-bulk-restore>Restore</button>'
     : `${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button>`;
-  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="text-button interactive" type="button" data-bulk-hide>Hide…</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="text-button interactive" type="button" data-bulk-tags aria-haspopup="menu" aria-expanded="false">Tags</button><button class="text-button interactive" type="button" data-bulk-hide>Hide…</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
 }
 
 function selectionArchived() {
@@ -2022,6 +2028,83 @@ async function removeFromQueue(key) {
 
 // --- hiding jobs ---
 // the scout never shows them again
+
+// --- tags ---
+
+function tagFocus(keys) {
+  return recordFocus(`#job-list-layer .job-row[data-job-key="${CSS.escape(keys[0])}"]`, ".inbox-list h1, #tracker-title");
+}
+
+function tagMenuItems(keys) {
+  const jobs = keys.map(trackedJob).filter(Boolean);
+  return [
+    { label: "Add tag…", run: () => addTag(keys) },
+    { label: "Remove tag…", disabled: !removableTags(jobs).length, run: () => removeTag(keys) },
+  ];
+}
+
+function addTag(keys, trigger = null) {
+  const count = keys.length;
+  const known = tagOptions(state.jobs);
+  openEditor({
+    title: count > 1 ? `Tag ${new Intl.NumberFormat().format(count)} jobs` : "Add tag",
+    intro: "Rules never take off a tag you add here.", trigger, focusBack: tagFocus(keys), submit: "Add tag",
+    fields: [{ name: "tag", label: "Tag", value: "", required: true, maxlength: 40, help: known.length ? `In use: ${known.slice(0, 8).join(", ")}` : "" }],
+    save: ({ tag }) => saveTags(keys, cleanTag(tag), false),
+  });
+}
+
+function removeTag(keys, trigger = null) {
+  const options = removableTags(keys.map(trackedJob).filter(Boolean));
+  if (!options.length) return;
+  const format = new Intl.NumberFormat();
+  openEditor({
+    title: keys.length > 1 ? "Remove a tag from these jobs" : "Remove tag", intro: "Tags from rules stay. Edit or pause the rule to change those.",
+    trigger, focusBack: tagFocus(keys), submit: "Remove tag", always: true,
+    fields: [{ name: "tag", label: "Tag", value: options[0].tag, options: options.map((item) => [item.tag, keys.length > 1 ? `${item.tag} (${format.format(item.count)})` : item.tag]) }],
+    save: (changes) => saveTags(keys, changes.tag ?? options[0].tag, true),
+  });
+}
+
+// undo reverts only these rows
+async function saveTags(keys, tag, remove) {
+  if (!tag) return "Add a tag of up to 40 characters.";
+  const jobs = keys.flatMap((key) => [state.jobs.find((job) => job.dedupe_key === key), state.trackerData?.applications?.find((job) => job.dedupe_key === key)]).filter(Boolean);
+  const before = jobs.map((job) => [job, { manual_tags: job.manual_tags, tags: job.tags }]);
+  for (const job of jobs) Object.assign(job, withManualTag(job, tag, remove));
+  renderJobSurface();
+  const { body, error } = await companyWrite("/api/v1/job-tags", { method: "POST", body: JSON.stringify({ dedupe_keys: keys, tag, remove }) }, "Couldn't save the tag. Retry shortly.");
+  if (error) {
+    for (const [job, old] of before) Object.assign(job, old);
+    renderJobSurface();
+    return error;
+  }
+  jobsWriteLanded(); trackerWriteLanded();
+  const changed = body.changed;
+  const count = new Intl.NumberFormat().format(changed.length);
+  const many = keys.length > 1;
+  if (!changed.length) { showSnackbar(remove ? `No job had “${body.tag}” any more.` : `Already tagged “${body.tag}”.`); return ""; }
+  const message = remove
+    ? many ? `Removed “${body.tag}” from ${count} ${changed.length === 1 ? "job" : "jobs"}.` : `Removed “${body.tag}”.`
+    : many ? `Tagged ${count} ${changed.length === 1 ? "job" : "jobs"} “${body.tag}”.` : `Tagged “${body.tag}”.`;
+  offerUndoSnackbar(message, changed.map((key) => `tags:${key}`), () => undoTags(body.ids, body.tag, !remove));
+  return "";
+}
+
+// another tab may have retagged
+async function undoTags(ids, tag, remove) {
+  const { status, body, error } = await companyWrite("/api/v1/job-tags/undo", { method: "POST", body: JSON.stringify({ ids, remove }) }, "Couldn't undo the tag.");
+  if (error && status !== 409) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  for (const key of body.changed || []) {
+    for (const job of [state.jobs.find((item) => item.dedupe_key === key), state.trackerData?.applications?.find((item) => item.dedupe_key === key)]) {
+      if (job) Object.assign(job, withManualTag(job, tag, remove));
+    }
+  }
+  renderJobSurface();
+  jobsWriteLanded(); trackerWriteLanded();
+  if (status === 409) showSnackbar("Couldn't undo. These tags changed in another tab.");
+  else showSnackbar(remove ? "Tag removed." : "Tag restored.");
+}
 
 function hideInboxJobs(keys, trigger) {
   const order = filteredJobs().map((job) => job.dedupe_key);
@@ -4196,6 +4279,9 @@ function openFilters(trigger) {
   const sources = [...new Set(state.jobs.flatMap(sourceList))].sort((a, b) => a.localeCompare(b));
   sourceOptions.innerHTML = `<label class="check-row"><input type="radio" name="source" value="" ${state.source ? "" : "checked"}><span>Any source</span></label>${sources.map((source) => `<label class="check-row"><input type="radio" name="source" value="${escapeHtml(source)}" ${state.source === source ? "checked" : ""}><span>${escapeHtml(source)}</span></label>`).join("")}`;
   remoteFilter.checked = state.remote;
+  const tags = tagOptions(state.jobs);
+  tagGroup.hidden = !tags.length && !state.tag;
+  tagOptionsList.innerHTML = `<label class="check-row"><input type="radio" name="tag" value="" ${state.tag ? "" : "checked"}><span>Any tag</span></label>${tags.map((tag) => `<label class="check-row"><input type="radio" name="tag" value="${escapeHtml(tag)}" ${hasTag({ tags: [tag] }, state.tag) ? "checked" : ""}><span>${escapeHtml(tag)}</span></label>`).join("")}`;
   savedViewName.value = "";
   filterDialog.showModal();
   sourceOptions.querySelector("input:checked")?.focus();
@@ -4411,14 +4497,14 @@ function moveSelection(delta) {
 }
 
 function clearAllFilters() {
-  state.query = ""; state.status = "all"; state.source = ""; state.remote = false; state.scrollTop = 0; syncInboxUrl(); renderInbox();
+  state.query = ""; state.status = "all"; state.source = ""; state.remote = false; state.tag = ""; state.scrollTop = 0; syncInboxUrl(); renderInbox();
 }
 
 function applySavedView(index) {
   const view = state.savedViews[index];
   if (!view) return;
   const filters = view.filters || {};
-  state.query = filters.query || ""; state.status = allowedStatuses.has(filters.status) ? filters.status : "all"; state.sort = allowedSorts.has(view.sort) ? view.sort : "score"; state.source = filters.source || ""; state.remote = Boolean(filters.remote); state.scrollTop = 0; syncInboxUrl(); renderInbox();
+  state.query = filters.query || ""; state.status = allowedStatuses.has(filters.status) ? filters.status : "all"; state.sort = allowedSorts.has(view.sort) ? view.sort : "score"; state.source = filters.source || ""; state.remote = Boolean(filters.remote); state.tag = filters.tag || ""; state.scrollTop = 0; syncInboxUrl(); renderInbox();
 }
 
 async function saveCurrentView() {
@@ -4429,7 +4515,7 @@ async function saveCurrentView() {
     const response = await fetch("/api/v1/saved-views", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ name, filters: { query: state.query, status: state.status, source: state.source, remote: state.remote }, sort: state.sort, pinned: true }),
+      body: JSON.stringify({ name, filters: { query: state.query, status: state.status, source: state.source, remote: state.remote, tag: state.tag }, sort: state.sort, pinned: true }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The view could not be saved.");
     const saved = (await response.json()).saved_view;
@@ -4611,6 +4697,8 @@ const trackerItems = [
   { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
   { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`${c.table ? ".tracker-table tr" : ".board-card"}[data-tracker-key="${CSS.escape(c.key)}"]`, "#tracker-title") }) },
+  { label: "Add tag…", run: (c) => addTag([c.key]) },
+  { label: "Remove tag…", when: (c) => (c.job.manual_tags || []).length > 0, run: (c) => removeTag([c.key]) },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
   { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
     trigger: c.el.querySelector("button[data-menu-trigger]"),
@@ -4694,6 +4782,8 @@ const objectMenus = [
       { label: "Dismiss", shortcut: "x", when: (c) => c.bulk || c.job.status !== "archived", run: (c) => performDecision("archived", "Dismissed", c.bulk ? null : [c.key]) },
       { label: "Dismiss company", when: (c) => c.bulk, run: () => dismissSelectedCompanies() },
       { label: "Restore", when: (c) => c.bulk ? selectionArchived() : c.job.status === "archived", run: (c) => performDecision("new", "Restored", c.bulk ? null : [c.key]) },
+      { label: "Add tag…", divider: true, run: (c) => addTag(c.bulk ? [...state.selectedKeys] : [c.key]) },
+      { label: "Remove tag…", when: (c) => removableTags(c.bulk ? [...state.selectedKeys].map(trackedJob).filter(Boolean) : [c.job]).length > 0, run: (c) => removeTag(c.bulk ? [...state.selectedKeys] : [c.key]) },
       { label: "Copy", divider: true, run: (c) => copyInboxJobs(c.bulk ? filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)) : [c.job]) },
       { label: (c) => state.selectedKeys.has(c.key) ? "Deselect" : "Select", run: (c) => { if (state.selectedKeys.has(c.key)) state.selectedKeys.delete(c.key); else state.selectedKeys.add(c.key); syncVisibleJobSelection(); } },
       { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideInboxJobs(c.bulk ? [...state.selectedKeys] : [c.key], c.el) },
@@ -4986,6 +5076,10 @@ document.addEventListener("click", (event) => {
   }
   if (event.target.closest("[data-dismiss-company]")) { dismissSelectedCompanies(); return; }
   if (event.target.closest("[data-bulk-restore]")) { performDecision("new", "Restored"); return; }
+  const bulkTags = event.target.closest("[data-bulk-tags]");
+  if (bulkTags) { toggleMenu(bulkTags, tagMenuItems([...state.selectedKeys]), { label: "Tags" }); return; }
+  const addTagButton = event.target.closest("[data-add-tag]");
+  if (addTagButton && state.selectedKey) { addTag([state.selectedKey], addTagButton); return; }
   if (event.target.closest("[data-bulk-hide]")) { hideInboxJobs([...state.selectedKeys], event.target.closest("[data-bulk-hide]")); return; }
   if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
   const tab = event.target.closest("[data-status-tab]");
@@ -4996,6 +5090,7 @@ document.addEventListener("click", (event) => {
     if (chip.dataset.clearFilter === "query") state.query = "";
     if (chip.dataset.clearFilter === "source") state.source = "";
     if (chip.dataset.clearFilter === "remote") state.remote = false;
+    if (chip.dataset.clearFilter === "tag") state.tag = "";
     syncInboxUrl(); renderInbox(); return;
   }
   if (event.target.closest("[data-clear-all-filters]")) { clearAllFilters(); return; }
@@ -5281,10 +5376,10 @@ document.addEventListener("paste", (event) => {
 filterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const data = new FormData(filterForm);
-  state.source = String(data.get("source") || ""); state.remote = remoteFilter.checked; state.scrollTop = 0; filterDialog.close(); syncInboxUrl(); renderInbox();
+  state.source = String(data.get("source") || ""); state.remote = remoteFilter.checked; state.tag = String(data.get("tag") || ""); state.scrollTop = 0; filterDialog.close(); syncInboxUrl(); renderInbox();
 });
 
-document.querySelector("#clear-filters").addEventListener("click", () => { state.source = ""; state.remote = false; sourceOptions.querySelector('input[value=""]')?.click(); remoteFilter.checked = false; });
+document.querySelector("#clear-filters").addEventListener("click", () => { state.source = ""; state.remote = false; state.tag = ""; sourceOptions.querySelector('input[value=""]')?.click(); tagOptionsList.querySelector('input[value=""]')?.click(); remoteFilter.checked = false; });
 document.querySelector("#save-view-button").addEventListener("click", saveCurrentView);
 commandInput.addEventListener("input", () => { commandSelection = 0; renderCommands(); });
 commandInput.addEventListener("keydown", (event) => {
