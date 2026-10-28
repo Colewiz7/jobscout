@@ -29,7 +29,7 @@ class Confirms:
         self._pending[confirm_id] = (now + self.ttl, fingerprint(tool, args), context)
         return confirm_id
 
-    # single use, and only for the exact call that was previewed
+    # stops replay and swapped args
     def redeem(self, confirm_id: str, tool: str, args: dict):
         held = self._pending.pop(confirm_id, None)
         if held is None:

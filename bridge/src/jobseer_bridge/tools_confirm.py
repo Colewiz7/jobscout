@@ -101,7 +101,7 @@ class ConfirmTools:
         src, dst = self._company(source), self._company(target)
         return self.client.send("POST", "/api/v1/companies/%s/merge" % key_path(src["key"]), {"target": dst["key"]})
 
-    @tool("write", "Undo a company merge by merge_id. Refused with a conflict if either company changed since.", routes=("/api/v1/company-merges/",))
+    @tool("write", "Undo a company merge by merge_id. Refused with a conflict if either company changed since.", routes=("/api/v1/company-merges/", "/undo"))
     def company_merge_undo(self, merge_id: int, expected_revision: int | None = None) -> dict:
         return self.client.send("POST", "/api/v1/company-merges/%d/undo" % merge_id, drop_none({"expected_revision": expected_revision}))
 
@@ -133,7 +133,7 @@ class ConfirmTools:
             return held
         return self.client.send("POST", "/api/v1/capture", body)
 
-    @tool("confirm", "Change a job's eligibility verdict override. override and restore bypass a do_not_apply verdict and take two steps with confirm_id; revoke turns the guard back on.", routes=("/eligibility/override",))
+    @tool("confirm", "Change a job's eligibility verdict override. override and restore bypass a do_not_apply verdict and take two steps with confirm_id; revoke turns the guard back on.", routes=("/eligibility/override", "/eligibility/override/restore"))
     def eligibility_override(self, key: str, action: Literal["override", "revoke", "restore"], note: str | None = None, ids: list[int] | None = None, confirm_id: str | None = None) -> dict:
         path = "/api/v1/jobs/%s/eligibility/override" % key_path(key)
         if action == "revoke":

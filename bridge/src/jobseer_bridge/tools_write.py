@@ -35,7 +35,7 @@ class WriteTools:
                 return held
         return self.client.send("POST", "/api/v1/job-tags", {"dedupe_keys": keys, "tag": tag, "remove": remove})
 
-    @tool("write", "Edit a posting's company, title, URL or pasted description text. Returns an edit id.", routes=("/api/v1/jobs/", "/posting", "/api/v1/posting-edits/"))
+    @tool("write", "Edit a posting's company, title, URL or pasted description text. Returns an edit id.", routes=("/posting",))
     def job_edit(self, key: str, company: str | None = None, title: str | None = None, url: str | None = None, description: str | None = None) -> dict:
         body = drop_none({"company": company, "title": title, "url": url, "description": description})
         if not body:

@@ -19,7 +19,7 @@ class ApiError(Exception):
 
 
 class Conflict(ApiError):
-    # the server sends the current value beside the error
+    # lets callers retry without refetch
     @property
     def current(self) -> dict:
         return {key: value for key, value in self.body.items() if key != "error"}
@@ -32,12 +32,7 @@ def key_path(key: str) -> str:
 class Client:
     def __init__(self, config: Config, transport: httpx.BaseTransport | None = None):
         self.config = config
-        self._http = httpx.Client(
-            base_url=config.url,
-            headers=config.auth_headers(),
-            timeout=config.timeout,
-            transport=transport,
-        )
+        self._http = httpx.Client(base_url=config.url, headers=config.auth_headers(), timeout=config.timeout, transport=transport)
         self._token: str | None = None
         self._session: dict | None = None
         self._jobs: dict[bool, tuple[float, dict]] = {}
@@ -75,6 +70,8 @@ class Client:
         return reply.text
 
     def send(self, method: str, path: str, body: dict | None = None) -> dict:
+        if self.config.readonly:
+            raise BridgeError("this bridge is read-only")
         self._jobs.clear()
         try:
             self.session()
@@ -92,7 +89,7 @@ class Client:
 
     def _write(self, method: str, path: str, body: dict | None) -> httpx.Response:
         headers = {"X-CSRF-Token": self._token or "", "Origin": self.config.origin}
-        # the server leaves an unread body on a kept-alive socket
+        # unread body breaks keep-alive
         extra = {} if body is None else {"json": body}
         return self._http.request(method, path, headers=headers, **extra)
 

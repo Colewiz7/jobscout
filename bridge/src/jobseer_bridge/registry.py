@@ -12,7 +12,7 @@ class Spec:
     hints: dict = field(default_factory=dict)
 
 
-# routes name the dashboard paths a tool wraps, for the coverage test
+# stops new routes slipping by
 def tool(kind: str, description: str, routes=(), **hints):
     assert kind in KINDS
 

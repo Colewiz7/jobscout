@@ -7,8 +7,7 @@ name = "jobseer-bridge"
 version = "0.1.0"
 description = "Stdio tool server that drives JobSeer through its dashboard HTTP API"
 requires-python = ">=3.12"
-# mcp is pinned after comparing 1.30 with 2.3: same features here, but 2.x
-# adds a second http stack (httpx2) and imports slower.
+# 1.30 pinned, 2.x is heavier
 dependencies = [
     "httpx>=0.28,<1",
     "mcp==1.30.0",
@@ -24,6 +23,6 @@ jobseer-bridge = "jobseer_bridge.__main__:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-# ../src is the dashboard under test
+# needed to import the dashboard
 pythonpath = ["src", "../src"]
 testpaths = ["tests"]

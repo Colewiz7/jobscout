@@ -1,8 +1,67 @@
 # jobseer bridge
 
 Stdio tool server that lets a tool client manage JobSeer through the dashboard's
-own HTTP API. It is a separate package: nothing here is part of the root
-install, the image or CI.
+own HTTP API. It is a thin client: the dashboard keeps every safety check (hidden
+job rules, eligibility gate, revisions, CSRF). This package is separate from the
+root install, so nothing here is part of the image, requirements or CI.
+
+## Run
+
+    python3.12 -m venv .venv
+    .venv/bin/pip install -e .
+    JOBSEER_URL=http://127.0.0.1:8080 .venv/bin/jobseer-bridge
+
+Point it at a local demo dashboard (`python -m jobscout dashboard --demo`) first.
+The server speaks the stdio tool protocol, so register the `jobseer-bridge`
+command and its env in your client's server config.
+
+| env | meaning |
+| --- | --- |
+| `JOBSEER_URL` | dashboard address, default `http://127.0.0.1:8080` |
+| `JOBSEER_READONLY` | `1` registers only the read tools and refuses writes |
+| `JOBSEER_CACHE_TTL` | seconds to reuse the inbox list, default 10 |
+| `JOBSEER_AUTHENTIK_USER` | send the proxy headers, for a local non-demo server only |
+| `JOBSEER_AUTHENTIK_APP`, `JOBSEER_AUTHENTIK_OUTPOST` | header values, defaults `jobseer` and `local` |
+
+There is no token handling and no live address built in. Every result is wrapped as
+`{"target": <url>, "data": ...}` so you can see which server answered.
+
+## Behaviour
+
+- One keep-alive connection. `GET /jobs` is cached for a few seconds and dropped on any write.
+- Writes fetch the session for the CSRF token, send the cookie, token and a matching
+  Origin. A 403 refetches the session once and retries once.
+- Writes send the current `expected_*` or `revision` value unless you pass one. A 409 comes back as
+  `{"ok": false, "conflict": true, "message": ..., "current": ...}` rather than an error.
+- `job_capture` refuses non-https and local or private targets before it previews, because the
+  server fetches the address. The dashboard itself only requires https.
+- Confirm tools return a preview and a short-lived `confirm_id` (two minutes, single use, tied to the
+  exact arguments). Repeat the call with the id to apply it.
+
+## Known limits
+
+- The rule on/off route ignores revisions, so the bridge checks the revision itself just before
+  the toggle. That check is not atomic; a change in that gap is not caught. Making it atomic needs
+  a change in the dashboard.
+- Deleting a follow-up has no restore route, and removing a profile template, document or story is
+  permanent. Both sit behind preview and confirm; the profile diff preview is the safeguard.
+
+## Tools
+
+read (11, always on): `status`, `inbox_list`, `job_get`, `queue_get`, `tracker_get`,
+`companies_list`, `company_get`, `rules_list`, `views_list`, `profile_get`, `interviews_ics`
+
+write (16): `job_set_status`, `jobs_tag` (confirm above 10 jobs), `job_edit`, `queue_reorder`,
+`board_reorder`, `apply_session`, `interview_save`, `reminder_save`, `contact_save`, `company_save`,
+`rule_save`, `view_save`, `profile_context_set`, plus the undo tools `jobs_hide_undo`,
+`restore_record`, `company_merge_undo`
+
+confirm (8, two steps): `jobs_hide`, `delete_record`, `company_merge`, `company_hide`,
+`profile_update` (shows a diff, fails if the profile moved after the preview), `connections_import`,
+`job_capture`, `eligibility_override`
+
+Skipped on purpose: activity feed, summary worker routes, tag and posting-edit undo, copy bookkeeping.
+The list lives in `src/jobseer_bridge/skipped.py`.
 
 ## Test
 
@@ -10,5 +69,6 @@ install, the image or CI.
     .venv/bin/pip install -r ../requirements.txt -e '.[test]'
     make test
 
-Tests start the dashboard in-process with the demo store, so no database or
-network is needed.
+Tests start the dashboard in-process with the demo store, so no database or network is needed.
+`tests/test_route_coverage.py` fails when a mutating dashboard route has no tool and is not in
+`skipped.py`. Set `JOBSCOUT_TEST_DSN` to also run `tests/test_pg_smoke.py` against Postgres.

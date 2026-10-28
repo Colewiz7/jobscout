@@ -14,12 +14,7 @@ class ApplyTools:
                     return row["revision"]
         raise BridgeError("record %d not found" % record_id)
 
-    @tool(
-        "write",
-        "Drive an apply session. start: begin with the queue or listed keys. update: record applied or skipped jobs or end the session. check: live-check one posting. mark_applied: record the application with a resume document id. next_step: set a job's next step.",
-        routes=("/api/v1/queue/session", "/api/v1/queue/check", "/api/v1/applications/", "/applied", "/next-step"),
-        openWorldHint=True,
-    )
+    @tool("write", "Drive an apply session. start: begin with the queue or listed keys. update: record applied or skipped jobs or end the session. check: live-check one posting. mark_applied: record the application with a resume document id. next_step: set a job's next step.", routes=("/api/v1/queue/session", "/api/v1/queue/session/", "/api/v1/queue/check", "/api/v1/applications/", "/applied", "/next-step"), openWorldHint=True)
     def apply_session(self, action: Literal["start", "update", "check", "mark_applied", "next_step"], key: str | None = None, keys: list[str] | None = None, session_id: int | None = None, applied: list[str] | None = None, skipped: list[dict] | None = None, ended: bool | None = None, expected_revision: int | None = None, document_id: str | None = None, next_step: str | None = None, expected_next_step: str | None = None) -> dict:
         if action == "start":
             return self.client.send("POST", "/api/v1/queue/session", drop_none({"dedupe_keys": keys}))
@@ -44,11 +39,7 @@ class ApplyTools:
         body = {"next_step": next_step, "expected_next_step": expected_next_step}
         return self.client.send("PUT", "/api/v1/applications/%s/next-step" % key_path(key), body)
 
-    @tool(
-        "write",
-        "Create an interview (key and starts_at) or change one (id). Changes send the interview's current revision unless you pass expected_revision. Use cancelled to cancel.",
-        routes=("/api/v1/interviews", "/api/v1/interviews/"),
-    )
+    @tool("write", "Create an interview (key and starts_at) or change one (id). Changes send the interview's current revision unless you pass expected_revision. Use cancelled to cancel.", routes=("/api/v1/interviews", "/api/v1/interviews/"))
     def interview_save(self, id: int | None = None, key: str | None = None, starts_at: str | None = None, ends_at: str | None = None, location: str | None = None, notes: str | None = None, cancelled: bool | None = None, expected_revision: int | None = None) -> dict:
         if id is None:
             need(key, "key")
@@ -59,11 +50,7 @@ class ApplyTools:
         body = drop_none({"starts_at": starts_at, "ends_at": ends_at, "location": location, "notes": notes, "cancelled": cancelled, "expected_revision": expected_revision})
         return self.client.send("PATCH", "/api/v1/interviews/%d" % id, body)
 
-    @tool(
-        "write",
-        "Create a follow-up (key, due_at, note) or act on one (id with action done, reopen, snooze or unsnooze). Actions send the current revision unless you pass expected_revision.",
-        routes=("/api/v1/reminders", "/api/v1/reminders/"),
-    )
+    @tool("write", "Create a follow-up (key, due_at, note) or act on one (id with action done, reopen, snooze or unsnooze). Actions send the current revision unless you pass expected_revision.", routes=("/api/v1/reminders", "/api/v1/reminders/"))
     def reminder_save(self, id: int | None = None, key: str | None = None, due_at: str | None = None, note: str | None = None, action: Literal["done", "reopen", "snooze", "unsnooze"] | None = None, until: str | None = None, expected_revision: int | None = None) -> dict:
         if id is None:
             need(key, "key")

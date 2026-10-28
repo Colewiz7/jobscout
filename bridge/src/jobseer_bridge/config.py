@@ -20,14 +20,7 @@ class Config:
     def from_env(cls, env=None) -> "Config":
         env = os.environ if env is None else env
         url = (env.get("JOBSEER_URL") or DEFAULT_URL).strip().rstrip("/")
-        return cls(
-            url=url,
-            readonly=(env.get("JOBSEER_READONLY") or "").strip().lower() in TRUE,
-            cache_ttl=float(env.get("JOBSEER_CACHE_TTL") or cls.cache_ttl),
-            authentik_user=env.get("JOBSEER_AUTHENTIK_USER") or None,
-            authentik_app=env.get("JOBSEER_AUTHENTIK_APP") or cls.authentik_app,
-            authentik_outpost=env.get("JOBSEER_AUTHENTIK_OUTPOST") or cls.authentik_outpost,
-        )
+        return cls(url=url, readonly=(env.get("JOBSEER_READONLY") or "").strip().lower() in TRUE, cache_ttl=float(env.get("JOBSEER_CACHE_TTL") or cls.cache_ttl), authentik_user=env.get("JOBSEER_AUTHENTIK_USER") or None, authentik_app=env.get("JOBSEER_AUTHENTIK_APP") or cls.authentik_app, authentik_outpost=env.get("JOBSEER_AUTHENTIK_OUTPOST") or cls.authentik_outpost)
 
     # urls end up in results
     def __post_init__(self):

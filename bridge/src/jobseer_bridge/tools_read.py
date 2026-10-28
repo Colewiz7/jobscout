@@ -6,7 +6,7 @@ DESCRIPTION_CAP = 20_000
 
 
 class ReadTools:
-    @tool("read", "Show the target server, feature flags and whether writes are enabled.", routes=("/api/v1/session",))
+    @tool("read", "Show the target server, feature flags and whether writes are enabled.")
     def status(self) -> dict:
         session = self.client.session(refresh=True)
         return {

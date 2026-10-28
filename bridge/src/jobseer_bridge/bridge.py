@@ -15,7 +15,7 @@ from .tools_records import RecordTools
 from .tools_write import WriteTools
 
 
-# compact text only, no duplicate structured copy
+# duplicate copy doubles the size
 def pack(payload) -> str:
     return json.dumps(payload, separators=(",", ":"), default=str)
 

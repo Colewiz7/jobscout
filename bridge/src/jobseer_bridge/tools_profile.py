@@ -4,11 +4,7 @@ from .registry import tool
 
 
 class ProfileTools:
-    @tool(
-        "confirm",
-        "Change the quick-fill profile. set_fields maps existing field keys to new values. upsert adds or updates rows in fields, documents, answer_templates or stories (matched by key, id or name; partial rows keep the rest). remove lists keys or ids to delete per section. Deleting a template, document or story is permanent. Two steps: the first call returns a diff and a confirm_id; repeat it with the id to save. The save fails if the profile changed after the preview.",
-        routes=("/api/v1/profile",),
-    )
+    @tool("confirm", "Change the quick-fill profile. set_fields maps existing field keys to new values. upsert adds or updates rows in fields, documents, answer_templates or stories (matched by key, id or name; partial rows keep the rest). remove lists keys or ids to delete per section. Deleting a template, document or story is permanent. Two steps: the first call returns a diff and a confirm_id; repeat it with the id to save. The save fails if the profile changed after the preview.", routes=("/api/v1/profile",))
     def profile_update(self, set_fields: dict[str, str] | None = None, upsert: dict[str, list[dict]] | None = None, remove: dict[str, list[str]] | None = None, confirm_id: str | None = None) -> dict:
         if not self.client.features().get("quick_fill"):
             raise BridgeError("quick-fill is off on this server")

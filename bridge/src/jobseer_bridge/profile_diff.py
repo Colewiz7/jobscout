@@ -3,7 +3,7 @@ import re
 
 from .client import BridgeError
 
-# section name: (identity key, label key)
+# diff needs stable row identity
 SECTIONS = {
     "fields": ("key", "label"),
     "documents": ("id", "name"),
