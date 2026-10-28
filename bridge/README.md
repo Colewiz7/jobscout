@@ -89,10 +89,86 @@ whether auth was accepted and the session user. It exits 0 on success and never 
 
 ## Remote mode
 
-`jobseer-bridge serve` is the network form of the server (full setup below). Confirm ids are held in
-the process memory and bound to the caller's token subject and client, so another caller's id is
-refused and does not use the original up. Because of that, run exactly one replica; a second one
-would not know the ids the first issued. A restart drops pending previews.
+`jobseer-bridge serve` runs the same tools over streamable HTTP so a hosted client can use them.
+The bridge is an OAuth resource server only: it checks bearer tokens and never issues them. Your
+identity provider does the sign-in. The stdio mode above is unchanged.
+
+    pip install '.[remote]'
+    jobseer-bridge serve
+
+**This endpoint can change live data.** Keep writes off unless you need them. The defaults are
+read-only (`JOBSEER_READONLY` unset means on) and the read tool list (`JOBSEER_TOOLS=read`). Writes need
+both `JOBSEER_READONLY=0` and a tool list that includes them; the stricter of the two always wins.
+
+It refuses to start unless these are set: `JOBSEER_AUTH_ISSUER`, `JOBSEER_AUTH_JWKS_URL`,
+`JOBSEER_AUTH_AUDIENCE`, `JOBSEER_AUTH_SUBJECT`, `JOBSEER_PUBLIC_URL`, `JOBSEER_ALLOWED_HOSTS`,
+`JOBSEER_ALLOWED_ORIGINS`. Issuer, key set and public addresses must be https; plain http is
+accepted only for loopback.
+
+| env | meaning |
+| --- | --- |
+| `JOBSEER_AUTH_ISSUER` | token issuer, matched exactly against `iss`, also advertised in the metadata |
+| `JOBSEER_AUTH_JWKS_URL` | where the signing keys are fetched from |
+| `JOBSEER_AUTH_AUDIENCE` | value that must appear in `aud` (the client id) |
+| `JOBSEER_AUTH_SUBJECT` | the one `sub` that may use the endpoint |
+| `JOBSEER_AUTH_SCOPE` | scope the token must carry, default `jobseer:mcp` |
+| `JOBSEER_PUBLIC_URL` | public address of the endpoint, for example `https://HOST/mcp`; the path must be `/mcp` |
+| `JOBSEER_ALLOWED_HOSTS` | comma list of exact `Host` values, `host` or `host:port`; wildcards, schemes and empty entries are refused |
+| `JOBSEER_ALLOWED_ORIGINS` | comma list of exact origins like `https://host[:port]`; `http` is allowed only for a loopback origin when the bind host is loopback |
+| `JOBSEER_BIND_HOST`, `JOBSEER_BIND_PORT` | listen address, default `127.0.0.1` and `8000` |
+| `JOBSEER_MAX_BODY` | request body cap in bytes, default 262144 |
+| `JOBSEER_READONLY` | read-only unless set to `0` |
+| `JOBSEER_TOOLS` | `read` (default), `all`, or a comma list of tool names |
+| `JOBSEER_RATE_LIMIT`, `JOBSEER_RATE_WINDOW` | calls allowed per window per subject, default 60 per 60 seconds; limit 0 turns it off |
+| `JOBSEER_AUDIT_LOG` | path of the audit file, unset means no audit |
+| `JOBSEER_URL`, `JOBSEER_TOKEN`, `JOBSEER_TOKEN_FILE`, `JOBSEER_USER` | the dashboard to drive and how to sign in to it, as above |
+
+Placeholders to start from (use your own values, and keep the app password in a mounted file):
+
+    JOBSEER_AUTH_ISSUER=https://auth.example.com/application/o/APP/
+    JOBSEER_AUTH_JWKS_URL=https://auth.example.com/application/o/APP/jwks/
+    JOBSEER_AUTH_AUDIENCE=CLIENT_ID
+    JOBSEER_AUTH_SUBJECT=USERNAME
+    JOBSEER_PUBLIC_URL=https://mcp.example.com/mcp
+    JOBSEER_ALLOWED_HOSTS=mcp.example.com
+    JOBSEER_ALLOWED_ORIGINS=https://client.example.com
+    JOBSEER_URL=https://jobseer.example.com
+    JOBSEER_TOKEN_FILE=/run/secrets/app-password
+
+What is checked on every request:
+
+- Only RS256 is accepted. `none` and HMAC tokens are refused, as are a wrong signature, issuer,
+  audience, subject or scope, and an expired token or one not yet valid (30 seconds of skew).
+- Keys are cached for five minutes. An unknown key id triggers one refetch at most every 30 seconds.
+  If the key set cannot be fetched, every token is refused.
+- The authorization server is assumed to ignore resource indicators, so the audience is checked
+  here instead.
+- `GET /healthz` answers `ok` without a token and nothing else.
+- Hosts and origins outside the allowed lists are rejected before any tool runs.
+
+**Single replica.** Confirm ids are held in process memory and bound to the caller's token subject
+and client. Another caller's id is refused and does not use the original up. A second replica would
+not know the first one's ids, so run exactly one. A restart drops pending previews.
+
+**Audit log.** With `JOBSEER_AUDIT_LOG` set, each call appends one JSON line: time, subject, tool
+name, SHA-256 of the arguments, status (`ok`, `error`, `rate_limited`, `denied`) and the confirm
+step (`previewed`, `applied`, `rejected`). Arguments, results and the `Authorization` header are
+never written, and known secrets are scrubbed from the text fields. If a write to the file fails a
+warning goes to stderr and the call is not blocked.
+
+**Capture hosts.** In remote mode `job_capture` only previews postings on Greenhouse, Lever, Ashby
+and Workday hosts (port 443), the sites the dashboard reads through their own APIs. A posting on any
+other site is refused, because the dashboard stores its address and later checks whether it is still
+live by fetching it and following redirects. The host is then resolved at preview time and refused
+if any returned address is not public. The DNS step is a pre-check only: the dashboard resolves the
+name again when it fetches, so an answer that changes in between is not caught. A test compares the
+site list with the dashboard's so the two cannot drift silently. Stdio mode still accepts any public
+https address.
+
+**Container.** `docker build -t jobseer-bridge bridge/` builds a slim image that runs as a
+non-root user, holds no secrets and starts `jobseer-bridge serve`. It writes nothing to disk, so a
+read-only root filesystem works. Pass the values above as env, mount the token file, and mount a
+writable volume if you use the audit log.
 
 ## Behaviour
 
@@ -102,7 +178,7 @@ would not know the ids the first issued. A restart drops pending previews.
 - Writes send the current `expected_*` or `revision` value unless you pass one. A 409 comes back as
   `{"ok": false, "conflict": true, "message": ..., "current": ...}` rather than an error.
 - `job_capture` refuses non-https and local or private targets before it previews, because the
-  server fetches the address. The dashboard itself only requires https.
+  server fetches the address. The dashboard itself only requires https. Remote mode is stricter, see above.
 - Confirm tools return a preview and a short-lived `confirm_id` (two minutes, single use, tied to the
   exact arguments). Repeat the call with the id to apply it.
 
