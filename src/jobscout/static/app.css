@@ -5372,3 +5372,26 @@ body.quick-fill-popout {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* tiny links are hard to hit */
+:is(.role-link, .today-strip a, .tracker-table td > a, .tracker-table th button, .board-card > a, .reminder-row a, .interview-list a, .original-link, .company-card-link) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+@media (pointer: coarse), (max-width: 599px) {
+  :root :is(button, select, summary, .interactive, .row-select, .role-link, .today-strip a, .tracker-table td > a, .tracker-table th button, .board-card > a, .reminder-row a, .interview-list a, .original-link, .status-tab, .company-card-link, .wordmark, input:not([type="checkbox"], [type="radio"], [type="hidden"])) {
+    min-width: 48px;
+    min-height: 48px;
+  }
+
+  .row-select {
+    display: inline-grid;
+    place-items: center;
+  }
+
+  #interview-form :is(input, select) {
+    min-height: 48px;
+  }
+}
