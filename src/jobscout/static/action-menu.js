@@ -106,7 +106,7 @@ function ensure(doc) {
   menu.className = "action-menu";
   menu.popover = "manual";
   menu.setAttribute("role", "menu");
-  menu.tabIndex = 0; // scroll region needs a stop; padding clicks keep focus
+  menu.tabIndex = 0; // scroll region needs focus stop
   menu.addEventListener("keydown", onKeydown);
   menu.addEventListener("focusout", (event) => {
     const to = event.relatedTarget;

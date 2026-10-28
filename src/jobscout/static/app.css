@@ -372,7 +372,7 @@ kbd {
   background: var(--surface-container-low);
 }
 
-/* keeps hidden labels from growing the page */
+/* hidden labels stay inside */
 .route-view {
   position: relative;
   min-width: 0;
@@ -726,7 +726,7 @@ dialog[open]::backdrop {
   border: 0 !important;
 }
 
-/* live regions sat 1px below the shell */
+/* live regions caused overflow */
 body > .visually-hidden {
   position: fixed !important;
   top: 0;
