@@ -6,6 +6,7 @@ import httpx
 from .client import ApiError, BridgeError, Client, Conflict
 from .config import Config
 from .registry import annotations, collect
+from .tools_apply import ApplyTools
 from .tools_read import ReadTools
 from .tools_write import WriteTools
 
@@ -15,7 +16,7 @@ def pack(payload) -> str:
     return json.dumps(payload, separators=(",", ":"), default=str)
 
 
-class Bridge(ReadTools, WriteTools):
+class Bridge(ReadTools, WriteTools, ApplyTools):
     def __init__(self, config: Config, client: Client | None = None):
         self.config = config
         self.client = client or Client(config)
