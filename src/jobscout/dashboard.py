@@ -142,6 +142,13 @@ def _expected_revision(payload: dict) -> int | None:
     return expected
 
 
+def _view_changes(payload: dict) -> dict:
+    unknown = sorted(set(payload) - {"name", "filters", "sort"})
+    if unknown:
+        raise ValueError(f"{unknown[0]} can't be edited")
+    return payload
+
+
 def _interview_changes(payload: dict) -> dict:
     unknown = sorted(set(payload) - {"starts_at", "ends_at", "location", "notes", "cancelled"})
     if unknown:
@@ -715,7 +722,10 @@ class PostgresStore:
             database.save_liveness(conn, key, result.status, result.evidence)
         return result
 
-    def save(self, key: str, status: str, notes: str | None, expected: str | None = None) -> dict:
+    def save(
+        self, key: str, status: str | None, notes: str | None,
+        expected: str | None = None, expected_notes: str | None = None,
+    ) -> dict:
         liveness = None
         effective_status = status
         if status == "queued":
@@ -724,10 +734,10 @@ class PostgresStore:
                 effective_status = "archived"
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            saved = database.save_application_state(conn, key, effective_status, notes, expected)
+            saved = database.save_application_state(conn, key, effective_status, notes, expected, expected_notes)
         return {
-            "saved": saved,
-            "status": effective_status,
+            "saved": saved is not None,
+            "status": saved or effective_status,
             "liveness": dataclasses.asdict(liveness) if liveness else None,
         }
 
@@ -855,10 +865,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.restore_interview(conn, interview_id)
 
-    def save_next_step(self, key: str, value: str) -> bool:
+    def save_next_step(self, key: str, value: str, expected: str | None = None) -> str | None:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_next_step(conn, key, value)
+            return database.save_next_step(conn, key, value, expected)
 
     def companies(self, name: str | None = None, *, include_account: bool = False) -> dict:
         jobs, companies = self._jobs(include_closed=True)
@@ -937,10 +947,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.restore_company_link(conn, link_id)
 
-    def save_company_note(self, name: str, body: str) -> dict:
+    def save_company_note(self, name: str, body: str, expected: str | None = None) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_company_note(conn, name, body)
+            return database.save_company_note(conn, name, body, expected)
 
     def save_contact(self, payload: dict, source: str = "manual") -> dict:
         with database.connect(self.dsn) as conn:
@@ -968,26 +978,37 @@ class PostgresStore:
     def import_connections(self, contacts: list[dict]) -> dict:
         return _import_connections(self, contacts)
 
-    def saved_views(self) -> list[dict]:
+    def saved_views(self) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.saved_views(conn)
 
-    def save_view(self, payload: dict) -> dict:
+    def create_view(self, payload: dict) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_view(
-                conn,
-                name=str(payload.get("name", "")),
-                filters=payload.get("filters") if isinstance(payload.get("filters"), dict) else {},
-                sort=str(payload.get("sort", "score")),
-                pinned=bool(payload.get("pinned", True)),
-            )
+            return database.create_view(conn, payload)
+
+    def update_view(self, view_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_view(conn, view_id, _view_changes(payload), expected)
 
     def delete_view(self, view_id: int) -> bool:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.delete_saved_view(conn, view_id)
+
+    def restore_view(self, view_id: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.restore_saved_view(conn, view_id)
+
+    def reorder_views(self, view_ids: list[int], expected: int) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.save_view_order(conn, view_ids, expected)
 
     def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
         with database.connect(self.dsn) as conn:
@@ -1004,15 +1025,12 @@ class PostgresStore:
             database.require_schema(conn)
             database.mark_quick_fill_copy(conn, dedupe_key, target_key)
 
-    def save_profile_context(self, payload: dict) -> dict:
+    def save_profile_field(self, payload: dict) -> dict | None:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.save_quick_fill_context(
-                conn,
-                dedupe_key=str(payload.get("dedupe_key", "")),
-                company=str(payload.get("company", "")),
-                answer_overrides=payload.get("answer_overrides", {}),
-                company_account=payload.get("company_account", {}),
+            return database.save_quick_fill_field(
+                conn, dedupe_key=str(payload.get("dedupe_key", "")),
+                company=str(payload.get("company", "")), field=payload.get("field"),
             )
 
     def eligibility(self, key: str) -> dict | None:
@@ -1266,6 +1284,7 @@ class DemoStore:
         self._descriptions: dict[str, dict] = {}
         self._saved_views: list[dict] = []
         self._next_view_id = 1
+        self._view_order_revision = 0
         self._profile_path = profile_path or DEFAULT_PROFILE
         self._profile = load_profile(self._profile_path)
         self._next_profile_id = 0
@@ -1585,8 +1604,11 @@ class DemoStore:
         )
         return {"id": action_id, "undone_at": dt.datetime.now(dt.timezone.utc)}
 
-    def save(self, key: str, status: str, notes: str | None, expected: str | None = None) -> dict:
-        if status not in database.APPLICATION_STATUSES:
+    def save(
+        self, key: str, status: str | None, notes: str | None,
+        expected: str | None = None, expected_notes: str | None = None,
+    ) -> dict:
+        if status is not None and status not in database.APPLICATION_STATUSES:
             raise ValueError(f"unknown application status: {status}")
         for row in self.rows:
             if row["dedupe_key"] == key:
@@ -1594,10 +1616,16 @@ class DemoStore:
                 if expected is not None and previous_status != expected:
                     raise database.StatusConflict(previous_status)
                 previous_notes = row.get("notes") or ""
+                if expected_notes is not None and previous_notes != expected_notes:
+                    raise database.ValueConflict(previous_notes)
+                # a notes edit skips the recheck
+                recheck = status == "queued"
+                if status is None:
+                    status = previous_status
                 if notes is None:
                     notes = previous_notes
                 effective_status = status
-                if status == "queued":
+                if recheck:
                     row.update(
                         liveness_status="closed" if row.get("closed") or not row.get("url") else "live",
                         liveness_checked_at=dt.datetime.now(dt.timezone.utc),
@@ -1629,7 +1657,7 @@ class DemoStore:
                     "liveness": {
                         "status": row.get("liveness_status"),
                         "evidence": row.get("liveness_evidence"),
-                    } if status == "queued" else None,
+                    } if recheck else None,
                 }
         return {"saved": False, "status": status, "liveness": None}
 
@@ -1880,16 +1908,18 @@ class DemoStore:
         self._complete_demo_followup(row["dedupe_key"])
         return copy.deepcopy(interview)
 
-    def save_next_step(self, key: str, value: str) -> bool:
+    def save_next_step(self, key: str, value: str, expected: str | None = None) -> str | None:
         if len(value) > 1_000:
             raise ValueError("next step is too long")
         row = next((item for item in self.rows if item["dedupe_key"] == key), None)
         if row is None:
-            return False
+            return None
+        if expected is not None and (row.get("next_step") or "") != expected:
+            raise database.ValueConflict(row.get("next_step") or "")
         row["next_step"] = value.strip()
         row["application_updated_at"] = dt.datetime.now(dt.timezone.utc)
         self._complete_demo_followup(key)
-        return True
+        return row["next_step"]
 
     def _company_counts(self) -> dict[str, dict]:
         counts: dict[str, dict] = {}
@@ -1927,7 +1957,7 @@ class DemoStore:
             "account_protected": not include_account,
         }}
 
-    def save_company_note(self, name: str, body: str) -> dict:
+    def save_company_note(self, name: str, body: str, expected: str | None = None) -> dict:
         if len(body) > 20_000:
             raise ValueError("company note is too long")
         if not database.company_key(name):
@@ -1935,6 +1965,9 @@ class DemoStore:
         key = database.resolve_company(self._company_registry(), name)
         if key is None:
             raise ValueError("company not found")
+        current = (self._company_notes.get(key) or {"body": ""})["body"]
+        if expected is not None and current != expected:
+            raise database.ValueConflict(current)
         note = {"body": body, "updated_at": dt.datetime.now(dt.timezone.utc)}
         self._company_notes[key] = note
         return copy.deepcopy(note)
@@ -2170,32 +2203,79 @@ class DemoStore:
     def import_connections(self, contacts: list[dict]) -> dict:
         return _import_connections(self, contacts)
 
-    def saved_views(self) -> list[dict]:
-        return [dict(view) for view in self._saved_views]
+    def _public_view(self, view: dict) -> dict:
+        return copy.deepcopy({key: value for key, value in view.items() if key != "deleted"})
 
-    def save_view(self, payload: dict) -> dict:
-        name = str(payload.get("name", "")).strip()
-        if not name or len(name) > 40:
+    def _view(self, view_id: int, *, deleted: bool = False) -> dict | None:
+        return next((view for view in self._saved_views if view["id"] == view_id and view["deleted"] == deleted), None)
+
+    def _live_view_named(self, name: str, other: int | None = None) -> dict | None:
+        return next((view for view in self._saved_views
+                     if view["name"] == name and not view["deleted"] and view["id"] != other), None)
+
+    def saved_views(self) -> dict:
+        live = sorted((view for view in self._saved_views if not view["deleted"]), key=lambda view: (view["position"], view["id"]))
+        return {"saved_views": [self._public_view(view) for view in live], "order_revision": self._view_order_revision}
+
+    def create_view(self, payload: dict) -> dict:
+        clean = {"filters": {}, "sort": "score", **database.normalize_view(payload)}
+        if "name" not in clean:
             raise ValueError("view name must be between 1 and 40 characters")
-        sort = str(payload.get("sort", "score"))
-        if sort not in {"score", "newest", "company"}:
-            raise ValueError("unknown saved-view sort")
-        existing = next((view for view in self._saved_views if view["name"] == name), None)
-        if existing is None:
-            existing = {"id": self._next_view_id, "name": name}
-            self._next_view_id += 1
-            self._saved_views.append(existing)
-        existing.update(
-            filters=dict(payload.get("filters") or {}),
-            sort=sort,
-            pinned=bool(payload.get("pinned", True)),
-        )
-        return dict(existing)
+        taken = self._live_view_named(clean["name"])
+        if taken is not None:
+            raise database.ViewNameTaken(self._public_view(taken))
+        now = dt.datetime.now(dt.timezone.utc)
+        view = {
+            "id": self._next_view_id, "name": clean["name"], "filters": clean["filters"], "sort": clean["sort"],
+            "pinned": True, "position": max((item["position"] for item in self._saved_views), default=-1) + 1,
+            "revision": 0, "created_at": now, "updated_at": now, "deleted": False,
+        }
+        self._next_view_id += 1
+        self._saved_views.append(view)
+        return self._public_view(view)
+
+    def update_view(self, view_id: int, payload: dict) -> dict | None:
+        payload = dict(payload)
+        expected = _expected_revision(payload)
+        clean = database.normalize_view(_view_changes(payload))
+        if not clean:
+            raise ValueError("nothing to change")
+        view = self._view(view_id)
+        if view is None:
+            return None
+        previous = self._public_view(view)
+        if expected is not None and view["revision"] != expected:
+            raise database.RecordConflict(previous)
+        if "name" in clean and self._live_view_named(clean["name"], view_id) is not None:
+            raise ValueError(f"A view named “{clean['name']}” already exists.")
+        view.update(clean, revision=view["revision"] + 1, updated_at=dt.datetime.now(dt.timezone.utc))
+        return {"view": self._public_view(view), "previous": previous}
 
     def delete_view(self, view_id: int) -> bool:
-        before = len(self._saved_views)
-        self._saved_views = [view for view in self._saved_views if view["id"] != view_id]
-        return len(self._saved_views) != before
+        view = self._view(view_id)
+        if view is not None:
+            view["deleted"] = True
+        return view is not None
+
+    def restore_view(self, view_id: int) -> dict | None:
+        view = self._view(view_id, deleted=True)
+        if view is None:
+            return None
+        if self._live_view_named(view["name"]) is not None:
+            raise ValueError(f"Another view is now named “{view['name']}”, so this one can't come back.")
+        view["deleted"] = False
+        return self._public_view(view)
+
+    def reorder_views(self, view_ids: list[int], expected: int) -> dict:
+        if len(view_ids) != len(set(view_ids)) or len(view_ids) > 500:
+            raise ValueError("view order contains duplicates or too many views")
+        live = {view["id"] for view in self._saved_views if not view["deleted"]}
+        if expected != self._view_order_revision or live != set(view_ids):
+            raise database.EditConflict("The saved views changed in another tab. Reload and retry.")
+        for position, view_id in enumerate(view_ids):
+            self._view(view_id)["position"] = position
+        self._view_order_revision += 1
+        return {"ids": view_ids, "order_revision": self._view_order_revision}
 
     def profile(self, dedupe_key: str | None = None, company: str | None = None) -> dict:
         profile = copy.deepcopy(self._profile)
@@ -2243,18 +2323,28 @@ class DemoStore:
             raise ValueError("invalid job or copy target")
         self._copied_fields.setdefault(dedupe_key, set()).add(target_key)
 
-    def save_profile_context(self, payload: dict) -> dict:
-        clean = database.normalize_quick_fill_context(
-            dedupe_key=str(payload.get("dedupe_key", "")),
-            company=str(payload.get("company", "")),
-            answer_overrides=payload.get("answer_overrides", {}),
-            company_account=payload.get("company_account", {}),
-        )
-        dedupe_key = clean["dedupe_key"]
-        company = clean["company"]
-        self._answer_overrides[dedupe_key] = clean["answer_overrides"]
-        self._company_accounts[database.resolve_company(self._company_registry(), company) or database.company_key(company)] = clean["company_account"]
-        return self.profile(dedupe_key, company)
+    def save_profile_field(self, payload: dict) -> dict | None:
+        clean = database.normalize_quick_fill_field(payload.get("field"))
+        dedupe_key, company = database.clean_context_keys(str(payload.get("dedupe_key", "")), str(payload.get("company", "")))
+        name = clean["name"]
+        if clean["kind"] == "override":
+            if not any(row["dedupe_key"] == dedupe_key for row in self.rows):
+                return None
+            record = self._answer_overrides.setdefault(dedupe_key, {})
+            current = record.get(name, "")
+        else:
+            key = database.resolve_company(self._company_registry(), company) or database.company_key(company)
+            record = self._company_accounts.setdefault(key, {
+                "company_name": company, "account_exists": None, "sign_in_email": "", "password_manager_url": "",
+            })
+            current = record.get(name)
+        if "expected" in clean and current != clean["expected"]:
+            raise database.ValueConflict(current)
+        if clean["kind"] == "override" and not clean["value"]:
+            record.pop(name, None)
+        else:
+            record[name] = clean["value"]
+        return {"profile": self.profile(dedupe_key, company), "value": clean["value"]}
 
     def eligibility(self, key: str) -> dict | None:
         description = self.description(key)
@@ -2807,7 +2897,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't export interviews. Retry shortly.")
                 return
             if parsed.path == "/api/v1/saved-views":
-                self._json({"saved_views": self.app.store.saved_views()})
+                self._json(self.app.store.saved_views())
                 return
             if parsed.path == "/api/v1/rules":
                 try:
@@ -3042,7 +3132,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return True
 
     def _record_route(self, path: str, method: str) -> bool:
-        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/"), ("link", "/api/v1/company-links/"), ("rule", "/api/v1/rules/")):
+        for kind, prefix in (("interview", "/api/v1/interviews/"), ("contact", "/api/v1/contacts/"), ("link", "/api/v1/company-links/"), ("rule", "/api/v1/rules/"), ("view", "/api/v1/saved-views/")):
             if not path.startswith(prefix):
                 continue
             rest = path.removeprefix(prefix)
@@ -3085,15 +3175,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             key = urllib.parse.unquote(parsed.path.removeprefix(prefix))
             if self._reject_hidden(key):
                 return
-            status = str(payload["status"])
             # absent notes stay as they are
             notes = None if payload.get("notes") is None else str(payload["notes"])
+            # a notes edit keeps the status
+            status = str(payload["status"]) if payload.get("status") is not None or notes is None else None
             if notes is not None and len(notes) > 20_000:
                 raise ValueError("notes are too long")
             # undo must not clobber newer moves
             expected = payload.get("expected_status")
             if expected is not None and expected not in database.APPLICATION_STATUSES:
                 raise ValueError("expected_status must be a job status")
+            expected_notes = payload.get("expected_notes")
+            if expected_notes is not None and not isinstance(expected_notes, str):
+                raise ValueError("expected_notes must be text")
             if self.app.quick_fill_enabled and status in {"queued", "applying"}:
                 eligibility = self.app.store.eligibility(key)
                 if eligibility and eligibility.get("verdict") == "do_not_apply":
@@ -3102,9 +3196,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "Override the eligibility verdict before applying.",
                     )
                     return
-            result = self.app.store.save(key, status, notes, expected)
+            result = self.app.store.save(key, status, notes, expected, expected_notes)
         except database.StatusConflict as error:
             self._json({"error": str(error), "status": error.status}, HTTPStatus.CONFLICT)
+            return
+        except database.ValueConflict as error:
+            self._json({"error": "These notes changed in another tab.", "notes": error.value}, HTTPStatus.CONFLICT)
             return
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
@@ -3526,9 +3623,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._require_write_security():
             return
         try:
-            saved = self.app.store.save_view(self._read_json())
+            saved = self.app.store.create_view(self._read_json())
         except (json.JSONDecodeError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except database.ViewNameTaken as taken:
+            # the client asks before replacing
+            self._json({"error": str(taken), "saved_view": taken.view}, HTTPStatus.CONFLICT)
             return
         except Exception:
             log.exception("could not save view")
@@ -3538,6 +3639,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/saved-views/order":
+            if not self._require_write_security():
+                return
+            try:
+                payload = self._read_json()
+                view_ids = payload.get("ids")
+                if not isinstance(view_ids, list) or not all(type(item) is int for item in view_ids):
+                    raise ValueError("ids must be a list of view ids")
+                expected = _expected_revision(payload)
+                if expected is None:
+                    raise ValueError("expected_revision is required; reload the views and retry")
+                order = self.app.store.reorder_views(view_ids, expected)
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except database.EditConflict as error:
+                self._error(HTTPStatus.CONFLICT, str(error))
+                return
+            except Exception:
+                log.exception("could not reorder saved views")
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't reorder the views. Retry shortly.")
+                return
+            self._json(order)
+            return
         if parsed.path == "/api/v1/rules/order":
             if not self._require_write_security():
                 return
@@ -3600,31 +3725,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if self._reject_hidden(key):
                 return
             try:
-                saved = self.app.store.save_next_step(
-                    key, str(self._read_json().get("next_step") or "")
-                )
+                payload = self._read_json()
+                expected = payload.get("expected_next_step")
+                if expected is not None and not isinstance(expected, str):
+                    raise ValueError("expected_next_step must be text")
+                saved = self.app.store.save_next_step(key, str(payload.get("next_step") or ""), expected)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except database.ValueConflict as error:
+                self._json({"error": "The next step changed in another tab.", "next_step": error.value}, HTTPStatus.CONFLICT)
                 return
             except Exception:
                 log.exception("could not update next step")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't update the next step. Retry shortly.")
                 return
-            if not saved:
+            if saved is None:
                 self._error(HTTPStatus.NOT_FOUND, "application not found")
                 return
-            self._json({"ok": True})
+            self._json({"ok": True, "next_step": saved})
             return
         if parsed.path == "/api/v1/companies/note":
             if not self._require_write_security():
                 return
             try:
                 payload = self._read_json()
+                expected = payload.get("expected_body")
+                if expected is not None and not isinstance(expected, str):
+                    raise ValueError("expected_body must be text")
                 note = self.app.store.save_company_note(
-                    str(payload.get("company") or ""), str(payload.get("body") or "")
+                    str(payload.get("company") or ""), str(payload.get("body") or ""), expected
                 )
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except database.ValueConflict as error:
+                self._json({"error": "The company note changed in another tab.", "note": {"body": error.value}}, HTTPStatus.CONFLICT)
                 return
             except Exception:
                 log.exception("could not save company note")
@@ -3685,7 +3821,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/v1/profile/context":
                 if self._reject_hidden(str(payload.get("dedupe_key") or "")):
                     return
-                profile = self.app.store.save_profile_context(payload)
+                # one field, so others stay
+                if "field" not in payload:
+                    raise ValueError("field is required; save one detail at a time")
+                written = self.app.store.save_profile_field(payload)
+                if written is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                self._json({"profile": _with_checks(written["profile"]), "value": written["value"]})
+                return
             else:
                 document = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
                 revision = document.get("revision")
@@ -3693,6 +3837,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not isinstance(revision, int) or isinstance(revision, bool):
                     raise ValueError("revision is required; reload the profile and retry")
                 profile = self.app.store.save_profile(document, revision)
+        except database.ValueConflict as error:
+            self._json({"error": "It changed in another tab.", "value": error.value}, HTTPStatus.CONFLICT)
+            return
         except database.ProfileConflict:
             self._json({
                 "error": "Your profile changed in another tab or window.",
@@ -3719,21 +3866,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith(override_prefix) and parsed.path.endswith(override_suffix):
             self._change_override(urllib.parse.unquote(parsed.path[len(override_prefix):-len(override_suffix)].rstrip("/")), restore=False)
             return
-        prefix = "/api/v1/saved-views/"
-        if not parsed.path.startswith(prefix):
-            self._error(HTTPStatus.NOT_FOUND, "not found")
-            return
-        if not self._require_write_security():
-            return
-        try:
-            view_id = int(parsed.path.removeprefix(prefix))
-        except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid saved view")
-            return
-        if not self.app.store.delete_view(view_id):
-            self._error(HTTPStatus.NOT_FOUND, "saved view not found")
-            return
-        self._json({"ok": True})
+        self._error(HTTPStatus.NOT_FOUND, "not found")
 
 
 class DashboardServer(ThreadingHTTPServer):

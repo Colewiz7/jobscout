@@ -592,6 +592,28 @@ MIGRATIONS = (
         alter table overview_jobs add column if not exists claim_id bigint not null default 0;
         """,
     ),
+    Migration(
+        28,
+        "saved_view_edits",
+        """
+        alter table saved_views add column if not exists deleted_at timestamptz;
+        alter table saved_views add column if not exists revision integer not null default 0;
+        alter table saved_views add column if not exists position integer;
+        update saved_views s set position = o.position
+          from (select id, row_number() over (order by pinned desc, lower(name), id) - 1 as position
+                  from saved_views) o
+         where o.id = s.id and s.position is null;
+        alter table saved_views alter column position set not null;
+        alter table saved_views drop constraint if exists saved_views_name_key;
+        create unique index if not exists saved_views_live_name_idx
+            on saved_views (name) where deleted_at is null;
+        create table if not exists saved_view_order (
+            id       boolean primary key default true check (id),
+            revision integer not null default 0
+        );
+        insert into saved_view_order (id) values (true) on conflict (id) do nothing;
+        """,
+    ),
 )
 
 

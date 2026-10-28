@@ -9,6 +9,7 @@ JOBSCOUT_TEST_DSN, e.g.
 """
 import datetime as dt
 import os
+import threading
 
 import pytest
 
@@ -33,6 +34,7 @@ def conn():
         cur.execute("drop table if exists rule_actions")
         cur.execute("drop table if exists rules")
         cur.execute("drop table if exists rule_order")
+        cur.execute("drop table if exists saved_view_order")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
         cur.execute("drop table if exists eligibility_overrides")
@@ -106,6 +108,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 25, "name": "eligibility_override_revokes"},
             {"version": 26, "name": "reminder_edits"},
             {"version": 27, "name": "activity_and_overview_dismissals"},
+            {"version": 28, "name": "saved_view_edits"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -686,23 +689,169 @@ def test_queue_order_skips_hidden_jobs(conn):
     assert database.save_queue_order(conn, [kept.dedupe_key]) == [kept.dedupe_key]
 
 
-def test_saved_views_are_server_backed_and_upsert_by_name(conn):
-    first = database.save_view(
-        conn,
-        name="Remote new",
-        filters={"status": "new", "remote": True, "ignored": "no"},
-        sort="newest",
+def test_saved_views_refuse_a_taken_name_and_keep_their_filters(conn):
+    first = database.create_view(
+        conn, {"name": "Remote new", "filters": {"status": "new", "remote": True, "tag": "Dream", "ignored": "no"}, "sort": "newest"}
     )
-    second = database.save_view(
-        conn,
-        name="Remote new",
-        filters={"status": "saved", "remote": True},
-        sort="score",
-    )
-    assert first["id"] == second["id"]
-    assert database.saved_views(conn)[0]["filters"] == {"status": "saved", "remote": True}
-    assert database.delete_saved_view(conn, first["id"])
-    assert database.saved_views(conn) == []
+    with pytest.raises(database.ViewNameTaken) as taken:
+        database.create_view(conn, {"name": "Remote new", "filters": {"status": "saved"}})
+    listed = database.saved_views(conn)
+
+    assert taken.value.view["id"] == first["id"]
+    assert listed["saved_views"][0]["filters"] == {"status": "new", "remote": True, "tag": "Dream"}
+    assert listed["order_revision"] == 0
+
+
+def test_a_view_edit_needs_the_revision_it_read(conn):
+    view = database.create_view(conn, {"name": "Remote"})
+    database.create_view(conn, {"name": "Saved"})
+    renamed = database.update_view(conn, view["id"], {"name": "Remote only"}, 0)
+    with pytest.raises(database.RecordConflict):
+        database.update_view(conn, view["id"], {"name": "Stale"}, 0)
+    with pytest.raises(ValueError, match="already exists"):
+        database.update_view(conn, view["id"], {"name": "Saved"})
+
+    assert renamed["previous"]["name"] == "Remote"
+    assert renamed["view"]["revision"] == 1
+    assert database.update_view(conn, 999, {"name": "x"}) is None
+
+
+def test_a_deleted_view_restores_in_its_old_place(conn):
+    ids = [database.create_view(conn, {"name": name})["id"] for name in ("One", "Two", "Three")]
+    assert database.delete_saved_view(conn, ids[1])
+    assert not database.delete_saved_view(conn, ids[1])
+    # its name is free while gone
+    reused = database.create_view(conn, {"name": "Two"})
+    with pytest.raises(ValueError, match="can't come back"):
+        database.restore_saved_view(conn, ids[1])
+    database.delete_saved_view(conn, reused["id"])
+    restored = database.restore_saved_view(conn, ids[1])
+
+    assert restored["name"] == "Two"
+    assert [view["id"] for view in database.saved_views(conn)["saved_views"]] == ids
+    assert database.restore_saved_view(conn, ids[1]) is None
+
+
+def test_a_stale_view_order_is_a_conflict(conn):
+    ids = [database.create_view(conn, {"name": name})["id"] for name in ("One", "Two")]
+    moved = database.save_view_order(conn, ids[::-1], 0)
+    with pytest.raises(database.EditConflict):
+        database.save_view_order(conn, ids, 0)
+    with pytest.raises(database.EditConflict):
+        database.save_view_order(conn, ids[:1], 1)
+
+    assert moved["order_revision"] == 1
+    assert [view["id"] for view in database.saved_views(conn)["saved_views"]] == ids[::-1]
+
+
+def test_notes_and_next_step_undo_refuse_newer_text(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    assert database.save_application_state(conn, key, "applied", "first") == "applied"
+    assert database.save_application_state(conn, key, None, "second") == "applied"
+    with pytest.raises(database.ValueConflict) as notes:
+        database.save_application_state(conn, key, None, "first", expected_notes="first")
+    assert notes.value.value == "second"
+    database.save_application_state(conn, key, None, "first", expected_notes="second")
+
+    assert database.save_next_step(conn, key, "  Email Sam ") == "Email Sam"
+    with pytest.raises(database.ValueConflict) as step:
+        database.save_next_step(conn, key, "", "Something else")
+    assert step.value.value == "Email Sam"
+    assert database.save_next_step(conn, key, "", "Email Sam") == ""
+    assert database.save_next_step(conn, "missing", "x") is None
+    row = next(item for item in database.dashboard_postings(conn) if item["dedupe_key"] == key)
+    assert (row["status"], row["notes"]) == ("applied", "first")
+
+
+def test_a_quick_fill_field_write_keeps_other_fields_and_refuses_newer_values(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    save = lambda **field: database.save_quick_fill_field(conn, dedupe_key=key, company="Acme", field=field)
+    save(kind="override", name="Why us", value="Mine", expected="")
+    save(kind="override", name="Why now", value="Other field")
+    save(kind="account", name="sign_in_email", value="me@example.com", expected="")
+    save(kind="override", name="Why us", value="Theirs", expected="Mine")
+    with pytest.raises(database.ValueConflict) as conflict:
+        save(kind="override", name="Why us", value="", expected="Mine")
+    with pytest.raises(database.ValueConflict) as account:
+        save(kind="account", name="sign_in_email", value="", expected="old@example.com")
+    profile = save(kind="override", name="Why us", value="", expected="Theirs")["profile"]
+
+    assert conflict.value.value == "Theirs"
+    assert account.value.value == "me@example.com"
+    assert profile["answer_overrides"] == {"Why now": "Other field"}
+    assert profile["company_account"]["sign_in_email"] == "me@example.com"
+    assert database.save_quick_fill_field(conn, dedupe_key="missing", company="Acme", field={"kind": "override", "name": "x", "value": "y"}) is None
+
+
+def test_a_quick_fill_field_write_returns_what_it_stored_not_a_reread(conn, monkeypatch):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    original = database.profile_data
+    landed = []
+
+    # another tab lands after our commit
+    def reread_after_another_tab(read_conn, **kwargs):
+        if landed:
+            return original(read_conn, **kwargs)
+        landed.append(True)
+        with database.connect(DSN) as other:
+            database.save_quick_fill_field(other, dedupe_key=posting.dedupe_key, company="Acme",
+                                           field={"kind": "account", "name": "sign_in_email", "value": "theirs@example.com"})
+        return original(read_conn, **kwargs)
+
+    monkeypatch.setattr(database, "profile_data", reread_after_another_tab)
+    result = database.save_quick_fill_field(conn, dedupe_key=posting.dedupe_key, company="Acme",
+                                            field={"kind": "account", "name": "sign_in_email", "value": " mine@example.com "})
+
+    assert result["value"] == "mine@example.com"
+    assert result["profile"]["company_account"]["sign_in_email"] == "theirs@example.com"
+
+
+def test_concurrent_field_writes_keep_each_others_columns(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    errors = []
+
+    def write(name, values):
+        try:
+            with database.connect(DSN) as own:
+                for value in values:
+                    database.save_quick_fill_field(own, dedupe_key=posting.dedupe_key, company="Acme",
+                                                   field={"kind": "account", "name": name, "value": value})
+        except Exception as error:  # surfaced below
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=write, args=("sign_in_email", [f"me{index}@example.com" for index in range(30)])),
+        threading.Thread(target=write, args=("password_manager_url", [f"https://vault.example.com/{index}" for index in range(30)])),
+        threading.Thread(target=write, args=("account_exists", [index % 2 == 0 for index in range(30)])),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    account = database.profile_data(conn, dedupe_key=posting.dedupe_key, company="Acme")["company_account"]
+    assert errors == []
+    assert account["sign_in_email"] == "me29@example.com"
+    assert account["password_manager_url"] == "https://vault.example.com/29"
+    assert account["account_exists"] is False
+
+
+def test_a_company_note_undo_refuses_a_newer_note(conn):
+    database.upsert_open(conn, [_p()])
+    database.save_company_note(conn, "Acme", "Met at the fair.")
+    database.save_company_note(conn, "Acme", "Referral from Sam.")
+    with pytest.raises(database.ValueConflict) as conflict:
+        database.save_company_note(conn, "Acme", "", "Met at the fair.")
+    database.save_company_note(conn, "Acme", "Met at the fair.", "Referral from Sam.")
+
+    assert conflict.value.value == "Referral from Sam."
+    assert database.company_records(conn, "Acme")["note"]["body"] == "Met at the fair."
 
 
 def test_dashboard_warns_about_another_recent_company_application(conn):
@@ -796,7 +945,8 @@ def test_profile_save_checks_and_bumps_the_revision(conn):
 
 
 def _override(conn, dedupe_key, overrides):
-    return database.save_quick_fill_context(conn, dedupe_key=dedupe_key, company="Acme", answer_overrides=overrides, company_account={})
+    for name, body in overrides.items():
+        database.save_quick_fill_field(conn, dedupe_key=dedupe_key, company="Acme", field={"kind": "override", "name": name, "value": body})
 
 
 def test_template_rename_carries_job_overrides(conn):
@@ -854,17 +1004,13 @@ def test_quick_fill_job_context_is_server_backed(conn):
     posting = _p()
     database.upsert_open(conn, [posting])
     database.mark_quick_fill_copy(conn, posting.dedupe_key, "field:email")
-    profile = database.save_quick_fill_context(
-        conn,
-        dedupe_key=posting.dedupe_key,
-        company="Acme",
-        answer_overrides={"Why this role": "Because the work is concrete."},
-        company_account={
-            "account_exists": True,
-            "sign_in_email": "me@example.invalid",
-            "password_manager_url": "https://passwords.example.invalid/acme",
-        },
-    )
+    for field in (
+        {"kind": "override", "name": "Why this role", "value": "Because the work is concrete."},
+        {"kind": "account", "name": "account_exists", "value": True},
+        {"kind": "account", "name": "sign_in_email", "value": "me@example.invalid"},
+        {"kind": "account", "name": "password_manager_url", "value": "https://passwords.example.invalid/acme"},
+    ):
+        profile = database.save_quick_fill_field(conn, dedupe_key=posting.dedupe_key, company="Acme", field=field)["profile"]
 
     assert profile["copied_fields"] == ["field:email"]
     assert profile["answer_overrides"] == {"Why this role": "Because the work is concrete."}
@@ -1961,7 +2107,7 @@ def test_a_status_write_with_a_stale_expectation_changes_nothing(conn):
     with pytest.raises(database.StatusConflict) as conflict:
         database.save_application_state(conn, key, "new", "", expected="queued")
     assert conflict.value.status == "saved"
-    assert database.save_application_state(conn, key, "queued", "", expected="saved") is True
+    assert database.save_application_state(conn, key, "queued", "", expected="saved") == "queued"
     with conn.cursor() as cur:
         cur.execute("select status from application_states where dedupe_key = %s", (key,))
         assert cur.fetchone()["status"] == "queued"
@@ -1974,7 +2120,7 @@ def test_a_status_only_write_keeps_the_current_notes(conn):
     database.save_application_state(conn, key, "rejected", "old")
     database.save_application_state(conn, key, "rejected", "written after the batch")
 
-    assert database.save_application_state(conn, key, "applied", None, expected="rejected") is True
+    assert database.save_application_state(conn, key, "applied", None, expected="rejected") == "applied"
     with conn.cursor() as cur:
         cur.execute("select status, notes from application_states where dedupe_key = %s", (key,))
         assert dict(cur.fetchone()) == {"status": "applied", "notes": "written after the batch"}

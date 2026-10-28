@@ -945,58 +945,169 @@ def queued_description_texts(conn: psycopg.Connection) -> dict[str, str]:
         return {row["dedupe_key"]: row["description_text"] for row in cur.fetchall()}
 
 
-def saved_views(conn: psycopg.Connection) -> list[dict]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            select id, name, filters, sort, pinned, created_at, updated_at
-              from saved_views
-             order by pinned desc, lower(name), id
-            """
-        )
-        return cur.fetchall()
+_VIEW_COLUMNS = "id, name, filters, sort, pinned, position, revision, created_at, updated_at"
+VIEW_SORTS = frozenset({"score", "newest", "company"})
+VIEW_FILTERS = ("query", "status", "source", "remote", "tag")
 
 
-def save_view(
-    conn: psycopg.Connection,
-    *,
-    name: str,
-    filters: dict,
-    sort: str,
-    pinned: bool = True,
-) -> dict:
-    name = name.strip()
-    if not name or len(name) > 40:
-        raise ValueError("view name must be between 1 and 40 characters")
-    if sort not in {"score", "newest", "company"}:
-        raise ValueError("unknown saved-view sort")
-    allowed = {"query", "status", "source", "remote"}
-    clean = {key: filters[key] for key in allowed if key in filters}
+# a live view has the name
+class ViewNameTaken(Exception):
+    def __init__(self, view: dict):
+        super().__init__(f"A view named “{view['name']}” already exists.")
+        self.view = view
+
+
+def normalize_view(payload: dict) -> dict:
+    clean: dict = {}
+    if "name" in payload:
+        name = str(payload["name"] or "").strip()
+        if not name or len(name) > 40:
+            raise ValueError("view name must be between 1 and 40 characters")
+        clean["name"] = name
+    if "sort" in payload:
+        if payload["sort"] not in VIEW_SORTS:
+            raise ValueError("unknown saved-view sort")
+        clean["sort"] = payload["sort"]
+    if "filters" in payload:
+        filters = payload["filters"]
+        if not isinstance(filters, dict):
+            raise ValueError("filters must be an object")
+        clean["filters"] = {key: filters[key] for key in VIEW_FILTERS if key in filters}
+    return clean
+
+
+def saved_views(conn: psycopg.Connection) -> dict:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            insert into saved_views (name, filters, sort, pinned)
-            values (%s, %s, %s, %s)
-            on conflict (name) do update set
-                filters = excluded.filters,
-                sort = excluded.sort,
-                pinned = excluded.pinned,
-                updated_at = now()
-            returning id, name, filters, sort, pinned, created_at, updated_at
-            """,
-            (name, Json(clean), sort, pinned),
-        )
-        row = cur.fetchone()
+        # waits out a reorder in flight
+        cur.execute("select revision from saved_view_order for share")
+        revision = cur.fetchone()["revision"]
+        cur.execute(f"select {_VIEW_COLUMNS} from saved_views where deleted_at is null order by position, id")
+        views = cur.fetchall()
     conn.commit()
-    return row
+    return {"saved_views": views, "order_revision": revision}
+
+
+def _live_view_named(cur, name: str, other: int | None = None) -> dict | None:
+    cur.execute(
+        f"select {_VIEW_COLUMNS} from saved_views where name = %s and deleted_at is null and id is distinct from %s",
+        (name, other),
+    )
+    return cur.fetchone()
+
+
+def create_view(conn: psycopg.Connection, payload: dict) -> dict:
+    clean = {"filters": {}, "sort": "score", **normalize_view(payload)}
+    if "name" not in clean:
+        raise ValueError("view name must be between 1 and 40 characters")
+    with conn.cursor() as cur:
+        # creates queue behind reorders
+        cur.execute("select revision from saved_view_order for update")
+        taken = _live_view_named(cur, clean["name"])
+        if taken is not None:
+            conn.rollback()
+            raise ViewNameTaken(taken)
+        cur.execute(
+            f"""
+            insert into saved_views (name, filters, sort, pinned, position)
+            values (%s, %s, %s, true, (select coalesce(max(position) + 1, 0) from saved_views))
+            returning {_VIEW_COLUMNS}
+            """,
+            (clean["name"], Json(clean["filters"]), clean["sort"]),
+        )
+        view = cur.fetchone()
+    conn.commit()
+    return view
+
+
+def update_view(conn: psycopg.Connection, view_id: int, changes: dict, expected: int | None = None) -> dict | None:
+    clean = normalize_view(changes)
+    if not clean:
+        raise ValueError("nothing to change")
+    with conn.cursor() as cur:
+        cur.execute("select revision from saved_view_order for update")
+        cur.execute(
+            f"select {_VIEW_COLUMNS} from saved_views where id = %s and deleted_at is null for update",
+            (view_id,),
+        )
+        previous = cur.fetchone()
+        if previous is None:
+            conn.rollback()
+            return None
+        # undo must not undo another tab
+        if expected is not None and previous["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(previous)
+        if "name" in clean and _live_view_named(cur, clean["name"], view_id) is not None:
+            conn.rollback()
+            raise ValueError(f"A view named “{clean['name']}” already exists.")
+        merged = {**previous, **clean}
+        cur.execute(
+            f"""
+            update saved_views set name = %s, filters = %s, sort = %s,
+                   revision = revision + 1, updated_at = now()
+             where id = %s returning {_VIEW_COLUMNS}
+            """,
+            (merged["name"], Json(merged["filters"]), merged["sort"], view_id),
+        )
+        view = cur.fetchone()
+    conn.commit()
+    return {"view": view, "previous": previous}
 
 
 def delete_saved_view(conn: psycopg.Connection, view_id: int) -> bool:
+    # restore puts it back in place
     with conn.cursor() as cur:
-        cur.execute("delete from saved_views where id = %s", (view_id,))
-        changed = cur.rowcount == 1
+        cur.execute(
+            "update saved_views set deleted_at = now() where id = %s and deleted_at is null returning id",
+            (view_id,),
+        )
+        deleted = cur.fetchone() is not None
     conn.commit()
-    return changed
+    return deleted
+
+
+def restore_saved_view(conn: psycopg.Connection, view_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("select revision from saved_view_order for update")
+        cur.execute(
+            f"select {_VIEW_COLUMNS} from saved_views where id = %s and deleted_at is not null for update",
+            (view_id,),
+        )
+        view = cur.fetchone()
+        if view is None:
+            conn.rollback()
+            return None
+        if _live_view_named(cur, view["name"]) is not None:
+            conn.rollback()
+            raise ValueError(f"Another view is now named “{view['name']}”, so this one can't come back.")
+        cur.execute(
+            f"update saved_views set deleted_at = null where id = %s returning {_VIEW_COLUMNS}",
+            (view_id,),
+        )
+        view = cur.fetchone()
+    conn.commit()
+    return view
+
+
+def save_view_order(conn: psycopg.Connection, view_ids: list[int], expected: int) -> dict:
+    if len(view_ids) != len(set(view_ids)) or len(view_ids) > 500:
+        raise ValueError("view order contains duplicates or too many views")
+    with conn.cursor() as cur:
+        cur.execute("select revision from saved_view_order for update")
+        revision = cur.fetchone()["revision"]
+        cur.execute("select id from saved_views where deleted_at is null for update")
+        # a stale tab has another order
+        if revision != expected or {row["id"] for row in cur.fetchall()} != set(view_ids):
+            conn.rollback()
+            raise EditConflict("The saved views changed in another tab. Reload and retry.")
+        cur.executemany(
+            "update saved_views set position = %s where id = %s",
+            list(enumerate(view_ids)),
+        )
+        cur.execute("update saved_view_order set revision = revision + 1 returning revision")
+        revision = cur.fetchone()["revision"]
+    conn.commit()
+    return {"ids": view_ids, "order_revision": revision}
 
 
 class ProfileConflict(Exception):
@@ -1112,27 +1223,22 @@ def mark_quick_fill_copy(conn: psycopg.Connection, dedupe_key: str, target_key: 
     conn.commit()
 
 
-def normalize_quick_fill_context(
-    *,
-    dedupe_key: str,
-    company: str,
-    answer_overrides: dict,
-    company_account: dict,
-) -> dict:
-    """Validate job-specific answers and password-free ATS account metadata."""
-    dedupe_key = dedupe_key.strip()
-    company = company.strip()
+def clean_context_keys(dedupe_key: str, company: str) -> tuple[str, str]:
+    dedupe_key, company = dedupe_key.strip(), company.strip()
     if not dedupe_key or len(dedupe_key) > 500 or not company or len(company) > 240:
         raise ValueError("invalid job or company")
-    if not isinstance(answer_overrides, dict) or len(answer_overrides) > 50:
-        raise ValueError("answer_overrides must be an object with at most 50 entries")
-    overrides = {}
-    for name, body in answer_overrides.items():
-        clean_name = str(name).strip()
-        clean_body = str(body)
-        if not clean_name or len(clean_name) > 120 or len(clean_body) > 10_000:
-            raise ValueError("answer override name or body is invalid")
-        overrides[clean_name] = clean_body
+    return dedupe_key, company
+
+
+def _clean_override(name, body) -> tuple[str, str]:
+    clean_name = str(name).strip()
+    clean_body = str(body)
+    if not clean_name or len(clean_name) > 120 or len(clean_body) > 10_000:
+        raise ValueError("answer override name or body is invalid")
+    return clean_name, clean_body
+
+
+def _clean_account(company_account) -> dict:
     if not isinstance(company_account, dict):
         raise ValueError("company_account must be an object")
     exists = company_account.get("account_exists")
@@ -1146,65 +1252,90 @@ def normalize_quick_fill_context(
         parsed = urllib.parse.urlsplit(manager_url)
         if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("password manager link must be a valid HTTPS URL")
-    return {
-        "dedupe_key": dedupe_key,
-        "company": company,
-        "answer_overrides": overrides,
-        "company_account": {
-            "company_name": company,
-            "account_exists": exists,
-            "sign_in_email": email,
-            "password_manager_url": manager_url,
-        },
-    }
+    return {"account_exists": exists, "sign_in_email": email, "password_manager_url": manager_url}
 
 
-def save_quick_fill_context(
-    conn: psycopg.Connection,
-    *,
-    dedupe_key: str,
-    company: str,
-    answer_overrides: dict,
-    company_account: dict,
-) -> dict:
-    clean = normalize_quick_fill_context(
-        dedupe_key=dedupe_key,
-        company=company,
-        answer_overrides=answer_overrides,
-        company_account=company_account,
-    )
-    dedupe_key = clean["dedupe_key"]
-    company = clean["company"]
-    overrides = clean["answer_overrides"]
-    account = clean["company_account"]
+ACCOUNT_FIELDS = ("account_exists", "sign_in_email", "password_manager_url")
+_ACCOUNT_BLANK = {"account_exists": None, "sign_in_email": "", "password_manager_url": ""}
 
+
+def normalize_quick_fill_field(field) -> dict:
+    # one override or account property
+    if not isinstance(field, dict) or field.get("kind") not in {"override", "account"}:
+        raise ValueError("field must be an override or an account property")
+    if field["kind"] == "override":
+        name, value = _clean_override(field.get("name"), field.get("value") or "")
+    else:
+        name = field.get("name")
+        if name not in ACCOUNT_FIELDS:
+            raise ValueError("unknown company account property")
+        value = _clean_account({name: field.get("value")})[name]
+    clean = {"kind": field["kind"], "name": name, "value": value}
+    if "expected" in field:
+        expected = field["expected"]
+        if name == "account_exists" and expected not in {True, False, None}:
+            raise ValueError("expected must be true, false, or null")
+        if name != "account_exists" and not isinstance(expected, str):
+            raise ValueError("expected must be text")
+        clean["expected"] = expected
+    return clean
+
+
+def save_quick_fill_field(conn: psycopg.Connection, *, dedupe_key: str, company: str, field: dict) -> dict | None:
+    # newer values elsewhere stay put
+    clean = normalize_quick_fill_field(field)
+    dedupe_key, company = clean_context_keys(dedupe_key, company)
+    name = clean["name"]
     with conn.cursor() as cur:
-        # merged jobs share the target's
-        key = resolve_company(company_rows(cur), company) or company_key(company)
-        cur.execute("delete from answer_template_overrides where dedupe_key = %s", (dedupe_key,))
-        cur.executemany(
-            "insert into answer_template_overrides (dedupe_key, template_name, body) values (%s, %s, %s)",
-            [(dedupe_key, name, body) for name, body in overrides.items()],
-        )
-        cur.execute(
-            """
-            insert into company_accounts
-                (company_key, company_name, account_exists, sign_in_email, password_manager_url)
-            values (%s, %s, %s, %s, %s)
-            on conflict (company_key) do update set
-                company_name = excluded.company_name,
-                account_exists = excluded.account_exists,
-                sign_in_email = excluded.sign_in_email,
-                password_manager_url = excluded.password_manager_url,
-                updated_at = now()
-            """,
-            (
-                key, company, account["account_exists"],
-                account["sign_in_email"], account["password_manager_url"],
-            ),
-        )
+        if clean["kind"] == "override":
+            if not _lock_job(cur, dedupe_key):
+                conn.rollback()
+                return None
+            cur.execute(
+                "select body from answer_template_overrides where dedupe_key = %s and template_name = %s",
+                (dedupe_key, name),
+            )
+            current = (cur.fetchone() or {"body": ""})["body"]
+        else:
+            key = resolve_company(_read_companies(cur), company) or company_key(company)
+            # no row to lock before the first write
+            cur.execute("select pg_advisory_xact_lock(hashtext('company_accounts:' || %s))", (key,))
+            cur.execute(
+                "select account_exists, sign_in_email, password_manager_url from company_accounts where company_key = %s",
+                (key,),
+            )
+            current = {**_ACCOUNT_BLANK, **(cur.fetchone() or {})}[name]
+        if "expected" in clean and current != clean["expected"]:
+            conn.rollback()
+            raise ValueConflict(current)
+        # undo needs what this wrote
+        if clean["kind"] == "override" and clean["value"]:
+            cur.execute(
+                """
+                insert into answer_template_overrides (dedupe_key, template_name, body) values (%s, %s, %s)
+                on conflict (dedupe_key, template_name) do update set body = excluded.body, updated_at = now()
+                returning body as value
+                """,
+                (dedupe_key, name, clean["value"]),
+            )
+            written = cur.fetchone()["value"]
+        elif clean["kind"] == "override":
+            cur.execute("delete from answer_template_overrides where dedupe_key = %s and template_name = %s", (dedupe_key, name))
+            written = ""
+        else:
+            # only the named column, ACCOUNT_FIELDS checked
+            cur.execute(
+                f"""
+                insert into company_accounts (company_key, company_name, {name}) values (%s, %s, %s)
+                on conflict (company_key) do update set
+                    company_name = excluded.company_name, {name} = excluded.{name}, updated_at = now()
+                returning {name} as value
+                """,
+                (key, company, clean["value"]),
+            )
+            written = cur.fetchone()["value"]
     conn.commit()
-    return profile_data(conn, dedupe_key=dedupe_key, company=company)
+    return {"profile": profile_data(conn, dedupe_key=dedupe_key, company=company), "value": written}
 
 
 def normalize_profile_data(payload: dict) -> dict:
@@ -1649,15 +1780,29 @@ class StatusConflict(Exception):
         self.status = status
 
 
+# text changed since caller looked
+class ValueConflict(Exception):
+    def __init__(self, value: str):
+        super().__init__("It changed in another tab.")
+        self.value = value
+
+
 # expected guards undo against newer moves
 def save_application_state(
-    conn: psycopg.Connection, dedupe_key: str, status: str, notes: str | None, expected: str | None = None
-) -> bool:
-    if status not in APPLICATION_STATUSES:
+    conn: psycopg.Connection,
+    dedupe_key: str,
+    status: str | None,
+    notes: str | None,
+    expected: str | None = None,
+    expected_notes: str | None = None,
+) -> str | None:
+    # none means an unknown job
+    if status is not None and status not in APPLICATION_STATUSES:
         raise ValueError(f"unknown application status: {status}")
     with conn.cursor() as cur:
         if not _lock_job(cur, dedupe_key):
-            return False
+            conn.rollback()
+            return None
         cur.execute(
             "select status, notes from application_states where dedupe_key = %s",
             (dedupe_key,),
@@ -1668,6 +1813,11 @@ def save_application_state(
         if expected is not None and previous != expected:
             conn.rollback()
             raise StatusConflict(previous)
+        if expected_notes is not None and previous_notes != expected_notes:
+            conn.rollback()
+            raise ValueConflict(previous_notes)
+        if status is None:
+            status = previous
         if notes is None:
             notes = previous_notes
         cur.execute(
@@ -1740,7 +1890,7 @@ def save_application_state(
                 (dedupe_key,),
             )
     conn.commit()
-    return True
+    return status
 
 
 def liveness_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None:
@@ -2279,26 +2429,43 @@ def restore_interview(conn: psycopg.Connection, interview_id: int) -> dict | Non
     return interview
 
 
-def save_next_step(conn: psycopg.Connection, dedupe_key: str, value: str) -> bool:
+def save_next_step(
+    conn: psycopg.Connection, dedupe_key: str, value: str, expected: str | None = None
+) -> str | None:
+    # none means no application
     if len(value) > 1_000:
         raise ValueError("next step is too long")
     with conn.cursor() as cur:
+        if not _lock_job(cur, dedupe_key):
+            conn.rollback()
+            return None
+        cur.execute(
+            "select next_step from application_states where dedupe_key = %s for update",
+            (dedupe_key,),
+        )
+        existing = cur.fetchone()
+        if existing is None:
+            conn.rollback()
+            return None
+        # undo must not clobber newer steps
+        if expected is not None and (existing["next_step"] or "") != expected:
+            conn.rollback()
+            raise ValueConflict(existing["next_step"] or "")
         cur.execute(
             """
             update application_states set next_step = %s, updated_at = now()
-             where dedupe_key = %s returning dedupe_key
+             where dedupe_key = %s returning next_step
             """,
             (value.strip(), dedupe_key),
         )
-        saved = cur.fetchone() is not None
-        if saved:
-            cur.execute(
-                """
-                update reminders set status = 'done', completed_at = now()
-                 where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
-                """,
-                (dedupe_key,),
-            )
+        saved = cur.fetchone()["next_step"]
+        cur.execute(
+            """
+            update reminders set status = 'done', completed_at = now()
+             where dedupe_key = %s and kind = 'follow_up' and status <> 'done'
+            """,
+            (dedupe_key,),
+        )
     conn.commit()
     return saved
 
@@ -2369,18 +2536,25 @@ def company_account(conn: psycopg.Connection, name: str) -> dict | None:
         return cur.fetchone()
 
 
-def save_company_note(conn: psycopg.Connection, name: str, body: str) -> dict:
+def save_company_note(conn: psycopg.Connection, name: str, body: str, expected: str | None = None) -> dict:
     if len(body) > 20_000:
         raise ValueError("company note is too long")
     if not company_key(name):
         raise ValueError("company name is required")
     with conn.cursor() as cur:
         key = resolve_company(_read_companies(cur), name)
-        cur.execute("select name, display_name from companies where key = %s", (key,))
+        # one note writer per company
+        cur.execute("select name, display_name from companies where key = %s for update", (key,))
         company = cur.fetchone()
         if company is None:
             conn.rollback()
             raise ValueError("company not found")
+        if expected is not None:
+            cur.execute("select body from company_notes where company_key = %s", (key,))
+            current = (cur.fetchone() or {"body": ""})["body"]
+            if current != expected:
+                conn.rollback()
+                raise ValueConflict(current)
         cur.execute(
             """
             insert into company_notes (company_key, company_name, body)

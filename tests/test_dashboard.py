@@ -380,7 +380,7 @@ def test_writes_to_a_hidden_job_are_refused(quick_fill_dashboard):
         ("POST", "/api/v1/jobs/demo%3A1/eligibility/override", {"note": "stale"}),
         ("POST", "/api/v1/queue/check", {"dedupe_key": "demo:1"}),
         ("POST", "/api/v1/profile/copy", {"dedupe_key": "demo:1", "target_key": "name"}),
-        ("PUT", "/api/v1/profile/context", {"dedupe_key": "demo:1", "company": "Cloudflare"}),
+        ("PUT", "/api/v1/profile/context", {"dedupe_key": "demo:1", "company": "Cloudflare", "field": {"kind": "override", "name": "Why", "value": "stale"}}),
         ("PUT", "/api/v1/queue/order", {"dedupe_keys": ["demo:1"]}),
         ("PUT", "/api/v1/tracker/board-order", {"status": "applied", "dedupe_keys": ["demo:1"]}),
         ("PATCH", "/api/v1/jobs/demo%3A1/posting", {"title": "stale"}),
@@ -691,19 +691,20 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
                 "/api/v1/profile/context",
                 json={"dedupe_key": "demo:2", "company": "Datadog"},
             )
-            context = client.put(
+            context = [client.put(
                 "/api/v1/profile/context",
                 headers={"X-CSRF-Token": csrf},
-                json={
-                    "dedupe_key": "demo:2",
-                    "company": "Datadog",
-                    "answer_overrides": {"Why this role?": "This answer is specific to Datadog."},
-                    "company_account": {
-                        "account_exists": True,
-                        "sign_in_email": "applicant@example.invalid",
-                        "password_manager_url": "https://vault.example.invalid/datadog",
-                    },
-                },
+                json={"dedupe_key": "demo:2", "company": "Datadog", "field": field},
+            ) for field in (
+                {"kind": "override", "name": "Why this role?", "value": "This answer is specific to Datadog."},
+                {"kind": "account", "name": "account_exists", "value": True},
+                {"kind": "account", "name": "sign_in_email", "value": "applicant@example.invalid"},
+                {"kind": "account", "name": "password_manager_url", "value": "https://vault.example.invalid/datadog"},
+            )]
+            whole = client.put(
+                "/api/v1/profile/context",
+                headers={"X-CSRF-Token": csrf},
+                json={"dedupe_key": "demo:2", "company": "Datadog", "answer_overrides": {}, "company_account": {}},
             )
             copied = client.post(
                 "/api/v1/profile/copy",
@@ -719,8 +720,7 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
                 json={
                     "dedupe_key": "demo:2",
                     "company": "Datadog",
-                    "answer_overrides": {},
-                    "company_account": {"password_manager_url": "javascript:alert(1)"},
+                    "field": {"kind": "account", "name": "password_manager_url", "value": "javascript:alert(1)"},
                 },
             )
         assert response.status_code == 200
@@ -731,7 +731,8 @@ def test_quick_fill_profile_requires_explicit_feature_flag():
         assert saved.status_code == 200
         assert saved.json()["profile"]["fields"][0]["value"] == "Edited Applicant"
         assert rejected_context.status_code == 403
-        assert context.status_code == 200
+        assert [response.status_code for response in context] == [200] * 4
+        assert whole.status_code == 400
         assert copied.status_code == 201
         contextual = contextual_profile.json()["profile"]
         assert contextual_profile.status_code == 200
@@ -2076,7 +2077,7 @@ def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     job = {"job": "demo:2", "company": "Datadog"}
     profile = client.get("/api/v1/profile").json()["profile"]
     name = profile["answer_templates"][0]["name"]
-    client.put("/api/v1/profile/context", headers=headers, json={"dedupe_key": "demo:2", "company": "Datadog", "answer_overrides": {name: "Datadog answer"}, "company_account": {}})
+    client.put("/api/v1/profile/context", headers=headers, json={"dedupe_key": "demo:2", "company": "Datadog", "field": {"kind": "override", "name": name, "value": "Datadog answer"}})
 
     profile["answer_templates"][0]["name"] = "Why Datadog"
     renamed = client.put("/api/v1/profile", headers=headers, json={"profile": profile}).json()["profile"]
@@ -2090,6 +2091,50 @@ def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     assert after_rename == {"Why Datadog": "Datadog answer"}
     assert [row["name"] for row in after_restore["answer_templates"]] == ["Why Datadog"]
     assert after_restore["answer_overrides"] == {"Why Datadog": "Datadog answer"}
+
+
+def test_a_quick_fill_detail_saves_alone_and_refuses_a_newer_value(quick_fill_dashboard):
+    base, _ = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/profile/context"
+    job = {"dedupe_key": "demo:2", "company": "Datadog"}
+    field = lambda **values: {**job, "field": values}
+    try:
+        name = client.get("/api/v1/profile").json()["profile"]["answer_templates"][0]["name"]
+        first = client.put(path, headers=headers, json=field(kind="override", name=name, value="Mine", expected=""))
+        # another tab edits a different field
+        email = client.put(path, headers=headers, json=field(kind="account", name="sign_in_email", value="  me@example.com ", expected=""))
+        exists = client.put(path, headers=headers, json=field(kind="account", name="account_exists", value=True, expected=None))
+        newer = client.put(path, headers=headers, json=field(kind="override", name=name, value="Theirs", expected="Mine"))
+        stale = client.put(path, headers=headers, json=field(kind="override", name=name, value="", expected="Mine"))
+        stale_account = client.put(path, headers=headers, json=field(kind="account", name="account_exists", value=None, expected=False))
+        undo = client.put(path, headers=headers, json=field(kind="override", name=name, value="", expected="Theirs"))
+        bad_kind = client.put(path, headers=headers, json=field(kind="secret", name="x", value="y"))
+        bad_property = client.put(path, headers=headers, json=field(kind="account", name="password", value="hunter2"))
+        bad_url = client.put(path, headers=headers, json=field(kind="account", name="password_manager_url", value="http://x"))
+        bad_expected = client.put(path, headers=headers, json=field(kind="account", name="account_exists", value=True, expected="yes"))
+        missing = client.put(path, headers=headers, json={"dedupe_key": "demo:nope", "company": "Datadog", "field": {"kind": "override", "name": name, "value": "x"}})
+        no_csrf = client.put(path, json=field(kind="override", name=name, value="x"))
+        final = client.get("/api/v1/profile", params={"job": "demo:2", "company": "Datadog"}).json()["profile"]
+    finally:
+        client.close()
+    no_auth = httpx.put(f"{base}{path}", json=field(kind="override", name=name, value="x"), timeout=2)
+
+    assert [first.status_code, email.status_code, exists.status_code, newer.status_code] == [200] * 4
+    # the stored value, for undo
+    assert email.json()["value"] == "me@example.com"
+    assert exists.json()["value"] is True
+    assert stale.status_code == 409 and stale.json()["value"] == "Theirs"
+    assert stale_account.status_code == 409 and stale_account.json()["value"] is True
+    assert undo.status_code == 200
+    assert [bad_kind.status_code, bad_property.status_code, bad_url.status_code, bad_expected.status_code] == [400] * 4
+    assert missing.status_code == 404
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+    assert final["answer_overrides"] == {}
+    assert final["company_account"]["sign_in_email"] == "me@example.com"
+    assert final["company_account"]["account_exists"] is True
 
 
 def test_a_status_write_can_require_the_status_it_expects(dashboard):
@@ -2173,3 +2218,217 @@ def test_apply_session_offers_the_default_document(quick_fill_dashboard):
     assert added["id"] and added["default"] is True
     assert [row["name"] for row in session["documents"] if row["default"]] == ["Platform resume"]
     assert sum(row["default"] for row in saved["documents"]) == 1
+
+
+def test_a_notes_write_keeps_the_status_and_can_require_the_notes_it_expects(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1"
+    try:
+        client.patch(path, headers=headers, json={"status": "saved", "notes": "first"})
+        typed = client.patch(path, headers=headers, json={"notes": "second"})
+        # another tab moved it meanwhile
+        client.patch(path, headers=headers, json={"status": "queued"})
+        stale = client.patch(path, headers=headers, json={"notes": "first", "expected_notes": "older"})
+        bad = client.patch(path, headers=headers, json={"notes": "first", "expected_notes": 3})
+        undo = client.patch(path, headers=headers, json={"notes": "first", "expected_notes": "second"})
+        missing = client.patch("/api/v1/jobs/demo%3Anope", headers=headers, json={"notes": "x"})
+        no_csrf = client.patch(path, json={"notes": "x"})
+    finally:
+        client.close()
+    no_auth = httpx.patch(f"{base}{path}", json={"notes": "x"}, timeout=2)
+
+    row = next(row for row in store.rows if row["dedupe_key"] == "demo:1")
+    assert typed.status_code == 200 and typed.json()["status"] == "saved"
+    assert stale.status_code == 409
+    assert stale.json()["notes"] == "second"
+    assert bad.status_code == 400
+    assert undo.status_code == 200 and undo.json()["status"] == "queued"
+    assert (row["status"], row["notes"]) == ("queued", "first")
+    assert missing.status_code == 404
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+
+
+def test_a_next_step_undo_is_refused_once_another_tab_changed_it(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/applications/demo%3A1/next-step"
+    try:
+        saved = client.put(path, headers=headers, json={"next_step": "  Email the recruiter "})
+        newer = client.put(path, headers=headers, json={"next_step": "Prep for the screen"})
+        stale = client.put(path, headers=headers, json={"next_step": "", "expected_next_step": "Email the recruiter"})
+        bad = client.put(path, headers=headers, json={"next_step": "", "expected_next_step": ["x"]})
+        undo = client.put(path, headers=headers, json={"next_step": "Email the recruiter", "expected_next_step": "Prep for the screen"})
+        missing = client.put("/api/v1/applications/demo%3Anope/next-step", headers=headers, json={"next_step": "x"})
+        no_csrf = client.put(path, json={"next_step": "x"})
+    finally:
+        client.close()
+    no_auth = httpx.put(f"{base}{path}", json={"next_step": "x"}, timeout=2)
+
+    assert saved.status_code == 200 and saved.json()["next_step"] == "Email the recruiter"
+    assert newer.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["next_step"] == "Prep for the screen"
+    assert bad.status_code == 400
+    assert undo.status_code == 200
+    assert next(row for row in store.rows if row["dedupe_key"] == "demo:1")["next_step"] == "Email the recruiter"
+    assert missing.status_code == 404
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+
+
+def test_a_company_note_undo_is_refused_once_another_tab_changed_it(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/companies/note"
+    try:
+        client.put(path, headers=headers, json={"company": "Datadog", "body": "Met at the fair."})
+        newer = client.put(path, headers=headers, json={"company": "Datadog", "body": "Referral from Sam."})
+        stale = client.put(path, headers=headers, json={"company": "Datadog", "body": "", "expected_body": "Met at the fair."})
+        bad = client.put(path, headers=headers, json={"company": "Datadog", "body": "", "expected_body": 1})
+        undo = client.put(path, headers=headers, json={"company": "Datadog", "body": "Met at the fair.", "expected_body": "Referral from Sam."})
+        unknown = client.put(path, headers=headers, json={"company": "Nobody Corp", "body": "x"})
+        no_csrf = client.put(path, json={"company": "Datadog", "body": "x"})
+        note = client.get("/api/v1/companies", params={"name": "Datadog"}).json()["company"]["note"]["body"]
+    finally:
+        client.close()
+
+    assert newer.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["note"]["body"] == "Referral from Sam."
+    assert bad.status_code == 400
+    assert undo.status_code == 200
+    assert note == "Met at the fair."
+    assert unknown.status_code == 400
+    assert no_csrf.status_code == 403
+
+
+def _view(client, csrf, name, **filters):
+    response = client.post("/api/v1/saved-views", headers={"X-CSRF-Token": csrf},
+                           json={"name": name, "filters": filters, "sort": "newest"})
+    assert response.status_code == 201
+    return response.json()["saved_view"]
+
+
+def test_saving_a_view_under_a_taken_name_is_a_conflict_not_an_overwrite(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        first = _view(client, csrf, "Remote", remote=True, tag="Dream")
+        again = client.post("/api/v1/saved-views", headers=headers, json={"name": "Remote", "filters": {"status": "saved"}, "sort": "score"})
+        blank = client.post("/api/v1/saved-views", headers=headers, json={"name": " ", "filters": {}})
+        no_csrf = client.post("/api/v1/saved-views", json={"name": "Other"})
+        views = client.get("/api/v1/saved-views").json()
+    finally:
+        client.close()
+    no_auth = httpx.post(f"{base}/api/v1/saved-views", json={"name": "Other"}, timeout=2)
+
+    assert again.status_code == 409
+    assert again.json()["saved_view"]["id"] == first["id"]
+    assert blank.status_code == 400
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+    assert views["saved_views"][0]["filters"] == {"remote": True, "tag": "Dream"}
+    assert views["order_revision"] == 0
+
+
+def test_a_view_edit_from_a_stale_revision_is_a_conflict(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        view = _view(client, csrf, "Remote", remote=True)
+        other = _view(client, csrf, "Saved", status="saved")
+        path = f"/api/v1/saved-views/{view['id']}"
+        renamed = client.patch(path, headers=headers, json={"name": "Remote only", "expected_revision": 0})
+        stale = client.patch(path, headers=headers, json={"name": "Stale tab", "expected_revision": 0})
+        clash = client.patch(path, headers=headers, json={"name": "Saved"})
+        unknown_field = client.patch(path, headers=headers, json={"pinned": False})
+        bad_sort = client.patch(path, headers=headers, json={"sort": "random"})
+        replaced = client.patch(path, headers=headers, json={"filters": {"status": "new"}, "sort": "score", "expected_revision": 1})
+        undo = client.patch(path, headers=headers, json={"filters": {"remote": True}, "sort": "newest", "expected_revision": 2})
+        missing = client.patch("/api/v1/saved-views/999", headers=headers, json={"name": "x"})
+        no_csrf = client.patch(path, json={"name": "x"})
+        listed = client.get("/api/v1/saved-views").json()["saved_views"]
+    finally:
+        client.close()
+
+    assert renamed.status_code == 200
+    assert renamed.json()["previous"]["name"] == "Remote"
+    assert stale.status_code == 409
+    assert stale.json()["view"]["name"] == "Remote only"
+    assert clash.status_code == 400
+    assert unknown_field.status_code == 400
+    assert bad_sort.status_code == 400
+    assert replaced.status_code == 200
+    assert undo.status_code == 200
+    assert missing.status_code == 404
+    assert no_csrf.status_code == 403
+    assert [(item["id"], item["name"], item["filters"]) for item in listed] == [
+        (view["id"], "Remote only", {"remote": True}), (other["id"], "Saved", {"status": "saved"}),
+    ]
+
+
+def test_a_deleted_view_comes_back_in_its_old_place(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        ids = [_view(client, csrf, name)["id"] for name in ("One", "Two", "Three")]
+        deleted = client.delete(f"/api/v1/saved-views/{ids[1]}", headers=headers)
+        again = client.delete(f"/api/v1/saved-views/{ids[1]}", headers=headers)
+        while_gone = [item["id"] for item in client.get("/api/v1/saved-views").json()["saved_views"]]
+        restored = client.post(f"/api/v1/saved-views/{ids[1]}/restore", headers=headers)
+        twice = client.post(f"/api/v1/saved-views/{ids[1]}/restore", headers=headers)
+        after = [item["id"] for item in client.get("/api/v1/saved-views").json()["saved_views"]]
+        client.delete(f"/api/v1/saved-views/{ids[0]}", headers=headers)
+        _view(client, csrf, "One")
+        taken = client.post(f"/api/v1/saved-views/{ids[0]}/restore", headers=headers)
+        no_csrf = client.delete(f"/api/v1/saved-views/{ids[2]}")
+        bad_id = client.delete("/api/v1/saved-views/abc", headers=headers)
+    finally:
+        client.close()
+
+    assert deleted.status_code == 200
+    assert again.status_code == 404
+    assert while_gone == [ids[0], ids[2]]
+    assert restored.status_code == 200 and restored.json()["view"]["name"] == "Two"
+    assert twice.status_code == 404
+    assert after == ids
+    assert taken.status_code == 400
+    assert no_csrf.status_code == 403
+    assert bad_id.status_code == 400
+
+
+def test_a_stale_tab_cannot_reorder_saved_views(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        ids = [_view(client, csrf, name)["id"] for name in ("One", "Two")]
+        seen = client.get("/api/v1/saved-views").json()["order_revision"]
+        moved = client.put("/api/v1/saved-views/order", headers=headers, json={"ids": ids[::-1], "expected_revision": seen})
+        stale = client.put("/api/v1/saved-views/order", headers=headers, json={"ids": ids, "expected_revision": seen})
+        partial = client.put("/api/v1/saved-views/order", headers=headers, json={"ids": ids[:1], "expected_revision": moved.json()["order_revision"]})
+        no_revision = client.put("/api/v1/saved-views/order", headers=headers, json={"ids": ids})
+        bad_ids = client.put("/api/v1/saved-views/order", headers=headers, json={"ids": ["one"], "expected_revision": 1})
+        no_csrf = client.put("/api/v1/saved-views/order", json={"ids": ids, "expected_revision": 1})
+        final = client.get("/api/v1/saved-views").json()
+    finally:
+        client.close()
+    no_auth = httpx.put(f"{base}/api/v1/saved-views/order", json={"ids": ids, "expected_revision": 1}, timeout=2)
+
+    assert moved.status_code == 200
+    assert stale.status_code == 409
+    assert partial.status_code == 409
+    assert no_revision.status_code == 400
+    assert bad_ids.status_code == 400
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+    assert [item["id"] for item in final["saved_views"]] == ids[::-1]
+    assert final["order_revision"] == 1
