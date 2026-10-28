@@ -4731,6 +4731,13 @@ body.quick-fill-popout {
   }
 }
 
+/* sheet would cover actions */
+@media (min-width: 1200px) {
+  :root:has(#quick-fill-sheet[aria-hidden="false"]) :is(.route-view, .today-strip) {
+    margin-right: calc(var(--side-sheet) + var(--s-6));
+  }
+}
+
 @media (max-width: 1250px) {
   .global-header {
     grid-template-columns: auto minmax(0, 1fr) auto auto;
