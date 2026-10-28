@@ -191,6 +191,116 @@ def test_ai_overview_is_flagged_and_auth_protected():
         thread.join(timeout=2)
 
 
+class _Overviews:
+    def __init__(self):
+        self.forgotten = 0
+
+    def overview(self, sections):
+        return [{"kind": "role", "text": sections[0]["text"]}]
+
+    def cached_overview(self, sections):
+        return self.overview(sections)
+
+    def forget(self, sections):
+        self.forgotten += 1
+
+
+def test_overviews_are_dismissed_restored_and_regenerated_without_a_database(dashboard):
+    service = _Overviews()
+    try:
+        server = DashboardServer(("127.0.0.1", 0), DemoStore(), require_auth=True, authentik_user="cole", overviews=service)
+    except PermissionError:
+        pytest.skip("the test sandbox does not permit a loopback listener")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1/overview"
+    try:
+        no_auth = httpx.post(f"{base}{path}/dismiss", timeout=2)
+        no_csrf = client.post(f"{path}/dismiss")
+        dismissed = client.post(f"{path}/dismiss", headers=headers)
+        shown = client.get(path)
+        twice = client.post(f"{path}/dismiss", headers=headers)
+        restored = client.post(f"{path}/restore", headers=headers)
+        client.post(f"{path}/dismiss", headers=headers)
+        regenerated = client.post(f"{path}/regenerate", headers=headers)
+        after = client.get(path)
+        undo = client.post(f"{path}/regenerate/undo", headers=headers, json={"expected_revision": 1})
+        no_revision = client.post(f"{path}/regenerate/undo", headers=headers, json={})
+        unknown = client.post(f"{path}/rewrite", headers=headers)
+        missing = client.post("/api/v1/jobs/demo%3A404/overview/dismiss", headers=headers)
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden = client.post("/api/v1/jobs/demo%3A2/overview/regenerate", headers=headers)
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    plain, plain_csrf = authenticated_client(dashboard[0])
+    try:
+        gated = plain.post(f"{path}/dismiss", headers={"X-CSRF-Token": plain_csrf})
+    finally:
+        plain.close()
+
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert dismissed.json() == {"dismissed": True}
+    assert shown.json()["dismissed"] is True
+    assert shown.json()["items"]
+    assert twice.status_code == 409
+    assert restored.json() == {"dismissed": False}
+    assert regenerated.status_code == 200
+    assert regenerated.json()["items"][0]["text"].startswith("Build reliable systems")
+    assert regenerated.json()["revision"] is None
+    assert service.forgotten == 1
+    assert after.json()["dismissed"] is False
+    # nothing is stored to go back to
+    assert undo.status_code == 404
+    assert no_revision.status_code == 400
+    assert unknown.status_code == 404
+    assert missing.status_code == 404
+    assert hidden.status_code == 410
+    assert gated.status_code == 404
+
+
+def test_activity_entries_are_dismissed_and_restored(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.patch("/api/v1/jobs/demo%3A2", headers=headers, json={"status": "saved", "notes": ""})
+        client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        history = client.get("/api/v1/tracker").json()["history"]
+        first = history[0]["id"]
+        no_auth = httpx.post(f"{base}/api/v1/activity/{first}/dismiss", timeout=2)
+        no_csrf = client.post(f"/api/v1/activity/{first}/dismiss")
+        dismissed = client.post(f"/api/v1/activity/{first}/dismiss", headers=headers)
+        left = client.get("/api/v1/tracker").json()["history"]
+        twice = client.post(f"/api/v1/activity/{first}/dismiss", headers=headers)
+        restored = client.post(f"/api/v1/activity/{first}/restore", headers=headers)
+        back = client.get("/api/v1/tracker").json()["history"]
+        bad_id = client.post("/api/v1/activity/first/dismiss", headers=headers)
+        missing = client.post("/api/v1/activity/999/dismiss", headers=headers)
+        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hidden = client.post(f"/api/v1/activity/{first}/dismiss", headers=headers)
+    finally:
+        client.close()
+
+    assert [(item["from_status"], item["to_status"]) for item in history] == [("new", "saved"), ("saved", "applied")]
+    assert no_auth.status_code == 401
+    assert no_csrf.status_code == 403
+    assert dismissed.json()["entry"]["dismissed_at"] is not None
+    assert [item["to_status"] for item in left] == ["applied"]
+    assert twice.status_code == 409
+    assert restored.json()["entry"]["dismissed_at"] is None
+    assert len(back) == 2
+    assert bad_id.status_code == 400
+    assert missing.status_code == 404
+    assert hidden.status_code == 410
+
+
 def test_manual_capture_requires_auth_and_csrf_then_adds_a_job(dashboard):
     base, _ = dashboard
     payload = {

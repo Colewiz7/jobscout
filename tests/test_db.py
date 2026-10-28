@@ -105,6 +105,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 24, "name": "job_tags"},
             {"version": 25, "name": "eligibility_override_revokes"},
             {"version": 26, "name": "reminder_edits"},
+            {"version": 27, "name": "activity_and_overview_dismissals"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -207,9 +208,10 @@ def test_overview_queue_is_persistent_and_idempotent(conn):
     assert database.enqueue_overviews(conn, [key, key]) == 1
     assert database.overview_job(conn, key)["status"] == "queued"
     assert database.claim_overview(conn, priority_only=True) is None
-    assert database.claim_overview(conn) == key
+    key_claimed, claim = database.claim_overview(conn)
+    assert key_claimed == key
     assert database.overview_job(conn, key)["attempts"] == 1
-    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}], "ai", "hash")
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}], "ai", "hash", claim=claim)
     assert database.overview_job(conn, key)["items"][0]["terms"] == ["Python"]
     assert database.enqueue_overviews(conn, [key]) == 0
     assert database.overview_job(conn, key)["status"] == "ready"
@@ -219,14 +221,15 @@ def test_priority_overview_retry_and_failure(conn):
     database.upsert_open(conn, [_p()])
     key = _p().dedupe_key
     assert database.enqueue_overviews(conn, [key], priority=True) == 1
-    assert database.claim_overview(conn, priority_only=True) == key
-    database.fail_overview(conn, key, "model unavailable")
+    key_claimed, claim = database.claim_overview(conn, priority_only=True)
+    assert key_claimed == key
+    database.fail_overview(conn, key, "model unavailable", claim=claim)
     assert database.overview_job(conn, key)["status"] == "queued"
     assert database.claim_overview(conn, priority_only=True) is None  # backoff
-    database.fail_overview(conn, key, "no posting", terminal=True)
+    database.fail_overview(conn, key, "no posting", claim=claim, terminal=True)
     assert database.overview_job(conn, key)["status"] == "failed"
     assert database.enqueue_overviews(conn, [key], priority=True) == 1
-    assert database.claim_overview(conn, priority_only=True) == key
+    assert database.claim_overview(conn, priority_only=True)[0] == key
 
 
 def test_overview_worker_reads_cached_posting_and_persists_result(conn):
@@ -258,6 +261,151 @@ def test_overview_worker_reads_cached_posting_and_persists_result(conn):
     assert row["source_hash"] == "source-v1"
     database.save_description(conn, posting_id, html=None, text=description + " Now with Go.")
     assert database.overview_job(conn, key)["status"] == "queued"
+
+
+def _ready_overview(conn, key, items):
+    database.enqueue_overviews(conn, [key], priority=True)
+    _, claim = database.claim_overview(conn)
+    database.finish_overview(conn, key, items, "ai", "hash-1", claim=claim)
+
+
+def test_an_overview_is_dismissed_and_a_regenerate_undoes_to_the_last_result(conn):
+    database.upsert_open(conn, [_p()])
+    key = _p().dedupe_key
+    assert database.dismiss_overview(conn, key, True) is None
+    _ready_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}])
+
+    assert database.dismiss_overview(conn, key, True)["dismissed_at"] is not None
+    with pytest.raises(database.EditConflict):
+        database.dismiss_overview(conn, key, True)
+    assert database.dismiss_overview(conn, key, False)["dismissed_at"] is None
+
+    database.dismiss_overview(conn, key, True)
+    queued = database.regenerate_overview(conn, key)
+    assert (queued["status"], queued["dismissed_at"], queued["has_previous"]) == ("queued", None, True)
+    with pytest.raises(database.EditConflict):
+        database.regenerate_overview(conn, key)
+    _, late = database.claim_overview(conn, priority_only=True)
+
+    undone = database.undo_regenerate_overview(conn, key, queued["revision"])
+    assert undone["status"] == "ready"
+    assert undone["items"] == [{"kind": "skills", "terms": ["Python"]}]
+    assert undone["source_hash"] == "hash-1"
+    # a late worker can't clobber it
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Go"]}], "ai", "hash-2", claim=late)
+    database.fail_overview(conn, key, "late", claim=late)
+    assert database.overview_job(conn, key)["items"][0]["terms"] == ["Python"]
+    with pytest.raises(database.EditConflict):
+        database.undo_regenerate_overview(conn, key, undone["revision"])
+
+    again = database.regenerate_overview(conn, key)
+    _, claim = database.claim_overview(conn)
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Go"]}], "ai", "hash-2", claim=claim)
+    with pytest.raises(database.EditConflict):
+        database.undo_regenerate_overview(conn, key, again["revision"] - 1)
+    assert database.undo_regenerate_overview(conn, key, again["revision"])["items"][0]["terms"] == ["Python"]
+    assert database.undo_regenerate_overview(conn, "missing", 0) is None
+
+
+def test_a_worker_from_before_an_undo_cannot_finish_the_next_regenerate(conn):
+    database.upsert_open(conn, [_p()])
+    key = _p().dedupe_key
+    _ready_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}])
+    first = database.regenerate_overview(conn, key)
+    _, stale = database.claim_overview(conn)
+    database.undo_regenerate_overview(conn, key, first["revision"])
+    database.regenerate_overview(conn, key)
+
+    # worker A lands while B is queued
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Rust"]}], "ai", "hash-a", claim=stale)
+    database.fail_overview(conn, key, "late", claim=stale, terminal=True)
+    assert database.overview_job(conn, key)["status"] == "queued"
+
+    # and again while B runs
+    _, current = database.claim_overview(conn)
+    assert current != stale
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Rust"]}], "ai", "hash-a", claim=stale)
+    assert database.overview_job(conn, key)["status"] == "running"
+    database.finish_overview(conn, key, [{"kind": "skills", "terms": ["Go"]}], "ai", "hash-b", claim=current)
+    row = database.overview_job(conn, key)
+    assert (row["status"], row["items"][0]["terms"], row["source_hash"]) == ("ready", ["Go"], "hash-b")
+
+
+def test_overview_routes_regenerate_and_undo_against_postgres(conn, monkeypatch):
+    import threading
+
+    import httpx
+
+    from jobscout.dashboard import DashboardServer
+
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    with conn.cursor() as cur:
+        cur.execute("select id from postings where dedupe_key = %s", (key,))
+        posting_id = cur.fetchone()["id"]
+    database.save_description(conn, posting_id, html=None, text="Responsibilities\nBuild reliable Python tooling.")
+    _ready_overview(conn, key, [{"kind": "skills", "terms": ["Python"]}])
+
+    class Service:
+        def overview(self, sections):
+            return [{"kind": "skills", "terms": ["Go"], "text": "Go"}]
+
+        def is_fallback(self, sections):
+            return False
+
+        def fingerprint(self, sections):
+            return "hash-2"
+
+        def forget(self, sections):
+            pass
+
+    server = DashboardServer(("127.0.0.1", 0), _store(monkeypatch), require_auth=False, overviews=Service())
+    server.trigger_overview = lambda: None
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    path = f"/api/v1/jobs/{key.replace(':', '%3A')}/overview"
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{server.server_address[1]}", timeout=5) as client:
+            headers = {"X-CSRF-Token": client.get("/api/v1/session").json()["csrf_token"]}
+            regenerated = client.post(f"{path}/regenerate", headers=headers)
+            busy = client.post(f"{path}/regenerate", headers=headers)
+            overview_jobs.process(DSN, Service(), limit=1, priority_only=True)
+            fresh = client.get(path)
+            stale = client.post(f"{path}/regenerate/undo", headers=headers, json={"expected_revision": regenerated.json()["revision"] - 1})
+            undone = client.post(f"{path}/regenerate/undo", headers=headers, json={"expected_revision": regenerated.json()["revision"]})
+            dismissed = client.post(f"{path}/dismiss", headers=headers)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert regenerated.status_code == 202
+    assert regenerated.json()["can_undo"] is True
+    assert busy.status_code == 409
+    assert fresh.json()["items"][0]["terms"] == ["Go"]
+    assert stale.status_code == 409
+    assert undone.json()["items"][0]["terms"] == ["Python"]
+    assert undone.json()["can_undo"] is False
+    assert dismissed.json()["dismissed"] is True
+
+
+def test_activity_entries_are_dismissed_without_moving_the_applied_date(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    database.save_application_state(conn, key, "applied", "")
+    applied_at = database.dashboard_postings(conn)[0]["applied_at"]
+    entry = database.tracker_support(conn)["history"][0]
+    assert database.history_key(conn, entry["id"]) == key
+    assert database.history_key(conn, 999_999) is None
+
+    assert database.dismiss_history(conn, entry["id"], True)["dismissed_at"] is not None
+    assert database.dismiss_history(conn, entry["id"], True) is None
+    assert database.tracker_support(conn)["history"] == []
+    assert database.dashboard_postings(conn)[0]["applied_at"] == applied_at
+    assert database.dismiss_history(conn, entry["id"], False)["dismissed_at"] is None
+    assert [item["id"] for item in database.tracker_support(conn)["history"]] == [entry["id"]]
 
 
 def test_pending_returns_unnotified_then_stops_after_marking(conn):

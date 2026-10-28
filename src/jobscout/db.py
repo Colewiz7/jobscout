@@ -577,14 +577,16 @@ def overview_job(conn: psycopg.Connection, key: str) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
             """select status, priority, items, source, source_hash, attempts,
-                      error, requested_at, generated_at
+                      error, requested_at, generated_at, dismissed_at, revision,
+                      previous is not null as has_previous
                  from overview_jobs where dedupe_key = %s""",
             (key,),
         )
         return cur.fetchone()
 
 
-def claim_overview(conn: psycopg.Connection, *, priority_only: bool = False) -> str | None:
+def claim_overview(conn: psycopg.Connection, *, priority_only: bool = False) -> tuple[str, int] | None:
+    """The claim id must come back with the result."""
     with conn.cursor() as cur:
         cur.execute(
             """select dedupe_key from overview_jobs
@@ -602,39 +604,101 @@ def claim_overview(conn: psycopg.Connection, *, priority_only: bool = False) -> 
         key = row["dedupe_key"]
         cur.execute(
             """update overview_jobs set status = 'running', attempts = attempts + 1,
-                      started_at = now(), updated_at = now()
-                 where dedupe_key = %s""",
+                      claim_id = claim_id + 1, started_at = now(), updated_at = now()
+                 where dedupe_key = %s returning claim_id""",
             (key,),
         )
+        claim = cur.fetchone()["claim_id"]
     conn.commit()
-    return key
+    return key, claim
 
 
+# a later claim owns the row
 def finish_overview(
-    conn: psycopg.Connection, key: str, items: list[dict], source: str, source_hash: str
+    conn: psycopg.Connection, key: str, items: list[dict], source: str, source_hash: str, *, claim: int
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """update overview_jobs set status = 'ready', priority = false,
                       items = %s, source = %s, source_hash = %s, error = null,
                       generated_at = now(), updated_at = now()
-                 where dedupe_key = %s""",
-            (Json(items), source, source_hash, key),
+                 where dedupe_key = %s and claim_id = %s and status <> 'ready'""",
+            (Json(items), source, source_hash, key, claim),
         )
     conn.commit()
 
 
-def fail_overview(conn: psycopg.Connection, key: str, reason: str, *, terminal: bool = False) -> None:
+def fail_overview(conn: psycopg.Connection, key: str, reason: str, *, claim: int, terminal: bool = False) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """update overview_jobs
                   set status = case when %s or attempts >= 3 then 'failed' else 'queued' end,
                       error = %s, available_at = now() + interval '10 minutes',
                       updated_at = now()
-                where dedupe_key = %s""",
-            (terminal, reason[:500], key),
+                where dedupe_key = %s and claim_id = %s and status <> 'ready'""",
+            (terminal, reason[:500], key, claim),
         )
     conn.commit()
+
+
+def dismiss_overview(conn: psycopg.Connection, key: str, dismissed: bool) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """update overview_jobs set dismissed_at = case when %s then now() end, updated_at = now()
+                where dedupe_key = %s and (dismissed_at is null) = %s returning dedupe_key""",
+            (dismissed, key, dismissed),
+        )
+        changed = cur.fetchone() is not None
+    conn.commit()
+    row = overview_job(conn, key)
+    # another tab got there first
+    if row is not None and not changed:
+        raise EditConflict("The overview changed in another tab.")
+    return row
+
+
+def regenerate_overview(conn: psycopg.Connection, key: str) -> dict | None:
+    """Keeps the last result for undo."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """update overview_jobs set
+                      previous = case when status = 'ready' then jsonb_build_object(
+                          'items', items, 'source', source, 'source_hash', source_hash,
+                          'generated_at', generated_at) else previous end,
+                      status = 'queued', priority = true, attempts = 0, error = null,
+                      dismissed_at = null, revision = revision + 1, claim_id = claim_id + 1,
+                      available_at = now(), requested_at = now(), updated_at = now()
+                where dedupe_key = %s and status in ('ready', 'failed') returning dedupe_key""",
+            (key,),
+        )
+        changed = cur.fetchone() is not None
+    conn.commit()
+    row = overview_job(conn, key)
+    if row is not None and not changed:
+        raise EditConflict("This overview is already being generated.")
+    return row
+
+
+def undo_regenerate_overview(conn: psycopg.Connection, key: str, expected: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("select revision, previous from overview_jobs where dedupe_key = %s for update", (key,))
+        row = cur.fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        if row["revision"] != expected or row["previous"] is None:
+            conn.rollback()
+            raise EditConflict("This overview changed after it was regenerated, so it can't be undone.")
+        previous = row["previous"]
+        cur.execute(
+            """update overview_jobs set status = 'ready', priority = false, error = null,
+                      items = %s, source = %s, source_hash = %s, generated_at = %s,
+                      previous = null, revision = revision + 1, claim_id = claim_id + 1, updated_at = now()
+                where dedupe_key = %s""",
+            (Json(previous["items"]), previous["source"], previous["source_hash"], previous["generated_at"], key),
+        )
+    conn.commit()
+    return overview_job(conn, key)
 
 
 def posting_taglines(conn: psycopg.Connection) -> dict[str, str]:
@@ -1447,7 +1511,8 @@ def save_description(
 def _requeue_overview(cur, dedupe_key: str) -> None:
     cur.execute(
         """update overview_jobs set status = 'queued', items = null, source = null,
-                  source_hash = null, attempts = 0, error = null,
+                  source_hash = null, attempts = 0, error = null, previous = null,
+                  revision = revision + 1, dismissed_at = null,
                   available_at = now(), requested_at = now(), updated_at = now()
              where dedupe_key = %s and status = 'ready'""",
         (dedupe_key,),
@@ -1923,9 +1988,9 @@ def tracker_support(conn: psycopg.Connection) -> dict:
         interviews = cur.fetchall()
         cur.execute(
             """
-            select h.dedupe_key, h.from_status, h.to_status, h.changed_at
+            select h.id, h.dedupe_key, h.from_status, h.to_status, h.changed_at
               from application_status_history h
-             where not exists (
+             where h.dismissed_at is null and not exists (
                  select 1 from postings p
                   where p.dedupe_key = h.dedupe_key and p.hidden_by is not null
              )
@@ -1945,6 +2010,29 @@ def reminder_key(conn: psycopg.Connection, reminder_id: int) -> str | None:
         cur.execute("select dedupe_key from reminders where id = %s", (reminder_id,))
         row = cur.fetchone()
         return row["dedupe_key"] if row else None
+
+
+def history_key(conn: psycopg.Connection, entry_id: int) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("select dedupe_key from application_status_history where id = %s", (entry_id,))
+        row = cur.fetchone()
+        return row["dedupe_key"] if row else None
+
+
+def dismiss_history(conn: psycopg.Connection, entry_id: int, dismissed: bool) -> dict | None:
+    """Only hides it; applied dates still count it."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update application_status_history set dismissed_at = case when %s then now() end
+             where id = %s and (dismissed_at is null) = %s
+            returning id, dedupe_key, from_status, to_status, changed_at, dismissed_at
+            """,
+            (dismissed, entry_id, dismissed),
+        )
+        entry = cur.fetchone()
+    conn.commit()
+    return entry
 
 
 def save_reminder(

@@ -217,6 +217,18 @@ def _rule_changes(payload: dict) -> dict:
     return dict(payload)
 
 
+def _overview_payload(row: dict | None) -> dict:
+    return {
+        "status": row["status"] if row else "missing",
+        "items": row["items"] or [] if row else [],
+        "source": row["source"] if row else None,
+        "error": row["error"] if row and row["status"] == "failed" else None,
+        "dismissed": bool(row and row.get("dismissed_at")),
+        "revision": row.get("revision") if row else None,
+        "can_undo": bool(row and row.get("has_previous")),
+    }
+
+
 # the ui shows and revokes these
 def _with_overrides(result: dict, overrides: list[dict]) -> dict:
     result["overrides"] = [
@@ -545,6 +557,31 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.overview_job(conn, key)
+
+    def dismiss_overview(self, key: str, dismissed: bool) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.dismiss_overview(conn, key, dismissed)
+
+    def regenerate_overview(self, key: str) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.regenerate_overview(conn, key)
+
+    def undo_regenerate_overview(self, key: str, expected: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.undo_regenerate_overview(conn, key, expected)
+
+    def history_key(self, entry_id: int) -> str | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.history_key(conn, entry_id)
+
+    def dismiss_history(self, entry_id: int, dismissed: bool) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.dismiss_history(conn, entry_id, dismissed)
 
     def enqueue_overview(self, key: str) -> bool:
         with database.connect(self.dsn) as conn:
@@ -1235,6 +1272,8 @@ class DemoStore:
         self._rules: list[dict] = []
         self._rule_order_revision = 0
         self._job_tags: list[dict] = []
+        self._history: list[dict] = []
+        self._dismissed_overviews: set[str] = set()
         self._rule_action_history: set[tuple[int, str]] = set()
         self._next_rule_id = 1
         self._next_rule_action_id = 1
@@ -1546,6 +1585,7 @@ class DemoStore:
                     )
                     if row["liveness_status"] == "closed":
                         effective_status = "archived"
+                self._log_status(key, previous_status, effective_status)
                 row.update(
                     status=effective_status,
                     notes=notes,
@@ -1572,6 +1612,35 @@ class DemoStore:
                     } if status == "queued" else None,
                 }
         return {"saved": False, "status": status, "liveness": None}
+
+    def _log_status(self, key: str, previous: str, status: str) -> None:
+        if previous != status:
+            self._history.append({
+                "id": len(self._history) + 1, "dedupe_key": key, "from_status": previous,
+                "to_status": status, "changed_at": dt.datetime.now(dt.timezone.utc), "dismissed_at": None,
+            })
+
+    def history_key(self, entry_id: int) -> str | None:
+        return next((entry["dedupe_key"] for entry in self._history if entry["id"] == entry_id), None)
+
+    def dismiss_history(self, entry_id: int, dismissed: bool) -> dict | None:
+        entry = next((item for item in self._history if item["id"] == entry_id), None)
+        if entry is None or (entry["dismissed_at"] is not None) == dismissed:
+            return None
+        entry["dismissed_at"] = dt.datetime.now(dt.timezone.utc) if dismissed else None
+        return dict(entry)
+
+    def overview_dismissed(self, key: str) -> bool:
+        return key in self._dismissed_overviews
+
+    def dismiss_overview(self, key: str, dismissed: bool) -> dict | None:
+        if not any(row["dedupe_key"] == key for row in self.rows):
+            return None
+        if (key in self._dismissed_overviews) == dismissed:
+            raise database.EditConflict("The overview changed in another tab.")
+        (self._dismissed_overviews.add if dismissed else self._dismissed_overviews.discard)(key)
+        return {"status": "ready", "items": None, "source": None, "error": None,
+                "dismissed_at": dt.datetime.now(dt.timezone.utc) if dismissed else None}
 
     def reorder_queue(self, dedupe_keys: list[str]) -> list[str]:
         queued = {row["dedupe_key"] for row in self.rows if row["status"] == "queued" and not self._is_hidden(row)}
@@ -1626,6 +1695,7 @@ class DemoStore:
             now = dt.datetime.now(dt.timezone.utc)
             if row["status"] != "applied":
                 row["board_position"] = None
+            self._log_status(key, row["status"], "applied")
             row.update(
                 status="applied", application_updated_at=now, applied_at=now,
                 queue_position=None, resume_document_id=document_id,
@@ -1669,7 +1739,10 @@ class DemoStore:
                  if item["dedupe_key"] in visible and not item.get("deleted")),
                 key=lambda item: item["starts_at"],
             )),
-            "history": [],
+            "history": [
+                {name: value for name, value in entry.items() if name != "dismissed_at"} for entry in self._history
+                if entry["dismissed_at"] is None and entry["dedupe_key"] in visible
+            ],
         }
 
     def _named(self, item: dict) -> dict:
@@ -2432,6 +2505,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.GONE, HIDDEN_WRITE)
         return hidden
 
+    def _overview_write(self, key: str, action: str) -> None:
+        if not self._require_write_security():
+            return
+        if self.app.overviews is None:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if self._reject_hidden(key):
+            return
+        store = self.app.store
+        stored = isinstance(store, PostgresStore)
+        try:
+            if action in {"dismiss", "restore"}:
+                row = store.dismiss_overview(key, action == "dismiss")
+            elif action == "regenerate/undo":
+                expected = _expected_revision(self._read_json())
+                if expected is None:
+                    raise ValueError("expected_revision is required")
+                # only saved overviews have a past
+                row = store.undo_regenerate_overview(key, expected) if stored else None
+            else:
+                detail = store.description(key)
+                if detail is None:
+                    self._error(HTTPStatus.NOT_FOUND, "job not found")
+                    return
+                sections = detail.get("sections") or []
+                getattr(self.app.overviews, "forget", lambda _: None)(sections)
+                if stored:
+                    row = store.regenerate_overview(key)
+                    if row is not None:
+                        self.app.trigger_overview()
+                        self._json(_overview_payload(row), HTTPStatus.ACCEPTED)
+                        return
+                else:
+                    if store.overview_dismissed(key):
+                        store.dismiss_overview(key, False)
+                    self._json({"status": "ready", "items": self.app.overviews.overview(sections), "dismissed": False, "revision": None})
+                    return
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except database.EditConflict as error:
+            self._error(HTTPStatus.CONFLICT, str(error))
+            return
+        except Exception:
+            log.exception("could not change posting overview")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't change the overview. Retry shortly.")
+            return
+        if row is None:
+            self._error(HTTPStatus.NOT_FOUND, "overview not found")
+            return
+        self._json(_overview_payload(row) if stored else {"dismissed": bool(row.get("dismissed_at"))})
+
+    def _activity_write(self, raw_id: str, dismissed: bool) -> None:
+        if not self._require_write_security():
+            return
+        try:
+            entry_id = int(raw_id)
+            key = self.app.store.history_key(entry_id)
+            if key is None:
+                self._error(HTTPStatus.NOT_FOUND, "activity entry not found")
+                return
+            if self._reject_hidden(key):
+                return
+            entry = self.app.store.dismiss_history(entry_id, dismissed)
+        except ValueError as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not change activity entry")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't change the activity entry. Retry shortly.")
+            return
+        if entry is None:
+            self._error(HTTPStatus.CONFLICT, "This activity entry changed in another tab.")
+            return
+        self._json({"entry": entry})
+
     def _reminder_write(self, raw_id: str, action: str) -> None:
         if not self._require_write_security():
             return
@@ -2673,13 +2822,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         if not any(job["dedupe_key"] == key for job in self.app.store.jobs()):
                             self._error(HTTPStatus.NOT_FOUND, "job not found")
                             return
-                        row = self.app.store.overview_job(key)
-                        self._json({
-                            "status": row["status"] if row else "missing",
-                            "items": row["items"] or [] if row else [],
-                            "source": row["source"] if row else None,
-                            "error": row["error"] if row and row["status"] == "failed" else None,
-                        })
+                        self._json(_overview_payload(self.app.store.overview_job(key)))
                         return
                     detail = self.app.store.description(key)
                     if detail is None:
@@ -2692,7 +2835,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     cached_only = urllib.parse.parse_qs(parsed.query).get("cached") == ["1"]
                     items = self.app.overviews.cached_overview(sections) if cached_only else self.app.overviews.overview(sections)
                     fallback = getattr(self.app.overviews, "is_fallback", lambda _: False)(sections)
-                    self._json({"items": items or [], "source": "posting" if fallback else "ai"})
+                    dismissed = getattr(self.app.store, "overview_dismissed", lambda _: False)(key)
+                    self._json({"items": items or [], "source": "posting" if fallback else "ai", "dismissed": dismissed})
                 except Exception:
                     log.exception("could not generate posting overview")
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "AI overview is unavailable. Retry shortly.")
@@ -2985,6 +3129,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 log.exception("could not queue posting overview")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't queue the overview. Retry shortly.")
+            return
+        overview_actions = {"dismiss", "restore", "regenerate", "regenerate/undo"}
+        if parsed.path.startswith(description_prefix) and "/overview/" in parsed.path:
+            key, _, action = parsed.path[len(description_prefix):].partition("/overview/")
+            if action in overview_actions:
+                self._overview_write(urllib.parse.unquote(key), action)
+                return
+        activity_prefix = "/api/v1/activity/"
+        if parsed.path.startswith(activity_prefix) and parsed.path.endswith(("/dismiss", "/restore")):
+            raw_id, _, action = parsed.path[len(activity_prefix):].rpartition("/")
+            self._activity_write(raw_id, action == "dismiss")
             return
         description_suffix = "/description"
         if parsed.path.startswith(description_prefix) and parsed.path.endswith(description_suffix):

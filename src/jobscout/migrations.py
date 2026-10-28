@@ -581,6 +581,17 @@ MIGRATIONS = (
         alter table reminders add column if not exists revision integer not null default 0;
         """,
     ),
+    Migration(
+        27,
+        "activity_and_overview_dismissals",
+        """
+        alter table application_status_history add column if not exists dismissed_at timestamptz;
+        alter table overview_jobs add column if not exists dismissed_at timestamptz;
+        alter table overview_jobs add column if not exists revision integer not null default 0;
+        alter table overview_jobs add column if not exists previous jsonb;
+        alter table overview_jobs add column if not exists claim_id bigint not null default 0;
+        """,
+    ),
 )
 
 

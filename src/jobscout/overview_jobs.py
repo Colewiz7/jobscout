@@ -30,31 +30,32 @@ def process(dsn: str, service, *, limit: int = 20,
         for _ in range(limit):
             with db.connect(dsn) as conn:
                 db.require_schema(conn)
-                key = db.claim_overview(conn, priority_only=only_priority)
-            if key is None:
+                claimed = db.claim_overview(conn, priority_only=only_priority)
+            if claimed is None:
                 break
+            key, claim = claimed
             try:
                 detail = store.description(key)
                 sections = detail.get("sections") or [] if detail else []
                 if not detail or not detail.get("description_text") or not sections:
                     with db.connect(dsn) as conn:
-                        db.fail_overview(conn, key, "Posting description is unavailable", terminal=True)
+                        db.fail_overview(conn, key, "Posting description is unavailable", claim=claim, terminal=True)
                     counts["failed"] += 1
                     continue
                 items = service.overview(sections)
                 if not items:
                     with db.connect(dsn) as conn:
-                        db.fail_overview(conn, key, "No source-checked facts were found", terminal=True)
+                        db.fail_overview(conn, key, "No source-checked facts were found", claim=claim, terminal=True)
                     counts["failed"] += 1
                     continue
                 source = "posting" if service.is_fallback(sections) else "ai"
                 with db.connect(dsn) as conn:
-                    db.finish_overview(conn, key, items, source, service.fingerprint(sections))
+                    db.finish_overview(conn, key, items, source, service.fingerprint(sections), claim=claim)
                 counts["ready"] += 1
             except Exception as error:
                 log.exception("overview failed for %s", key)
                 with db.connect(dsn) as conn:
-                    db.fail_overview(conn, key, str(error))
+                    db.fail_overview(conn, key, str(error), claim=claim)
                     row = db.overview_job(conn, key)
                 counts["failed" if row and row["status"] == "failed" else "retry"] += 1
     finally:

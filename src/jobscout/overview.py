@@ -236,6 +236,13 @@ class OverviewService:
                 self._cache.move_to_end(key)
             return items
 
+    # a regenerate must ask again
+    def forget(self, sections: list[dict] | tuple[dict, ...]) -> None:
+        key = self._cache_key(candidates(sections))
+        with self._lock:
+            self._cache.pop(key, None)
+            self._fallback_keys.discard(key)
+
     def is_fallback(self, sections: list[dict] | tuple[dict, ...]) -> bool:
         """True when the displayed facts were selected without a valid model ID."""
         key = self._cache_key(candidates(sections))
