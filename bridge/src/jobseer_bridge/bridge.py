@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from .client import ApiError, BridgeError, Client, Conflict
+from .client import ApiError, AuthError, BridgeError, Client, Conflict
 from .config import Config
 from .confirm import Confirms
 from .registry import annotations, collect
@@ -38,14 +38,19 @@ class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, Profi
     def guard(self, fn):
         @functools.wraps(fn)
         def run(*args, **kwargs):
+            # raising outside keeps the raw error unreachable
+            failure = None
             try:
-                return pack(self.label(fn(*args, **kwargs)))
+                return pack(self.config.scrub(self.label(fn(*args, **kwargs))))
             except Conflict as conflict:
-                return pack({"target": self.config.origin, "ok": False, "conflict": True, "message": conflict.message, "current": conflict.current})
+                return pack(self.config.scrub({"target": self.config.origin, "ok": False, "conflict": True, "message": conflict.message, "current": conflict.current}))
+            except AuthError as error:
+                failure = "%s (on %s)" % (error.message, self.config.origin)
             except ApiError as error:
-                raise BridgeError("%s (HTTP %d) on %s" % (error.message, error.status, self.config.origin)) from error
+                failure = "%s (HTTP %d) on %s" % (self.config.redact(error.message), error.status, self.config.origin)
             except httpx.TransportError as error:
-                raise BridgeError("cannot reach %s: %s" % (self.config.origin, error)) from error
+                failure = "cannot reach %s: %s" % (self.config.origin, self.config.redact(str(error)))
+            raise BridgeError(failure)
 
         run.__annotations__["return"] = str
         return run

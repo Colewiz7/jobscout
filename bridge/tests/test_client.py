@@ -23,7 +23,7 @@ def test_missing_auth_is_a_clear_error(dashboard):
     with pytest.raises(ApiError) as caught:
         bare.session()
     assert caught.value.status == 401
-    assert "Authentik" in caught.value.message
+    assert "check token and that header authentication is enabled" in caught.value.message
 
 
 def test_rotated_token_refetches_session_once(client, dashboard):

@@ -102,3 +102,12 @@ def call(app):
 def listing(app):
     server, _ = app
     return lambda: drive(server, None, {}).tools
+
+
+@pytest.fixture
+def proxy(dashboard):
+    from stubs import gate
+
+    stub = gate(dashboard)
+    yield stub
+    stub.stop()

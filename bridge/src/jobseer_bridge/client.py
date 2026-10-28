@@ -18,6 +18,10 @@ class ApiError(Exception):
         self.body = body or {}
 
 
+class AuthError(ApiError):
+    pass
+
+
 class Conflict(ApiError):
     # lets callers retry without refetch
     @property
@@ -29,10 +33,45 @@ def key_path(key: str) -> str:
     return quote(key, safe="")
 
 
+CSRF_MESSAGE = "Security token missing or expired. Reload and retry."
+
+
+def app_json(reply: httpx.Response) -> dict | None:
+    try:
+        body = reply.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+# helps locate the failing hop
+def hop(reply: httpx.Response) -> str:
+    headers = reply.headers
+    if "cf-ray" in headers or "cf-mitigated" in headers or "cloudflare" in headers.get("server", "").lower():
+        return "Cloudflare edge"
+    if app_json(reply) is not None:
+        return "the dashboard"
+    return "the identity proxy or an unknown hop"
+
+
+# proxies send generic 403s
+def is_denial(reply: httpx.Response) -> bool:
+    if 300 <= reply.status_code < 400 or reply.status_code == 401:
+        return True
+    if reply.status_code != 403:
+        return False
+    body = app_json(reply)
+    return body is None or body.get("error") != CSRF_MESSAGE or "cf-mitigated" in reply.headers
+
+
+def denial_message(reply: httpx.Response) -> str:
+    return "authentication failed: HTTP %d from %s; check token and that header authentication is enabled" % (reply.status_code, hop(reply))
+
+
 class Client:
     def __init__(self, config: Config, transport: httpx.BaseTransport | None = None):
         self.config = config
-        self._http = httpx.Client(base_url=config.url, headers=config.auth_headers(), timeout=config.timeout, transport=transport)
+        self._http = httpx.Client(base_url=config.url, headers=config.request_headers(), timeout=config.timeout, transport=transport)
         self._token: str | None = None
         self._session: dict | None = None
         self._jobs: dict[bool, tuple[float, dict]] = {}
@@ -78,7 +117,7 @@ class Client:
             reply = self._write(method, path, body)
             # restart rotates the token
             # a loop would hide real denials
-            if reply.status_code == 403:
+            if reply.status_code == 403 and not is_denial(reply):
                 self.session(refresh=True)
                 reply = self._write(method, path, body)
         finally:
@@ -93,18 +132,17 @@ class Client:
         extra = {} if body is None else {"json": body}
         return self._http.request(method, path, headers=headers, **extra)
 
+    def probe(self) -> httpx.Response:
+        return self._http.get("/api/v1/session")
+
     def _raise_for(self, reply: httpx.Response) -> None:
+        # bodies may echo secrets
+        if is_denial(reply):
+            raise AuthError(reply.status_code, denial_message(reply))
         if reply.status_code < 400:
             return
-        try:
-            body = reply.json()
-        except ValueError:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = self.config.scrub(app_json(reply) or {})
         message = str(body.get("error") or reply.reason_phrase or "request failed")
-        if reply.status_code == 401:
-            message = "not authenticated; check the Authentik settings"
         cls = Conflict if reply.status_code == 409 else ApiError
         raise cls(reply.status_code, message, body)
 
