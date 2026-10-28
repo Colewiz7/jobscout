@@ -571,8 +571,10 @@ function overviewMarkup(job) {
   const entry = state.overviews.get(job.dedupe_key);
   if (!entry) return `<section class="detail-section ai-overview overview-resolved"><div class="overview-heading"><h2>AI overview</h2><span>Selected from the posting</span></div><button class="tonal-button interactive" type="button" data-generate-overview>Generate overview</button></section>`;
   if (entry.checking) return `<section class="detail-section ai-overview overview-checking" aria-label="Checking for a saved AI overview"><div class="overview-heading"><h2>AI overview</h2><span>Checking saved overview</span></div><div class="overview-placeholder${entry.showSkeleton ? " skeleton" : ""}" aria-hidden="true"></div></section>`;
-  if (entry.loading || entry.status === "queued" || entry.status === "running") return `<section class="detail-section ai-overview overview-checking" aria-live="polite"><div class="overview-heading"><h2>AI overview</h2><span>${entry.status === "queued" ? "Queued for the next run" : "Reading the posting"}</span></div><div class="overview-placeholder skeleton" aria-hidden="true"></div></section>`;
+  const shown = entry.regenerating && entry.items?.length;
+  if (!shown && (entry.loading || entry.status === "queued" || entry.status === "running")) return `<section class="detail-section ai-overview overview-checking" data-overview-section tabindex="-1" aria-live="polite"><div class="overview-heading"><h2>AI overview</h2><span>${entry.status === "queued" ? "Queued for the next run" : "Reading the posting"}</span></div><div class="overview-placeholder skeleton" aria-hidden="true"></div></section>`;
   if (entry.error) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>${escapeHtml(entry.error)}</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
+  if (entry.dismissed && entry.items?.length) return `<section class="detail-section ai-overview overview-dismissed" data-overview-section tabindex="-1" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">AI overview</h2><span>Dismissed for this job</span></div><button class="text-button interactive" type="button" data-restore-overview>Show overview</button></section>`;
   if (!entry.items?.length) return `<section class="detail-section overview-error"><h2>AI overview</h2><p>There isn't enough readable posting detail for an overview. Open the original posting or paste its description, then retry.</p><button class="text-button interactive" type="button" data-retry-overview>Retry overview</button></section>`;
   const labels = { work: "Responsibilities", skills: "Skills", required: "Required", preferred: "Preferred", pay: "Pay", location: "Location & work mode", dates: "Dates & duration" };
   const usedHighlights = new Set();
@@ -588,11 +590,12 @@ function overviewMarkup(job) {
   }).join("");
   const fallback = entry.source === "posting";
   const legend = [...usedHighlights].map((kind) => `<span class="highlight-key-item highlight-key-item--${kind}">${escapeHtml(HIGHLIGHT_LABELS[kind])}</span>`).join("");
-  return `<section class="detail-section ai-overview overview-resolved" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">${fallback ? "Posting overview" : "AI overview"}</h2><span>${fallback ? "Model response incomplete; showing source-checked facts" : "Only facts stated in the posting"}</span></div>${legend ? `<div class="highlight-key overview-highlight-key" aria-label="Highlight key">${legend}</div>` : ""}<dl class="overview-grid">${groups}</dl></section>`;
+  return `<section class="detail-section ai-overview overview-resolved" data-overview-section tabindex="-1" aria-labelledby="ai-overview-heading"><div class="overview-heading"><h2 id="ai-overview-heading">${fallback ? "Posting overview" : "AI overview"}</h2>${shown ? '<span aria-live="polite">Regenerating. This one stays until the new one is ready.</span>' : `<span>${fallback ? "Model response incomplete; showing source-checked facts" : "Only facts stated in the posting"}</span><div class="overview-actions"><button class="text-button interactive" type="button" data-regenerate-overview>Regenerate</button><button class="text-button interactive" type="button" data-dismiss-overview>Dismiss</button></div>`}</div>${legend ? `<div class="highlight-key overview-highlight-key" aria-label="Highlight key">${legend}</div>` : ""}<dl class="overview-grid">${groups}</dl></section>`;
 }
 
 function atGlanceMarkup(job) {
-  if (state.aiOverviewEnabled && state.overviews.get(job.dedupe_key)?.items?.length) return "";
+  const overview = state.overviews.get(job.dedupe_key);
+  if (state.aiOverviewEnabled && overview?.items?.length && !overview.dismissed) return "";
   const value = state.descriptions.get(job.dedupe_key)?.value || {};
   const sections = Array.isArray(value.sections) ? value.sections : [];
   const bullets = [];
@@ -664,7 +667,7 @@ function detailMarkup(job) {
   const visibleStatus = job.liveness_status === "closed" ? "Posting closed" : statusLabel(job.status || "new");
   const history = (state.trackerData?.history || []).filter((item) => item.dedupe_key === job.dedupe_key).slice(-6).reverse();
   const interviews = (state.trackerData?.interviews || []).filter((item) => item.dedupe_key === job.dedupe_key);
-  const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div>${statusMarkup(item.to_status)}<time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time></div>`).join("")}</div>` : "";
+  const activityDetails = history.length ? `<div class="activity-timeline">${history.map((item) => `<div data-activity-id="${item.id}">${statusMarkup(item.to_status)}<span class="activity-end"><time datetime="${escapeHtml(item.changed_at)}">${escapeHtml(formatAbsolute(item.changed_at))}</time>${item.id ? `<button class="icon-button interactive activity-dismiss" type="button" data-dismiss-activity="${item.id}" aria-label="Dismiss ${escapeHtml(statusLabel(item.to_status))} from ${escapeHtml(formatAbsolute(item.changed_at))}" title="Dismiss from the timeline">${icons.close}</button>` : ""}</span></div>`).join("")}</div>` : "";
   const interviewDetails = interviews.length ? `<div class="activity-interviews">${interviews.map((item) => `<div><strong>${item.cancelled_at ? "Cancelled interview" : "Interview"}</strong><time datetime="${escapeHtml(item.starts_at)}">${escapeHtml(formatAbsolute(item.starts_at))}</time>${item.location ? `<span>${escapeHtml(item.location)}</span>` : ""}</div>`).join("")}</div>` : "";
   const repostWarning = job.ghost_job ? `<p class="company-warning repost-warning"><span aria-hidden="true">!</span>This title has appeared ${new Intl.NumberFormat().format(job.repost_count)} times in 90 days: ${job.repost_dates.map((value) => escapeHtml(value)).join(", ")}. This is an observation, not a claim about the employer.</p>` : "";
   const ruleNotice = job.archived_by_rule ? `<div class="rule-notice"><div><strong><span aria-hidden="true">—</span> Archived by rule</strong><p>${escapeHtml(job.archived_by_rule)}</p></div><button class="text-button interactive" type="button" data-undo-rule-action="${job.rule_action_id}">Undo</button></div>` : "";
@@ -689,7 +692,7 @@ function detailMarkup(job) {
       ${skillMatchMarkup(job)}
       ${descriptionMarkup(job)}
       <section class="detail-section" aria-labelledby="posting-details-heading"><h2 id="posting-details-heading">Posting details</h2><dl class="detail-facts">${factItem("Status", visibleStatus)}${factItem("First seen", formatAbsolute(job.first_seen))}${factItem("Last seen", formatAbsolute(job.last_seen))}${factItem("Sources", sourceText)}${factItem("Tags", (job.manual_tags || []).join(", "))}${factItem("Rule tags", (job.rule_tags || []).join(", "))}${factItem("Ranking boost", job.rule_boost ? `+${job.rule_boost} from rules` : "")}${factItem("Connections", job.connections_count ? `${new Intl.NumberFormat().format(job.connections_count)} at company` : "")}</dl><div class="posting-detail-actions">${job.url ? `<a class="original-link" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer">Open original posting ${icons.external}</a>` : ""}<button class="text-button interactive" type="button" data-edit-posting ${pending ? 'aria-disabled="true"' : ""}>Edit posting</button><button class="text-button interactive" type="button" data-add-tag>Add tag</button></div></section>
-      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><div class="activity-status-control"><span>Correct status</span>${statusSelectMarkup(job, "data-job-status-select")}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
+      <section class="detail-section" aria-labelledby="activity-heading"><h2 id="activity-heading" tabindex="-1">Activity</h2><div class="status-line"><span aria-hidden="true"></span><strong>${escapeHtml(visibleStatus)}</strong>${job.application_updated_at ? `<time datetime="${escapeHtml(job.application_updated_at)}" title="${escapeHtml(formatAbsolute(job.application_updated_at))}">${escapeHtml(formatDate(job.application_updated_at))}</time>` : ""}</div><div class="activity-status-control"><span>Correct status</span>${statusSelectMarkup(job, "data-job-status-select")}</div>${activityDetails}${interviewDetails}${job.resume_name ? `<p class="resume-sent"><span>Resume sent</span><strong>${escapeHtml(job.resume_name)}</strong></p>` : ""}<label class="notes-field" for="job-notes"><span>Notes</span><textarea id="job-notes" rows="5" placeholder="Add context for your next step">${escapeHtml(job.notes || "")}</textarea><small id="notes-state">Saved automatically</small></label></section>
       ${recentCompanyWarning || otherRoles.length ? `<section class="detail-section" aria-labelledby="company-history-heading"><h2 id="company-history-heading">Company history</h2>${recentCompanyWarning}<div class="company-roles">${otherRoles.map((other) => `<button class="company-role interactive" type="button" data-job-key="${escapeHtml(other.dedupe_key)}"><span>${escapeHtml(other.title)}</span><span>${escapeHtml(statusLabel(other.status || "new"))}</span></button>`).join("")}</div></section>` : ""}
     </div>
   </article>`;
@@ -840,14 +843,21 @@ function scheduleOverviewPoll(key) {
 }
 
 function applyOverviewPayload(key, payload) {
-  if (payload?.items?.length) {
-    state.overviews.set(key, { loading: false, items: payload.items, source: payload.source || "ai", error: "" });
+  // a regenerate keeps its old items
+  if (["queued", "running"].includes(payload?.status)) {
+    const current = state.overviews.get(key);
+    // the server keeps the last ready one
+    const kept = payload.items?.length ? { items: payload.items, source: payload.source || "ai" }
+      : current?.regenerating && current.items?.length ? { items: current.items, source: current.source } : null;
+    state.overviews.set(key, kept
+      ? { loading: false, status: payload.status, error: "", regenerating: true, dismissed: false, ...kept }
+      : { loading: false, status: payload.status, items: [], error: "" });
+    scheduleOverviewPoll(key);
+  } else if (payload?.items?.length) {
+    state.overviews.set(key, { loading: false, items: payload.items, source: payload.source || "ai", error: "", dismissed: Boolean(payload.dismissed) });
     const timer = state.overviewPollTimers.get(key);
     if (timer) clearTimeout(timer);
     state.overviewPollTimers.delete(key);
-  } else if (["queued", "running"].includes(payload?.status)) {
-    state.overviews.set(key, { loading: false, status: payload.status, items: [], error: "" });
-    scheduleOverviewPoll(key);
   } else if (payload?.status === "failed") {
     state.overviews.set(key, { loading: false, items: [], error: payload.error || "This overview could not be completed." });
   } else {
@@ -886,6 +896,67 @@ async function showCachedOverview(key) {
     clearTimeout(indicator);
     update();
   }
+}
+
+function overviewPath(key, action) {
+  return `/api/v1/jobs/${encodeURIComponent(key)}/overview/${action}`;
+}
+
+function overviewFocus(selector) {
+  return () => (document.querySelector(selector) || document.querySelector("[data-overview-section]"))?.focus({ preventScroll: true });
+}
+
+async function setOverviewDismissed(key, dismissed, { offer = true } = {}) {
+  const entry = state.overviews.get(key);
+  if (!entry?.items?.length) return;
+  const refocus = overviewFocus(dismissed ? "[data-restore-overview]" : "[data-dismiss-overview]");
+  entry.dismissed = dismissed;
+  updateOverviewUI(key);
+  refocus();
+  const { status, error } = await companyWrite(overviewPath(key, dismissed ? "dismiss" : "restore"), { method: "POST", body: "{}" }, "Couldn't change the overview.");
+  // another tab got there first
+  if (status === 409) { showSnackbar(dismissed ? "Already dismissed in another tab." : "Already shown in another tab."); return; }
+  if (error) {
+    entry.dismissed = !dismissed;
+    updateOverviewUI(key);
+    overviewFocus(dismissed ? "[data-dismiss-overview]" : "[data-restore-overview]")();
+    assertiveRegion.textContent = `${error} Change undone.`;
+    showSnackbar(`${error} Change undone.`);
+    return;
+  }
+  if (offer) offerUndoSnackbar(dismissed ? "Overview dismissed." : "Overview shown again.", [`overview:${key}`], () => setOverviewDismissed(key, !dismissed, { offer: false }));
+  else showSnackbar(dismissed ? "Overview dismissed again." : "Overview shown again.");
+}
+
+async function regenerateOverview(key) {
+  const before = state.overviews.get(key);
+  state.overviews.set(key, before?.items?.length
+    ? { ...before, regenerating: true, dismissed: false, status: "running" }
+    : { loading: true, status: "running", items: [], error: "" });
+  updateOverviewUI(key);
+  overviewFocus("[data-overview-section]")();
+  const { body, error } = await companyWrite(overviewPath(key, "regenerate"), { method: "POST", body: "{}" }, "Couldn't regenerate the overview.");
+  if (error) {
+    if (before) state.overviews.set(key, before); else state.overviews.delete(key);
+    updateOverviewUI(key);
+    assertiveRegion.textContent = error;
+    showSnackbar(error);
+    return;
+  }
+  applyOverviewPayload(key, body);
+  updateOverviewUI(key);
+  if (document.activeElement === document.body) overviewFocus("[data-regenerate-overview]")();
+  // only a saved overview has a past
+  if (body.can_undo && body.revision != null) offerUndoSnackbar("Regenerating the overview.", [`overview:${key}`], () => undoRegenerate(key, body.revision));
+  else showSnackbar("Overview regenerated.");
+}
+
+async function undoRegenerate(key, revision) {
+  const { body, error } = await companyWrite(overviewPath(key, "regenerate/undo"), { method: "POST", body: JSON.stringify({ expected_revision: revision }) }, "Couldn't undo the regenerate.");
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  applyOverviewPayload(key, body);
+  updateOverviewUI(key);
+  showSnackbar("Previous overview restored.");
 }
 
 async function saveManualDescription() {
@@ -2203,6 +2274,31 @@ async function removeFromQueue(key) {
 
 // --- hiding jobs ---
 // the scout never shows them again
+
+// --- activity ---
+
+// only the timeline loses it
+async function setActivityDismissed(entry, dismissed, { offer = true, order = [] } = {}) {
+  const data = state.trackerData;
+  if (!data) return;
+  // carrel: next entry, else previous
+  const rest = order.filter((id) => id !== String(entry.id));
+  const next = rest[Math.min(Math.max(0, order.indexOf(String(entry.id))), rest.length - 1)];
+  data.history = dismissed ? data.history.filter((item) => item.id !== entry.id)
+    : [...data.history.filter((item) => item.id !== entry.id), entry].sort((left, right) => new Date(left.changed_at) - new Date(right.changed_at) || left.id - right.id);
+  renderJobSurface();
+  if (dismissed) (document.querySelector(`[data-dismiss-activity="${next}"]`) || document.querySelector("#activity-heading"))?.focus({ preventScroll: true });
+  const { status, error } = await companyWrite(`/api/v1/activity/${entry.id}/${dismissed ? "dismiss" : "restore"}`, { method: "POST", body: "{}" }, "Couldn't change the activity entry.");
+  if (status === 409) { showSnackbar(dismissed ? "Already dismissed in another tab." : "Already back in another tab."); return; }
+  if (error) {
+    trackerWriteLanded();
+    assertiveRegion.textContent = `${error} Change undone.`;
+    showSnackbar(`${error} Change undone.`);
+    return;
+  }
+  if (offer) offerUndoSnackbar(`${statusLabel(entry.to_status)} dismissed from the timeline.`, [`activity:${entry.id}`], () => setActivityDismissed(entry, false, { offer: false }));
+  else showSnackbar("Activity entry restored.");
+}
 
 // --- tags ---
 
@@ -5301,6 +5397,16 @@ document.addEventListener("click", (event) => {
   if (editButton) {
     const field = editButton.dataset.editPosting;
     if (editButton.getAttribute("aria-disabled") !== "true") editPosting(state.selectedKey, { trigger: editButton, focus: field, focusBack: () => document.querySelector(`[data-edit-posting="${field}"]`)?.focus() });
+    return;
+  }
+  if (event.target.closest("[data-dismiss-overview]") && state.selectedKey) { setOverviewDismissed(state.selectedKey, true); return; }
+  if (event.target.closest("[data-restore-overview]") && state.selectedKey) { setOverviewDismissed(state.selectedKey, false); return; }
+  if (event.target.closest("[data-regenerate-overview]") && state.selectedKey) { regenerateOverview(state.selectedKey); return; }
+  const dismissActivity = event.target.closest("[data-dismiss-activity]");
+  if (dismissActivity) {
+    const entry = state.trackerData?.history?.find((item) => String(item.id) === dismissActivity.dataset.dismissActivity);
+    const order = [...document.querySelectorAll(".activity-timeline [data-activity-id]")].map((row) => row.dataset.activityId);
+    if (entry) setActivityDismissed(entry, true, { order });
     return;
   }
   if (event.target.closest("[data-retry-overview]")) { loadOverview(state.selectedKey, { force: true }); return; }

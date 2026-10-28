@@ -3492,6 +3492,28 @@ dialog[open]::backdrop {
   font-size: 13px;
 }
 
+.activity-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.activity-dismiss {
+  width: 32px;
+  height: 32px;
+}
+
+.activity-dismiss svg {
+  width: 18px;
+  height: 18px;
+}
+
+.overview-actions {
+  display: flex;
+  gap: var(--s-1);
+  margin-left: auto;
+}
+
 .activity-timeline time,
 .activity-interviews time {
   color: var(--on-surface-faint);
