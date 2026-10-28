@@ -7,6 +7,7 @@ import threading
 import httpx
 import pytest
 
+from jobscout import db as database
 from jobscout.dashboard import DashboardServer, DemoStore, _annotate_reposts, load_profile
 
 AUTH = {
@@ -2171,6 +2172,56 @@ def test_profile_lists_the_fields_eligibility_reads(quick_fill_dashboard):
     assert set(profile["eligibility_checks"]) >= {"clearance", "degree", "graduation"}
     assert saved["eligibility_checks"] == profile["eligibility_checks"]
     assert [row["key"] for row in saved["fields"]] == [row["key"] for row in profile["fields"]]
+
+
+def test_profile_import_merges_documents_and_keeps_resume_links(quick_fill_dashboard):
+    base, store = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    profile = client.get("/api/v1/profile").json()["profile"]
+    profile["documents"] = [{"name": "Platform resume", "date": "2026-09-01", "url": "https://old.example/cv"}]
+    profile = client.put("/api/v1/profile", headers=headers, json={"profile": profile}).json()["profile"]
+    document_id = profile["documents"][0]["id"]
+    client.patch("/api/v1/jobs/demo%3A2", headers=headers, json={"status": "applying", "notes": ""})
+    client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": document_id})
+    # a file from another install, foreign ids
+    including = {**profile, "documents": [{"id": "elsewhere-1", "name": "platform resume", "url": "https://new.example/cv"}, {"name": "Cover letter"}]}
+    first = client.put("/api/v1/profile", headers=headers, json={"profile": including, "import": True})
+    omitting = {**first.json()["profile"], "documents": [{"name": "Data resume"}]}
+    second = client.put("/api/v1/profile", headers=headers, json={"profile": omitting, "import": True})
+    tracker = client.get("/api/v1/tracker").json()["applications"]
+
+    assert first.status_code == second.status_code == 200
+    merged = first.json()["profile"]["documents"]
+    assert [(row["id"] == document_id, row["name"], row["url"]) for row in merged] == [(True, "platform resume", "https://new.example/cv"), (False, "Cover letter", "")]
+    assert [row["name"] for row in second.json()["profile"]["documents"]] == ["platform resume", "Cover letter", "Data resume"]
+    assert second.json()["profile"]["documents"][0]["application_count"] == 1
+    assert next(row for row in store.rows if row["dedupe_key"] == "demo:2")["resume_document_id"] == document_id
+    assert next(job for job in tracker if job["dedupe_key"] == "demo:2")["resume_document_id"] == document_id
+
+
+def test_a_plain_profile_save_still_deletes_documents(quick_fill_dashboard):
+    base, _ = quick_fill_dashboard
+    client, csrf = authenticated_client(base)
+    profile = client.get("/api/v1/profile").json()["profile"]
+    profile["documents"] = [{"name": "Platform resume"}]
+    profile = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": profile}).json()["profile"]
+    profile["documents"] = []
+    saved = client.put("/api/v1/profile", headers={"X-CSRF-Token": csrf}, json={"profile": profile}).json()["profile"]
+
+    assert saved["documents"] == []
+
+
+def test_merge_imported_documents_moves_the_default_only_when_named():
+    existing = [{"id": 1, "name": "A", "url": "", "date": dt.date(2026, 9, 1), "default": True}, {"id": 2, "name": "B", "url": "", "date": None, "default": False}]
+    incoming = [{"id": 1, "name": "C", "url": "", "date": None, "default": False, "sort_order": 0}]
+
+    kept = database.merge_imported_documents(existing, incoming)
+    moved = database.merge_imported_documents(existing, [{**incoming[0], "name": "b", "default": True}])
+
+    assert [(row["id"], row["default"], row["sort_order"]) for row in kept] == [(1, True, 0), (2, False, 10), (None, False, 20)]
+    assert kept[0]["date"] == "2026-09-01"
+    assert [(row["id"], row["name"], row["default"]) for row in moved] == [(1, "A", False), (2, "b", True)]
 
 
 def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):

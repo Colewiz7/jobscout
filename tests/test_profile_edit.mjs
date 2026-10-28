@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adoptIds, applyOp, eligibilityWarning, fieldKey, limitReason, newId, opKeys, referenceWarning, renameOverrides, restoredMessage, withOrder } from "../src/jobscout/static/profile-edit.js";
+import { adoptIds, applyOp, eligibilityWarning, fieldKey, limitReason, mergeDocuments, newId, opKeys, referenceWarning, renameOverrides, restoredMessage, withOrder } from "../src/jobscout/static/profile-edit.js";
 
 const profile = () => ({
   fields: [{ key: "email", label: "Email", group: "Contact" }, { key: "degree", label: "Degree", group: "Education" }],
@@ -125,4 +125,20 @@ test("restoredMessage owns up to lost links", () => {
   assert.equal(restoredMessage(0), "Document restored.");
   assert.equal(restoredMessage(1), "Document restored. Its link from 1 application wasn't restored.");
   assert.equal(restoredMessage(4), "Document restored. Its links from 4 applications weren't restored.");
+});
+
+test("mergeDocuments keeps ids, adds new ones and drops nothing", () => {
+  const existing = [{ id: 7, name: "Platform resume", url: "a", default: true, application_count: 2 }, { id: 9, name: "Data resume", url: "b", default: false }];
+  const merged = mergeDocuments(existing, [{ id: 99, name: " platform RESUME ", url: "new", default: false }, { id: 7, name: "Cover letter", url: "c", default: false }]);
+  assert.deepEqual(merged.map((row) => [row.id, row.name, row.url, row.default]), [[7, " platform RESUME ", "new", true], [9, "Data resume", "b", false], [merged[2].id, "Cover letter", "c", false]]);
+  assert.equal(merged[0].application_count, 2);
+  assert.ok(![7, 9, "7", "9"].includes(merged[2].id));
+  assert.deepEqual(existing[0].url, "a");
+});
+
+test("mergeDocuments moves the default only when the import names one", () => {
+  const existing = [{ id: 1, name: "A", default: true }, { id: 2, name: "B", default: false }];
+  assert.deepEqual(mergeDocuments(existing, [{ name: "B", default: true }]).map((row) => row.default), [false, true]);
+  assert.deepEqual(mergeDocuments(existing, [{ name: "C", default: true }]).map((row) => row.default), [false, false, true]);
+  assert.deepEqual(mergeDocuments(existing, []).map((row) => row.id), [1, 2]);
 });

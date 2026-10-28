@@ -1077,10 +1077,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.profile_data(conn, dedupe_key=dedupe_key, company=company)
 
-    def save_profile(self, payload: dict, revision: int | None = None) -> dict:
+    def save_profile(self, payload: dict, revision: int | None = None, merge_documents: bool = False) -> dict:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.replace_profile_data(conn, payload, revision=revision)
+            return database.replace_profile_data(conn, payload, revision=revision, merge_documents=merge_documents)
 
     def mark_copy(self, dedupe_key: str, target_key: str) -> None:
         with database.connect(self.dsn) as conn:
@@ -2415,10 +2415,12 @@ class DemoStore:
         )
         return profile
 
-    def save_profile(self, payload: dict, revision: int | None = None) -> dict:
+    def save_profile(self, payload: dict, revision: int | None = None, merge_documents: bool = False) -> dict:
         if revision is not None and revision != self._profile_revision:
             raise database.ProfileConflict("profile is at revision %d, not %d" % (self._profile_revision, revision))
         clean = database.normalize_profile_data(payload)
+        if merge_documents:
+            clean["documents"] = database.merge_imported_documents(self._profile.get("documents", []), clean["documents"])
         # mirrors the id-preserving postgres write
         for name, prefix in (("documents", "document"), ("answer_templates", "template")):
             known = {str(row.get("id")) for row in self._profile.get(name, [])}
@@ -4003,7 +4005,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # without it, tabs overwrite each other
                 if not isinstance(revision, int) or isinstance(revision, bool):
                     raise ValueError("revision is required; reload the profile and retry")
-                profile = self.app.store.save_profile(document, revision)
+                profile = self.app.store.save_profile(document, revision, merge_documents=payload.get("import") is True)
         except database.ValueConflict as error:
             self._json({"error": "It changed in another tab.", "value": error.value}, HTTPStatus.CONFLICT)
             return

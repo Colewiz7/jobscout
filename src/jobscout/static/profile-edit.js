@@ -108,6 +108,29 @@ export function opKeys(doc, op) {
   return [`profile:${kind}:${id}`];
 }
 
+// imports never drop a document
+export function mergeDocuments(existing, incoming) {
+  const merged = existing.map((row) => ({ ...row }));
+  const unmatched = new Map(merged.map((row, index) => [index, String(row.name ?? "").trim().toLowerCase()]));
+  const taken = new Set(merged.map((row) => String(row.id)));
+  let picked = null;
+  for (const row of incoming) {
+    const name = String(row.name ?? "").trim().toLowerCase();
+    let index = [...unmatched].find(([, value]) => value === name)?.[0];
+    if (index === undefined) {
+      const id = newId("document", taken);
+      taken.add(id);
+      index = merged.push({ ...row, id, default: false }) - 1;
+    } else {
+      unmatched.delete(index);
+      merged[index] = { ...merged[index], ...row, id: merged[index].id, default: merged[index].default === true }; // links point at the id
+    }
+    if (row.default === true) picked = merged[index];
+  }
+  if (picked) for (const row of merged) row.default = row === picked;
+  return merged;
+}
+
 // server order is sort_order then id
 export function withOrder(doc) {
   const out = {};

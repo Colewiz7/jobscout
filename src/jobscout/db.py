@@ -1536,7 +1536,33 @@ def _sync_documents(cur, documents: list[dict]) -> None:
     cur.execute("update documents set is_default = true where id = %s", (default,))
 
 
-def replace_profile_data(conn: psycopg.Connection, payload: dict, *, revision: int | None = None) -> dict:
+# imports never drop a document
+def merge_imported_documents(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged = [{
+        "id": row.get("id"), "name": row["name"], "url": row.get("url") or "",
+        "date": str(row["date"]) if row.get("date") else None, "default": row.get("default") is True,
+    } for row in existing]
+    unmatched = {index: row["name"].strip().casefold() for index, row in enumerate(merged)}
+    picked = None
+    for row in incoming:
+        name = row["name"].strip().casefold()
+        index = next((key for key, value in unmatched.items() if value == name), None)
+        if index is None:
+            merged.append({**row, "id": None, "default": False})
+            index = len(merged) - 1
+        else:
+            del unmatched[index]
+            merged[index] = {**row, "id": merged[index]["id"], "default": merged[index]["default"]}  # links point at the id
+        if row["default"]:
+            picked = merged[index]
+    for index, row in enumerate(merged):
+        if picked is not None:
+            row["default"] = row is picked
+        row["sort_order"] = index * 10
+    return merged
+
+
+def replace_profile_data(conn: psycopg.Connection, payload: dict, *, revision: int | None = None, merge_documents: bool = False) -> dict:
     """Atomically replace the feature-gated single-user Quick-fill profile."""
     clean = normalize_profile_data(payload)
     with conn.cursor() as cur:
@@ -1545,6 +1571,9 @@ def replace_profile_data(conn: psycopg.Connection, payload: dict, *, revision: i
         except ProfileConflict:
             conn.rollback()
             raise
+        if merge_documents:
+            cur.execute("select id, name, document_date as date, url, is_default as \"default\" from documents order by sort_order, id")
+            clean["documents"] = merge_imported_documents(cur.fetchall(), clean["documents"])
         cur.execute("delete from profile_fields")
         cur.executemany(
             """

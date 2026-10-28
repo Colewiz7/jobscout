@@ -970,6 +970,27 @@ def test_field_only_profile_save_keeps_resume_references(conn):
         assert cur.fetchone()["resume_document_id"] == document_id
 
 
+def test_profile_import_keeps_resume_links_whether_or_not_it_lists_the_document(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    profile = database.replace_profile_data(conn, {"documents": [{"name": "Platform resume", "date": "2026-09-01", "url": "https://old.example/cv"}]})
+    document_id = profile["documents"][0]["id"]
+    database.mark_application_applied(conn, posting.dedupe_key, document_id)
+
+    including = database.replace_profile_data(conn, {**profile, "documents": [{"id": document_id + 100, "name": "platform resume", "url": "https://new.example/cv"}, {"name": "Cover letter"}]}, merge_documents=True)
+    omitting = database.replace_profile_data(conn, {**including, "documents": [{"name": "Data resume", "default": True}]}, merge_documents=True)
+
+    assert [(row["id"] == document_id, row["url"]) for row in including["documents"]] == [(True, "https://new.example/cv"), (False, "")]
+    assert [(row["name"], row["default"]) for row in omitting["documents"]] == [("platform resume", False), ("Cover letter", False), ("Data resume", True)]
+    assert omitting["documents"][0]["id"] == document_id
+    assert omitting["documents"][0]["application_count"] == 1
+    with conn.cursor() as cur:
+        cur.execute("select resume_document_id from application_states where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone()["resume_document_id"] == document_id
+        cur.execute("select resume_document_id from application_snapshots where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone()["resume_document_id"] == document_id
+
+
 def test_profile_fields_come_back_in_hand_order(conn):
     saved = database.replace_profile_data(conn, {"fields": [
         {"key": "email", "group": "Contact", "label": "Email", "value": "", "pinned": False, "sort_order": 0},

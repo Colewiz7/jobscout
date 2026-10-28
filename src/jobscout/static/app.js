@@ -9,7 +9,7 @@ import { fuzzyScore, menuCommands, rankCommands } from "./command-palette.js";
 import { recordedAs, routeIndex, sessionFromServer, sessionLists, sessionPatch, stepAfter, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
-import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
+import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, mergeDocuments, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
@@ -113,7 +113,7 @@ const state = {
   copiedByJob: new Map(), copiedKey: "", quickFillPopout: null,
   quickFillEdit: false, quickFillSaveState: "", quickFillSaveTimer: null,
   quickFillSetupSaving: false,
-  quickFillSaveVersion: 0, quickFillSavedProfile: null,
+  quickFillSaveVersion: 0, quickFillImportVersion: -1, quickFillSavedProfile: null,
   quickFillAliases: {}, quickFillProfileError: null,
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillSavedContext: null,
@@ -3535,7 +3535,7 @@ async function sendProfile() {
     const response = await fetch("/api/v1/profile", {
       method: "PUT", credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ profile: sent }),
+      body: JSON.stringify({ profile: sent, ...(version === state.quickFillImportVersion ? { import: true } : {}) }),
     });
     const body = await response.json().catch(() => ({}));
     if (response.status === 409 && body.profile) { adoptProfileConflict(body.profile); return Object.assign(new Error(body.error || "Your profile changed in another tab."), { conflict: true }); }
@@ -4774,6 +4774,7 @@ async function importQuickFillProfile(file) {
   try {
     const parsed = JSON.parse(await file.text());
     candidate = profileDocument(parsed.profile && typeof parsed.profile === "object" ? parsed.profile : parsed);
+    candidate.documents = mergeDocuments(previous.documents, candidate.documents.filter((row) => row && typeof row === "object"));
   } catch {
     setQuickFillSaveState("Import failed");
     showSnackbar("The profile file isn't valid JSON.");
@@ -4781,6 +4782,7 @@ async function importQuickFillProfile(file) {
   }
   Object.assign(state.quickFillProfile, candidate);
   state.quickFillSaveVersion += 1;
+  state.quickFillImportVersion = state.quickFillSaveVersion; // later edits send a plain save
   cancelAutosave();
   if (await queueProfileSave()) return;
   renderQuickFill();
