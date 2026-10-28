@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ariaKeyshortcuts, formatShortcut, matchShortcut, parseShortcut } from "../src/jobscout/static/shortcuts.js";
+import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut, parseShortcut } from "../src/jobscout/static/shortcuts.js";
 
 const key = (value, mods = {}) => ({ key: value, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods });
 
@@ -51,4 +51,19 @@ test("formatShortcut matches the shortcut sheet", () => {
   assert.equal(formatShortcut("s"), "S");
   assert.equal(formatShortcut("Shift+F10"), "Shift F10");
   assert.equal(formatShortcut("ContextMenu"), "Menu");
+});
+
+test("isTextEntry covers every way to type", () => {
+  const el = (tagName, extra = {}) => ({ tagName, isContentEditable: false, getAttribute: (name) => extra[name] ?? null, ...extra });
+  assert.equal(isTextEntry(el("INPUT", { type: "text" })), true);
+  assert.equal(isTextEntry(el("INPUT", { type: "search" })), true);
+  assert.equal(isTextEntry(el("INPUT", { type: "date" })), true);
+  assert.equal(isTextEntry(el("TEXTAREA")), true);
+  assert.equal(isTextEntry(el("SELECT")), true);
+  assert.equal(isTextEntry(el("DIV", { isContentEditable: true })), true);
+  assert.equal(isTextEntry(el("DIV", { role: "textbox" })), true);
+  assert.equal(isTextEntry(el("INPUT", { type: "checkbox" })), false);
+  assert.equal(isTextEntry(el("INPUT", { type: "radio" })), false);
+  assert.equal(isTextEntry(el("BUTTON")), false);
+  assert.equal(isTextEntry(null), false);
 });

@@ -1,6 +1,6 @@
 // one menu, three ways in
 import { placeMenu, stepIndex, typeahead } from "./menu-logic.js";
-import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
+import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 
 const LONG_PRESS = 500;
 const SLOP = 10;
@@ -13,7 +13,7 @@ let bufferTimer = 0;
 let openedAt = 0;
 
 function typing(target) {
-  return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  return isTextEntry(target);
 }
 
 function buttons() {

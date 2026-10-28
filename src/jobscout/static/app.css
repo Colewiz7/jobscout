@@ -649,7 +649,7 @@ dialog[open]::backdrop {
 .snackbar-region {
   position: fixed;
   z-index: 60;
-  bottom: var(--s-4);
+  bottom: max(var(--s-4), calc(var(--bulk-clearance, 0px) + var(--s-2)));
   left: calc(var(--nav-rail) + var(--s-4));
 }
 
@@ -1301,10 +1301,78 @@ dialog[open]::backdrop {
   align-items: center;
   gap: var(--s-1);
   padding: var(--s-2);
-  overflow-x: auto;
+  overflow: hidden;
   background: var(--surface-container-high);
   color: var(--on-surface);
   box-shadow: var(--shadow-float);
+}
+
+.bulk-actions {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--s-1);
+  overflow: hidden;
+}
+
+.bulk-actions > button {
+  flex: none;
+  white-space: nowrap;
+}
+
+[data-bulk-more] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+[data-bulk-more] svg {
+  width: 18px;
+  height: 18px;
+}
+
+.bulk-bar > [data-clear-selection] {
+  flex: none;
+}
+
+/* floats over long lists */
+.queue-page > .bulk-bar,
+.applications-section > .bulk-bar {
+  position: sticky;
+  bottom: var(--s-4);
+  margin-top: var(--s-4);
+  border-radius: var(--r-md);
+}
+
+.row-select {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: var(--r-full);
+  cursor: pointer;
+}
+
+.row-select input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.queue-card.is-selected {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.tracker-table tr.is-selected td {
+  background: color-mix(in srgb, var(--primary-container) 40%, var(--surface-container-low));
+}
+
+.tracker-table .select-cell {
+  width: 56px;
+  padding: var(--s-2);
 }
 
 .copy-selection-bar {
@@ -1325,6 +1393,7 @@ dialog[open]::backdrop {
 }
 
 .bulk-bar > span {
+  flex: none;
   min-width: max-content;
   padding-inline: var(--s-2);
   color: var(--on-surface-variant);
@@ -2396,7 +2465,7 @@ dialog[open]::backdrop {
 
 .queue-card {
   display: grid;
-  grid-template-columns: var(--handle-size) minmax(0, 1fr) auto;
+  grid-template-columns: 40px var(--handle-size) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-4);
   min-height: 112px;
@@ -4762,12 +4831,12 @@ body.quick-fill-popout {
   }
 
   .queue-card {
-    grid-template-columns: var(--handle-size) minmax(0, 1fr);
+    grid-template-columns: 40px var(--handle-size) minmax(0, 1fr);
     gap: var(--s-3);
   }
 
   .queue-card-actions {
-    grid-column: 2;
+    grid-column: 2 / -1;
     flex-wrap: wrap;
   }
 
@@ -4890,7 +4959,7 @@ body.quick-fill-popout {
 
   .snackbar-region {
     right: var(--s-3);
-    bottom: calc(var(--nav-rail) + var(--s-3));
+    bottom: max(calc(var(--nav-rail) + var(--s-3)), calc(var(--bulk-clearance, 0px) + var(--s-2)));
     left: var(--s-3);
     display: flex;
     justify-content: center;

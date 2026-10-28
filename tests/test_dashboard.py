@@ -2092,6 +2092,44 @@ def test_template_rename_and_restore_keep_job_overrides(quick_fill_dashboard):
     assert after_restore["answer_overrides"] == {"Why Datadog": "Datadog answer"}
 
 
+def test_a_status_write_can_require_the_status_it_expects(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1"
+    try:
+        client.patch(path, headers=headers, json={"status": "saved", "notes": ""})
+        stale = client.patch(path, headers=headers, json={"status": "new", "notes": "", "expected_status": "queued"})
+        unknown = client.patch(path, headers=headers, json={"status": "new", "notes": "", "expected_status": "maybe"})
+        current = client.patch(path, headers=headers, json={"status": "new", "notes": "", "expected_status": "saved"})
+    finally:
+        client.close()
+
+    assert stale.status_code == 409
+    assert stale.json()["status"] == "saved"
+    assert unknown.status_code == 400
+    assert current.status_code == 200
+    assert next(row for row in store.rows if row["dedupe_key"] == "demo:1")["status"] == "new"
+
+
+def test_a_status_only_write_keeps_notes_edited_in_between(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    path = "/api/v1/jobs/demo%3A1"
+    try:
+        client.patch(path, headers=headers, json={"status": "rejected", "notes": "old"})
+        client.patch(path, headers=headers, json={"status": "rejected", "notes": "written after the batch"})
+        undo = client.patch(path, headers=headers, json={"status": "applied", "expected_status": "rejected"})
+    finally:
+        client.close()
+
+    assert undo.status_code == 200
+    assert "notes" not in undo.json()
+    row = next(row for row in store.rows if row["dedupe_key"] == "demo:1")
+    assert (row["status"], row["notes"]) == ("applied", "written after the batch")
+
+
 def test_session_runs_only_the_chosen_jobs_in_the_order_given(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)

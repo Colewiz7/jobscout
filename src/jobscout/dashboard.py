@@ -715,7 +715,7 @@ class PostgresStore:
             database.save_liveness(conn, key, result.status, result.evidence)
         return result
 
-    def save(self, key: str, status: str, notes: str) -> dict:
+    def save(self, key: str, status: str, notes: str | None, expected: str | None = None) -> dict:
         liveness = None
         effective_status = status
         if status == "queued":
@@ -724,7 +724,7 @@ class PostgresStore:
                 effective_status = "archived"
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            saved = database.save_application_state(conn, key, effective_status, notes)
+            saved = database.save_application_state(conn, key, effective_status, notes, expected)
         return {
             "saved": saved,
             "status": effective_status,
@@ -1585,13 +1585,17 @@ class DemoStore:
         )
         return {"id": action_id, "undone_at": dt.datetime.now(dt.timezone.utc)}
 
-    def save(self, key: str, status: str, notes: str) -> dict:
+    def save(self, key: str, status: str, notes: str | None, expected: str | None = None) -> dict:
         if status not in database.APPLICATION_STATUSES:
             raise ValueError(f"unknown application status: {status}")
         for row in self.rows:
             if row["dedupe_key"] == key:
                 previous_status = row["status"]
+                if expected is not None and previous_status != expected:
+                    raise database.StatusConflict(previous_status)
                 previous_notes = row.get("notes") or ""
+                if notes is None:
+                    notes = previous_notes
                 effective_status = status
                 if status == "queued":
                     row.update(
@@ -3082,9 +3086,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if self._reject_hidden(key):
                 return
             status = str(payload["status"])
-            notes = str(payload.get("notes", ""))
-            if len(notes) > 20_000:
+            # absent notes stay as they are
+            notes = None if payload.get("notes") is None else str(payload["notes"])
+            if notes is not None and len(notes) > 20_000:
                 raise ValueError("notes are too long")
+            # undo must not clobber newer moves
+            expected = payload.get("expected_status")
+            if expected is not None and expected not in database.APPLICATION_STATUSES:
+                raise ValueError("expected_status must be a job status")
             if self.app.quick_fill_enabled and status in {"queued", "applying"}:
                 eligibility = self.app.store.eligibility(key)
                 if eligibility and eligibility.get("verdict") == "do_not_apply":
@@ -3093,7 +3102,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "Override the eligibility verdict before applying.",
                     )
                     return
-            result = self.app.store.save(key, status, notes)
+            result = self.app.store.save(key, status, notes, expected)
+        except database.StatusConflict as error:
+            self._json({"error": str(error), "status": error.status}, HTTPStatus.CONFLICT)
+            return
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -3108,7 +3120,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if effective_status in {"saved", "queued"}:
             self.app.store.prefetch_description(key)
         self._json({
-            "ok": True, "status": effective_status, "notes": notes,
+            "ok": True, "status": effective_status, **({} if notes is None else {"notes": notes}),
             "liveness": result.get("liveness"),
         })
 

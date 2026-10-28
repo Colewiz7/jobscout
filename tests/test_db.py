@@ -1950,3 +1950,31 @@ def test_a_chosen_session_keeps_the_given_order_against_postgres(conn, monkeypat
 
     assert {job["dedupe_key"] for job in whole["jobs"]} == set(keys)
     assert [job["dedupe_key"] for job in chosen["jobs"]] == [keys[2], keys[0]]
+
+
+def test_a_status_write_with_a_stale_expectation_changes_nothing(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    database.save_application_state(conn, key, "saved", "")
+
+    with pytest.raises(database.StatusConflict) as conflict:
+        database.save_application_state(conn, key, "new", "", expected="queued")
+    assert conflict.value.status == "saved"
+    assert database.save_application_state(conn, key, "queued", "", expected="saved") is True
+    with conn.cursor() as cur:
+        cur.execute("select status from application_states where dedupe_key = %s", (key,))
+        assert cur.fetchone()["status"] == "queued"
+
+
+def test_a_status_only_write_keeps_the_current_notes(conn):
+    posting = _p()
+    database.upsert_open(conn, [posting])
+    key = posting.dedupe_key
+    database.save_application_state(conn, key, "rejected", "old")
+    database.save_application_state(conn, key, "rejected", "written after the batch")
+
+    assert database.save_application_state(conn, key, "applied", None, expected="rejected") is True
+    with conn.cursor() as cur:
+        cur.execute("select status, notes from application_states where dedupe_key = %s", (key,))
+        assert dict(cur.fetchone()) == {"status": "applied", "notes": "written after the batch"}

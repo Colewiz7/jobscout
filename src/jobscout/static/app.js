@@ -3,7 +3,7 @@
 import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
-import { ariaKeyshortcuts, formatShortcut, matchShortcut } from "./shortcuts.js";
+import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
@@ -12,7 +12,7 @@ import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
 import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, RULE_KINDS, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "./inbox-edit.js";
-import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, rangeSelection, selectAllVisible, splitEligible, stepKey, toggleKey, visibleSelection } from "./selection.js";
+import { companyDismissTargets, companyLabel, eligibilityVerdict, fitActions, loadLatest, moveGroup, pruneKeys, rangeSelection, restoreSlots, selectAllVisible, splitEligible, stepKey, toggleKey, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
 const commandDialog = document.querySelector("#command-dialog");
@@ -96,7 +96,8 @@ const commands = [
 const state = {
   jobs: [], loaded: false, loading: false, error: "", csrf: "", refreshedAt: null,
   query: "", status: "new", sort: "score", source: "", remote: false, tag: "", focus: false,
-  selectedKey: "", selectedKeys: new Set(), rangeAnchor: "", rangeBase: new Set(), copySelectionMode: false, scrollTop: 0,
+  selectedKey: "", selectedKeys: new Set(), rangeAnchor: "", rangeBase: new Set(), copySelectionMode: false,
+  rowSelection: { queue: { keys: new Set(), anchor: "", base: new Set(), focus: "" }, tracker: { keys: new Set(), anchor: "", base: new Set(), focus: "" } }, scrollTop: 0,
   entries: [], totalHeight: 0, lastVisit: readStoredDate(LAST_VISIT_KEY), savedViews: [],
   pending: new Set(), notesTimer: null, skeletonAt: 0, descriptions: new Map(),
   manualDescriptionDrafts: new Map(), manualDescriptionSaving: new Set(),
@@ -698,18 +699,99 @@ function detailMarkup(job) {
   </article>`;
 }
 
-function bulkButton(action, label, spec) {
-  return `<button class="text-button interactive" type="button" data-bulk-action="${action}" aria-keyshortcuts="${ariaKeyshortcuts(spec)}" title="${label} (${formatShortcut(spec)})">${label}<kbd class="button-shortcut" aria-hidden="true">${formatShortcut(spec)}</kbd></button>`;
+// one table for bar and More
+const bulkActions = {
+  "inbox-save": { label: "Save", shortcut: "s", run: () => performDecision("saved", "Saved") },
+  "inbox-queue": { label: "Queue", shortcut: "q", run: () => queueSelection() },
+  "inbox-dismiss": { label: "Dismiss", shortcut: "x", run: () => performDecision("archived", "Dismissed") },
+  "inbox-company": { label: "Dismiss company", run: () => dismissSelectedCompanies() },
+  "inbox-restore": { label: "Restore", run: () => performDecision("new", "Restored") },
+  "inbox-tags": { label: "Tags", menu: () => tagMenuItems([...state.selectedKeys]) },
+  "inbox-hide": { label: "Hide…", run: (trigger) => hideInboxJobs([...state.selectedKeys], trigger) },
+  "queue-save": { label: "Save for later", shortcut: "s", run: () => dequeueRows(selectedRows("queue")) },
+  "queue-top": { label: "Move to top", run: () => moveRowsToEdge(selectedRows("queue"), "top") },
+  "queue-bottom": { label: "Move to bottom", run: () => moveRowsToEdge(selectedRows("queue"), "bottom") },
+  "queue-apply": { label: "Apply", run: () => startApplySession(selectedRows("queue")) },
+  "queue-tags": { label: "Tags", menu: () => tagMenuItems(selectedRows("queue")) },
+  "queue-hide": { label: "Hide…", run: (trigger) => hideRows("queue", trigger) },
+  "tracker-status": { label: "Change status", menu: () => trackerStatusItems(selectedRows("tracker")) },
+  "tracker-tags": { label: "Tags", menu: () => tagMenuItems(selectedRows("tracker")) },
+  "tracker-hide": { label: "Hide…", run: (trigger) => hideRows("tracker", trigger) },
+};
+
+function bulkButton(id) {
+  const { label, shortcut, menu } = bulkActions[id];
+  const popup = menu ? ' aria-haspopup="menu" aria-expanded="false"' : "";
+  const hint = shortcut ? ` aria-keyshortcuts="${ariaKeyshortcuts(shortcut)}" title="${label} (${formatShortcut(shortcut)})"` : "";
+  const kbd = shortcut ? `<kbd class="button-shortcut" aria-hidden="true">${formatShortcut(shortcut)}</kbd>` : "";
+  return `<button class="text-button interactive" type="button" data-bulk="${id}" data-bulk-fold${popup}${hint}>${label}${kbd}</button>`;
+}
+
+function bulkBarShell(name, count, ids, clearLabel = "Clear selection") {
+  return `<div class="bulk-bar" role="group" data-bulk-bar="${name}" aria-label="Bulk actions"><span class="bulk-count"><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span><div class="bulk-actions">${ids.map(bulkButton).join("")}<button class="text-button interactive" type="button" data-bulk-more aria-haspopup="menu" aria-expanded="false" hidden>More${icons.more}</button></div><button class="icon-button interactive" type="button" data-clear-selection="${name}" aria-label="${clearLabel}" aria-keyshortcuts="Escape" title="${clearLabel} (Esc)">${icons.close}</button></div>`;
 }
 
 function bulkBarMarkup() {
   const count = state.selectedKeys.size;
   if (state.copySelectionMode) return `<div class="bulk-bar copy-selection-bar" aria-label="Copy selection"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected · Click jobs, or Shift-click for a range</span><button class="tonal-button interactive" type="button" data-copy-selected ${count ? "" : "disabled"}>Copy selected</button><button class="text-button interactive" type="button" data-cancel-copy-selection>Cancel</button></div>`;
   if (!count) return "";
-  const actions = selectionArchived()
-    ? '<button class="text-button interactive" type="button" data-bulk-restore>Restore</button>'
-    : `${bulkButton("saved", "Save", "s")}${bulkButton("queued", "Queue", "q")}${bulkButton("archived", "Dismiss", "x")}<button class="text-button interactive" type="button" data-dismiss-company>Dismiss company</button>`;
-  return `<div class="bulk-bar" aria-label="Bulk actions"><span><strong>${new Intl.NumberFormat().format(count)}</strong> selected</span>${actions}<button class="text-button interactive" type="button" data-bulk-tags aria-haspopup="menu" aria-expanded="false">Tags</button><button class="text-button interactive" type="button" data-bulk-hide>Hide…</button><button class="icon-button interactive" type="button" data-clear-selection aria-label="Clear selection">${icons.close}</button></div>`;
+  const actions = selectionArchived() ? ["inbox-restore"] : ["inbox-save", "inbox-queue", "inbox-dismiss", "inbox-company"];
+  return bulkBarShell("inbox", count, [...actions, "inbox-tags", "inbox-hide"]);
+}
+
+function runBulk(id, trigger) {
+  const action = bulkActions[id];
+  if (!action) return;
+  if (action.menu) toggleMenu(trigger, action.menu(), { label: action.label });
+  else action.run(trigger);
+}
+
+// folded menus lose their anchor
+function bulkMoreItems(bar, more) {
+  let grouped = false;
+  return [...bar.querySelectorAll("[data-bulk-fold][hidden]")].flatMap((button) => {
+    const action = bulkActions[button.dataset.bulk];
+    const after = grouped;
+    grouped = Boolean(action.menu);
+    if (!action.menu) return [{ label: action.label, shortcut: action.shortcut, divider: after, run: () => action.run(more) }];
+    return action.menu().map((item, index) => ({ ...item, divider: index === 0 }));
+  });
+}
+
+const bulkBarSizes = typeof ResizeObserver === "function" ? new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.target.isConnected) fitBulkBar(entry.target); else bulkBarSizes.unobserve(entry.target);
+  }
+  liftSnackbars();
+}) : null;
+
+// carrel: overflow, never sideways scroll
+function fitBulkBar(bar) {
+  const group = bar.querySelector(".bulk-actions");
+  const more = bar.querySelector("[data-bulk-more]");
+  if (!group || !more) return;
+  const buttons = [...group.querySelectorAll("[data-bulk-fold]")];
+  buttons.forEach((button) => { button.hidden = false; });
+  more.hidden = false;
+  const gap = parseFloat(getComputedStyle(group).columnGap) || 0;
+  const count = fitActions(buttons.map((button) => button.offsetWidth), group.clientWidth, more.offsetWidth, gap);
+  buttons.forEach((button, index) => { button.hidden = index >= count; });
+  more.hidden = count === buttons.length;
+}
+
+function mountBulkBars() {
+  for (const bar of document.querySelectorAll(".bulk-bar[data-bulk-bar]")) {
+    fitBulkBar(bar);
+    bulkBarSizes?.observe(bar);
+  }
+  liftSnackbars();
+}
+
+// snackbars stack above the bar
+function liftSnackbars() {
+  const tops = [...document.querySelectorAll(".bulk-bar")].map((bar) => bar.getBoundingClientRect()).filter((box) => box.height && box.top < window.innerHeight && box.bottom > window.innerHeight / 2).map((box) => box.top);
+  const lift = tops.length ? Math.max(0, window.innerHeight - Math.min(...tops)) : 0;
+  document.documentElement.style.setProperty("--bulk-clearance", `${Math.round(lift)}px`);
 }
 
 function selectionArchived() {
@@ -1090,6 +1172,7 @@ function renderInbox({ focus = false } = {}) {
     const contextKey = job ? `${job.dedupe_key}\u0000${job.company}` : "";
     if (contextKey && contextKey !== state.quickFillContextKey) loadQuickFillContext(); else renderQuickFill();
   }
+  mountBulkBars();
   if (focus) document.querySelector("#job-title, .inbox-list h1")?.focus({ preventScroll: true });
 }
 
@@ -1109,6 +1192,7 @@ function syncVisibleJobSelection() {
   const nextBar = bulkBarMarkup();
   if (oldBar) oldBar.outerHTML = nextBar;
   else if (nextBar) list?.insertAdjacentHTML("beforeend", nextBar);
+  mountBulkBars();
 }
 
 function renderSelectedJob() {
@@ -1175,6 +1259,7 @@ function queueCard(job, index, count) {
         ? '<span class="queue-liveness"><span aria-hidden="true">?</span>Couldn’t verify</span>'
       : '<span class="queue-liveness"><span aria-hidden="true">?</span>Not checked</span>';
   return `<article class="queue-card" data-queue-key="${escapeHtml(job.dedupe_key)}">
+    ${rowSelectMarkup("queue", job)}
     <button class="queue-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button>
     <div class="queue-card-copy"><h2>${escapeHtml(job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
     <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
@@ -1189,7 +1274,10 @@ function renderQueue({ focus = false } = {}) {
     routeView.innerHTML = state.skeletonAt ? '<section class="page-shell"><div class="queue-skeleton skeleton"></div></section>' : "";
   } else {
     const jobs = queueJobs();
+    const held = heldRowSelect();
     routeView.innerHTML = `<section class="queue-page" aria-labelledby="queue-title"><header class="queue-heading"><div><h1 id="queue-title" tabindex="-1">Apply queue</h1><p>${jobs.length ? `${new Intl.NumberFormat().format(jobs.length)} ${jobs.length === 1 ? "role" : "roles"}, ordered for a focused pass.` : "Your next application session starts here."}</p></div>${jobs.length ? `<button class="filled-button interactive" type="button" data-start-session ${state.sessionStarting ? 'aria-disabled="true" aria-busy="true"' : ""}>${state.sessionStarting ? "Checking postings…" : "Start session"}</button>` : ""}</header>${jobs.length ? `<div class="queue-list" aria-label="Queued jobs">${jobs.map((job, index) => queueCard(job, index, jobs.length)).join("")}</div>` : `<div class="empty-state"><h2>Queue a role worth your time.</h2><p>Jobs you queue from Inbox will wait here in deadline order.</p><a class="tonal-button interactive" href="/inbox" data-route>Find roles</a></div>`}</section>`;
+    syncRowSelection("queue");
+    if (held && !focus) focusRowSelect("queue", held);
   }
   if (focus) document.querySelector("#queue-title, .empty-state h2")?.focus({ preventScroll: true });
   queuePayObserver?.disconnect();
@@ -1323,7 +1411,7 @@ function interviewsMarkup(applications) {
 
 function trackerTableMarkup(applications) {
   if (!applications.length) return '<div class="empty-state"><h2>No applications match.</h2><p>Change the Tracker filters or apply to a role from Queue.</p><a class="tonal-button interactive" href="/queue" data-route>Open queue</a></div>';
-  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${applications.map((job) => `<tr data-tracker-key="${escapeHtml(job.dedupe_key)}"><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td><div class="tracker-status-cell">${statusMarkup(job.status)}${statusSelectMarkup(job, "data-tracker-status-select")}</div></td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "")}</td><td>${escapeHtml(sourceList(job).join(", "))}</td><td class="row-menu-cell">${moreButtonMarkup(job.title)}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="tracker-table-wrap"><table class="tracker-table"><thead><tr><th class="select-cell"><label class="row-select"><input type="checkbox" data-row-select-all="tracker" aria-label="Select all applications in this view"></label></th><th><button type="button" data-tracker-sort="company">Company</button></th><th>Role</th><th><button type="button" data-tracker-sort="status">Status</button></th><th><button type="button" data-tracker-sort="applied">Applied</button></th><th><button type="button" data-tracker-sort="last_activity">Last activity</button></th><th>Next step</th><th>Resume</th><th>Source</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody>${applications.map((job) => `<tr data-tracker-key="${escapeHtml(job.dedupe_key)}"><td class="select-cell">${rowSelectMarkup("tracker", job)}</td><td><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a>${job.connections_count ? `<span class="connections-count">${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}</td><td>${escapeHtml(job.title)}</td><td><div class="tracker-status-cell">${statusMarkup(job.status)}${statusSelectMarkup(job, "data-tracker-status-select")}</div></td><td>${escapeHtml(job.applied_at ? formatDate(job.applied_at) : "")}</td><td>${escapeHtml(job.application_updated_at ? formatDate(job.application_updated_at) : "")}</td><td><input class="next-step-input" type="text" maxlength="1000" value="${escapeHtml(job.next_step || "")}" placeholder="Add next step" aria-label="Next step for ${escapeHtml(job.title)}" data-next-step="${escapeHtml(job.dedupe_key)}"></td><td>${escapeHtml(job.resume_name || "")}</td><td>${escapeHtml(sourceList(job).join(", "))}</td><td class="row-menu-cell">${moreButtonMarkup(job.title)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function trackerBoardMarkup(applications) {
@@ -1364,8 +1452,11 @@ function renderTracker({ focus = false } = {}) {
   else {
     // status saves rerender the board
     const held = document.activeElement?.closest?.(".board-card[data-tracker-key]") && document.activeElement.matches(".board-drag-handle") ? document.activeElement.closest(".board-card").dataset.trackerKey : "";
+    const box = heldRowSelect();
     routeView.innerHTML = trackerMarkup();
     if (held && !focus) document.querySelector(`.board-card[data-tracker-key="${CSS.escape(held)}"] .board-drag-handle`)?.focus({ preventScroll: true });
+    syncRowSelection("tracker");
+    if (box && !focus) focusRowSelect("tracker", box);
   }
   if (focus) document.querySelector("#tracker-title, .error-state h1")?.focus({ preventScroll: true });
 }
@@ -2499,15 +2590,17 @@ function startSessionClock() {
   }, 1000);
 }
 
-async function startApplySession() {
+async function startApplySession(keys = null) {
   if (state.sessionStarting) return;
   state.sessionStarting = true;
   renderQueue();
   try {
     const response = await fetch("/api/v1/queue/session", {
       method: "POST", credentials: "same-origin",
-      headers: { "X-CSRF-Token": state.csrf, Accept: "application/json" },
+      headers: { "X-CSRF-Token": state.csrf, Accept: "application/json", ...(keys ? { "Content-Type": "application/json" } : {}) },
+      ...(keys ? { body: JSON.stringify({ dedupe_keys: keys }) } : {}),
     });
+    noticeHidden(response);
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The session could not start.");
     const payload = await response.json();
     for (const incoming of payload.jobs || []) {
@@ -2530,6 +2623,7 @@ async function startApplySession() {
       showSnackbar("No queued jobs are ready. Add a role from Inbox first.");
     }
     else {
+      if (keys) state.rowSelection.queue.keys.clear();
       startSessionClock();
       state.selectedKey = state.applySession.keys[0];
       navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`);
@@ -2789,6 +2883,7 @@ function renderRoute({ focus = false } = {}) {
     if (!state.loaded && !state.loading) loadInbox();
     if (!state.rules && !state.rulesLoading) loadRules();
   } else renderPlaceholder(root, { focus });
+  mountBulkBars(); // a bar may have gone
 }
 
 async function loadInbox() {
@@ -4696,6 +4791,284 @@ function selectAllInbox() {
   announce(`${new Intl.NumberFormat().format(state.selectedKeys.size)} selected.`);
 }
 
+// --- queue and tracker selection ---
+
+const rowLists = {
+  queue: { rows: ".queue-list > .queue-card[data-queue-key]", attr: "queueKey", after: ".queue-list" },
+  tracker: { rows: ".tracker-table tbody tr[data-tracker-key]", attr: "trackerKey", after: ".tracker-table-wrap" },
+};
+
+function rowSelectMarkup(name, job) {
+  return `<label class="row-select"><input type="checkbox" data-row-select="${name}" value="${escapeHtml(job.dedupe_key)}" aria-label="Select ${escapeHtml(job.title)} at ${escapeHtml(job.company)}" tabindex="-1"></label>`;
+}
+
+function rowKeys(name) {
+  return [...document.querySelectorAll(rowLists[name].rows)].map((row) => row.dataset[rowLists[name].attr]);
+}
+
+// in queue order, not click order
+function selectedRows(name) {
+  const picked = state.rowSelection[name].keys;
+  return rowKeys(name).filter((key) => picked.has(key));
+}
+
+function activeRowList() {
+  if (routeRoot() === "queue" && document.querySelector(".queue-list")) return "queue";
+  if (routeRoot() === "tracker" && document.querySelector(".tracker-table")) return "tracker";
+  return "";
+}
+
+// a rerender keeps the focused box
+function heldRowSelect() {
+  const active = document.activeElement;
+  return active?.matches?.("[data-row-select]") ? active.value : "";
+}
+
+function focusRowSelect(name, key) {
+  const box = [...document.querySelectorAll(`[data-row-select="${name}"]`)].find((item) => item.value === key);
+  box?.focus({ preventScroll: true });
+  box?.closest(rowLists[name].rows)?.scrollIntoView({ block: "nearest" });
+}
+
+function syncRowSelection(name) {
+  const selection = state.rowSelection[name];
+  const keys = rowKeys(name);
+  selection.keys = pruneKeys(selection.keys, keys); // filters hide rows
+  if (!keys.includes(selection.focus)) selection.focus = keys[0] || "";
+  for (const row of document.querySelectorAll(rowLists[name].rows)) {
+    const key = row.dataset[rowLists[name].attr];
+    const box = row.querySelector("[data-row-select]");
+    const on = selection.keys.has(key);
+    row.classList.toggle("is-selected", on);
+    if (box) { box.checked = on; box.tabIndex = key === selection.focus ? 0 : -1; }
+  }
+  const all = document.querySelector(`[data-row-select-all="${name}"]`);
+  if (all) { all.checked = keys.length > 0 && selection.keys.size === keys.length; all.indeterminate = selection.keys.size > 0 && !all.checked; }
+  const old = document.querySelector(`[data-bulk-bar="${name}"]`);
+  const markup = selection.keys.size ? bulkBarShell(name, selection.keys.size, name === "queue"
+    ? ["queue-apply", "queue-save", "queue-top", "queue-bottom", "queue-tags", "queue-hide"]
+    : ["tracker-status", "tracker-tags", "tracker-hide"]) : "";
+  if (old && markup) old.outerHTML = markup;
+  else if (old) old.remove();
+  else if (markup) document.querySelector(rowLists[name].after)?.insertAdjacentHTML("afterend", markup);
+  mountBulkBars();
+}
+
+function setRowSelection(name, keys, focus) {
+  const selection = state.rowSelection[name];
+  selection.keys = keys;
+  if (focus) selection.focus = focus;
+  syncRowSelection(name);
+}
+
+function anchorRows(name, key) {
+  const selection = state.rowSelection[name];
+  selection.anchor = key;
+  selection.base = new Set(selection.keys);
+}
+
+function pickRow(name, key, event, fromBox) {
+  const selection = state.rowSelection[name];
+  const keys = rowKeys(name);
+  if (event.shiftKey && keys.includes(selection.anchor)) setRowSelection(name, rangeSelection(keys, selection.base, selection.anchor, key), key);
+  else {
+    const toggle = fromBox || event.ctrlKey || event.metaKey;
+    setRowSelection(name, toggle ? toggleKey(selection.keys, key) : new Set([key]), key);
+    anchorRows(name, key);
+  }
+  if (!fromBox) focusRowSelect(name, key);
+}
+
+function stepRow(name, move, extend) {
+  const selection = state.rowSelection[name];
+  const keys = rowKeys(name);
+  const next = move === "start" ? keys[0] : move === "end" ? keys.at(-1) : stepKey(keys, selection.focus, move);
+  if (!next) return;
+  if (extend) {
+    if (!keys.includes(selection.anchor)) anchorRows(name, selection.focus || next);
+    setRowSelection(name, rangeSelection(keys, selection.base, selection.anchor, next), next);
+  } else {
+    selection.focus = next;
+    syncRowSelection(name);
+    anchorRows(name, next);
+  }
+  focusRowSelect(name, next);
+}
+
+function selectAllRows(name) {
+  setRowSelection(name, selectAllVisible(state.rowSelection[name].keys, rowKeys(name)));
+  announce(`${new Intl.NumberFormat().format(state.rowSelection[name].keys.size)} selected.`);
+}
+
+function clearRows(name) {
+  const selection = state.rowSelection[name];
+  if (!name || !selection.keys.size) return false;
+  const inBar = document.querySelector(`[data-bulk-bar="${name}"]`)?.contains(document.activeElement);
+  setRowSelection(name, new Set());
+  anchorRows(name, selection.focus);
+  if (inBar) focusRowSelect(name, selection.focus); // the bar is gone
+  return true;
+}
+
+function setStatusEverywhere(key, status) {
+  for (const job of [state.jobs.find((item) => item.dedupe_key === key), state.trackerData?.applications?.find((item) => item.dedupe_key === key)]) {
+    if (job) job.status = status;
+  }
+}
+
+// one undo entry for the batch
+async function bulkStatus(keys, status, { write = patchJob, message, undone, after = null }) {
+  const jobs = keys.map(trackedJob).filter((job) => job && job.status !== status && !state.pending.has(job.dedupe_key));
+  if (!jobs.length) return false;
+  const previous = jobs.map((job) => ({ job, status: job.status, now: status }));
+  jobs.forEach((job) => { state.pending.add(job.dedupe_key); state.statusSaving.add(job.dedupe_key); setStatusEverywhere(job.dedupe_key, status); });
+  renderJobSurface();
+  const results = await Promise.allSettled(jobs.map((job) => write(job, status)));
+  jobs.forEach((job) => { state.pending.delete(job.dedupe_key); state.statusSaving.delete(job.dedupe_key); });
+  results.forEach((result, index) => { if (result.status === "fulfilled") previous[index].now = result.value?.status || status; });
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) {
+    const landed = previous.filter((entry, index) => results[index].status === "fulfilled");
+    previous.forEach((entry, index) => { if (results[index].status === "rejected") setStatusEverywhere(entry.job.dedupe_key, entry.status); });
+    const { restored, kept } = await restoreStatuses(landed);
+    const slotError = await placeRestored(restored, after);
+    trackerWriteLanded(); renderJobSurface();
+    const reason = failed.reason?.message || "Couldn't save the change.";
+    // a half-undone batch must say so
+    const gaps = [kept.length ? `Couldn't put back ${jobNames(kept)}.` : "", slotError ? "Their statuses are back but their queue order isn't." : ""].filter(Boolean);
+    const text = gaps.length ? `${reason} ${gaps.join(" ")} Reloaded the latest.` : `${reason} Change undone.`;
+    if (gaps.length) reloadJobs();
+    assertiveRegion.textContent = text; showSnackbar(text);
+    return false;
+  }
+  previous.forEach((entry) => setStatusEverywhere(entry.job.dedupe_key, entry.now));
+  trackerWriteLanded(); renderJobSurface();
+  offerUndoSnackbar(message(jobs.length), jobs.map((job) => job.dedupe_key), () => undoBulkStatus(previous, undone, after));
+  return true;
+}
+
+// only jobs nobody moved since
+async function restoreStatuses(entries) {
+  // status only, newer notes stay
+  const results = await Promise.allSettled(entries.map((entry) => patchJob(entry.job, entry.status, null, { expected: entry.now })));
+  const restored = [], changed = [], kept = [];
+  results.forEach((result, index) => {
+    const entry = entries[index];
+    if (result.status === "fulfilled") { restored.push(entry); setStatusEverywhere(entry.job.dedupe_key, result.value.status); }
+    else if (result.reason?.conflict) { changed.push(entry); kept.push(entry); setStatusEverywhere(entry.job.dedupe_key, result.reason.conflict); }
+    else { kept.push(entry); setStatusEverywhere(entry.job.dedupe_key, entry.now); }
+  });
+  return { restored, changed, kept };
+}
+
+// resolves to the save error
+async function placeRestored(restored, after) {
+  if (!restored.length || !after) return null;
+  return after(restored.map((entry) => entry.job.dedupe_key));
+}
+
+function jobNames(entries) {
+  return companyLabel(entries.map((entry) => `“${entry.job.title}”`));
+}
+
+async function undoBulkStatus(previous, undone, after) {
+  previous.forEach((entry) => setStatusEverywhere(entry.job.dedupe_key, entry.status));
+  renderJobSurface();
+  const { restored, changed, kept } = await restoreStatuses(previous);
+  trackerWriteLanded();
+  const slotError = await placeRestored(restored, after);
+  renderJobSurface();
+  const failed = kept.filter((entry) => !changed.includes(entry));
+  if (failed.length || slotError) reloadJobs();
+  const notes = [
+    changed.length ? `Skipped ${jobNames(changed)}, ${changed.length === 1 ? "it" : "they"} changed since.` : "",
+    failed.length ? `Couldn't put back ${jobNames(failed)}.` : "",
+    slotError ? "Their old queue order didn't save." : "",
+    failed.length || slotError ? "Reloaded the latest." : "",
+  ].filter(Boolean).join(" ");
+  if (!notes) { showSnackbar(undone); return; }
+  const text = restored.length ? `${undone} ${notes}` : `Nothing undone. ${notes}`;
+  assertiveRegion.textContent = text; showSnackbar(text);
+}
+
+function rolesLabel(count) {
+  return count === 1 ? "1 role" : `${new Intl.NumberFormat().format(count)} roles`;
+}
+
+function dequeueRows(keys) {
+  const order = queueJobs().map((job) => job.dedupe_key);
+  return bulkStatus(keys, "saved", {
+    message: (count) => `Saved ${rolesLabel(count)} for later.`,
+    undone: "Back in the queue.",
+    after: (restored) => restoreQueueSlots(order, restored),
+  });
+}
+
+// leaving the queue drops its slot
+function restoreQueueSlots(order, restored) {
+  const current = queueJobs().map((job) => job.dedupe_key);
+  const next = restoreSlots(order, current, new Set(restored.filter((key) => current.includes(key))));
+  if (!queueSaver.busy) queueSaver.reset(current);
+  applyQueueOrder(next);
+  arrangeQueue();
+  return queueSaver.save(next);
+}
+
+function moveRowsToEdge(keys, edge) {
+  const order = queueJobs().map((job) => job.dedupe_key);
+  const next = moveGroup(order, new Set(keys), edge);
+  const touched = order.filter((key, index) => next[index] !== key);
+  if (!touched.length) { showSnackbar(`Already at the ${edge}.`); return; }
+  if (!queueSaver.busy) queueSaver.reset(order);
+  applyQueueOrder(next);
+  arrangeQueue();
+  syncRowSelection("queue");
+  const message = `Moved ${rolesLabel(keys.length)} to the ${edge}.`;
+  announce(message);
+  offerMoveSnackbar(message, "queue-move", { message: "Queue move", keys: touched, run: () => undoQueueMove(order, touched) }, queueSaver.save(next));
+}
+
+function hideRows(name, trigger) {
+  const keys = selectedRows(name);
+  const order = rowKeys(name);
+  const focus = name === "queue"
+    ? focusAfterRemoval(order, keys, ".queue-card", "data-queue-key", "#queue-title")
+    : focusAfterRemoval(order, keys, ".tracker-table tr", "data-tracker-key", "#tracker-title");
+  hideJobs(keys, { trigger, focus });
+}
+
+const eligibilityGated = new Set(["queued", "applying"]);
+
+function trackerStatusItems(keys) {
+  const jobs = keys.map(trackedJob).filter(Boolean);
+  return statusOptions.map((status) => ({
+    label: `Move to ${statusLabel(status)}`,
+    disabled: jobs.every((job) => job.status === status),
+    run: () => bulkTrackerStatus(keys, status),
+  }));
+}
+
+async function bulkTrackerStatus(keys, status) {
+  let targets = keys;
+  let note = "";
+  // same split as inbox queueing
+  if (eligibilityGated.has(status)) {
+    await Promise.all(keys.map((key) => loadEligibility(key, { force: Boolean(state.eligibility.get(key)?.error) })));
+    const { eligible, blocked, unknown } = splitEligible(keys, (key) => eligibilityVerdict(state.eligibility.get(key), state.quickFillEnabled));
+    const format = (value) => new Intl.NumberFormat().format(value);
+    note = [blocked.length ? `Skipped ${format(blocked.length)} that failed the eligibility check.` : "", unknown.length ? `Skipped ${format(unknown.length)} that couldn't be checked.` : ""].filter(Boolean).join(" ");
+    if (!eligible.length) { showSnackbar(`Nothing moved. ${note}`); return; }
+    targets = eligible;
+  }
+  const write = (job, next) => writeTrackerStatus(job.dedupe_key, state.jobs.find((item) => item.dedupe_key === job.dedupe_key) || job, state.trackerData?.applications?.find((item) => item.dedupe_key === job.dedupe_key), next);
+  const moved = await bulkStatus(targets, status, {
+    write,
+    message: (count) => `Moved ${rolesLabel(count)} to ${statusLabel(status)}.${note ? ` ${note}` : ""}`,
+    undone: "Status change undone.",
+  });
+  if (moved) await loadTrackerData({ background: true });
+}
+
 function clearInboxSelection() {
   if (!state.selectedKeys.size && !state.copySelectionMode) return false;
   state.selectedKeys.clear(); state.copySelectionMode = false; anchorInbox(state.selectedKey);
@@ -4704,13 +5077,17 @@ function clearInboxSelection() {
   return true;
 }
 
-async function patchJob(job, status, notes = job.notes || "", { notesOnly = false } = {}) {
+async function patchJob(job, status, notes = job.notes || "", { notesOnly = false, expected = null } = {}) {
   const response = await secureWrite(`/api/v1/jobs/${encodeURIComponent(job.dedupe_key)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ status, notes }),
+    body: JSON.stringify({ status, ...(notes === null ? {} : { notes }), ...(expected ? { expected_status: expected } : {}) }),
   });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The change could not be saved.");
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    // lets undo skip newer moves
+    throw Object.assign(new Error(body.error || "The change could not be saved."), { conflict: expected && response.status === 409 ? body.status : "" });
+  }
   if (!notesOnly) jobsWriteLanded(); // notes dont move jobs
   return response.json();
 }
@@ -5268,12 +5645,28 @@ function resolveObjectMenu(target) {
 // native select-all elsewhere
 function selectAllShortcut() {
   if (routeRoot() === "inbox" && state.loaded) { selectAllInbox(); return true; }
-  return false;
+  const name = activeRowList();
+  const active = document.activeElement;
+  if (!name || !(active === document.body || active?.closest?.(".queue-page, .applications-section"))) return false;
+  selectAllRows(name);
+  return true;
 }
 
+const rowControls = "a, button, input, select, textarea, label, summary, [data-menu-trigger]";
+
+let liftFrame = 0;
+// sticky bars move on scroll
+document.addEventListener("scroll", () => {
+  if (!liftFrame) liftFrame = requestAnimationFrame(() => { liftFrame = 0; liftSnackbars(); });
+}, { capture: true, passive: true });
+
+// shift-click shouldnt select text
+document.addEventListener("mousedown", (event) => {
+  if (event.shiftKey && event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key]") && !event.target.closest(rowControls)) event.preventDefault();
+});
+
 function shortcutScopeAllows(event) {
-  const target = event.target;
-  return !(target instanceof HTMLElement && (target.matches("input, textarea, select, [contenteditable='true'], [role='textbox']") || target.closest("[contenteditable='true']")));
+  return !isTextEntry(event.target);
 }
 
 function handleGlobalKeydown(event) {
@@ -5297,6 +5690,15 @@ function handleGlobalKeydown(event) {
     const row = rows[Number(key) - 1];
     if (row) { event.preventDefault(); copyQuickFillItem(Number(row.dataset.copyIndex)); }
     return;
+  }
+  const rowList = activeRowList();
+  if (rowList) {
+    const box = event.target.closest?.("[data-row-select]");
+    const moves = { ArrowDown: 1, ArrowUp: -1, Home: "start", End: "end" };
+    if (box && event.key in moves) { event.preventDefault(); stepRow(rowList, moves[event.key], event.shiftKey); return; }
+    if (key === "j" || key === "k") { event.preventDefault(); stepRow(rowList, key === "j" ? 1 : -1, event.shiftKey); return; }
+    if (event.key === "Escape" && !event.target.closest?.("[data-drag-handle]") && clearRows(rowList)) { event.preventDefault(); return; }
+    if (rowList === "queue" && key === "s" && !event.shiftKey && state.rowSelection.queue.keys.size) { event.preventDefault(); runBulk("queue-save"); return; }
   }
   if (routeRoot() === "inbox" && state.loaded) {
     if (key === "/") { event.preventDefault(); document.querySelector("#job-search")?.focus(); return; }
@@ -5435,19 +5837,26 @@ document.addEventListener("click", (event) => {
     if (job && applicationUrl(job)) { window.open(applicationUrl(job), "_blank", "noopener"); performDecision("applying", "Opened"); }
     return;
   }
-  const bulk = event.target.closest("[data-bulk-action]");
-  if (bulk) {
-    if (bulk.dataset.bulkAction === "queued") { queueSelection(); return; }
-    const labels = { saved: "Saved", archived: "Dismissed" }; performDecision(bulk.dataset.bulkAction, labels[bulk.dataset.bulkAction]); return;
+  const rowBox = event.target.closest("[data-row-select]");
+  if (rowBox) { pickRow(rowBox.dataset.rowSelect, rowBox.value, event, true); return; }
+  const allBox = event.target.closest("[data-row-select-all]");
+  if (allBox) { if (allBox.checked) selectAllRows(allBox.dataset.rowSelectAll); else clearRows(allBox.dataset.rowSelectAll); return; }
+  const pickable = event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key]");
+  if (pickable && !event.target.closest(rowControls) && !window.getSelection()?.toString()) {
+    pickRow(pickable.matches(".queue-card") ? "queue" : "tracker", pickable.dataset.queueKey || pickable.dataset.trackerKey, event, false);
+    return;
   }
-  if (event.target.closest("[data-dismiss-company]")) { dismissSelectedCompanies(); return; }
-  if (event.target.closest("[data-bulk-restore]")) { performDecision("new", "Restored"); return; }
-  const bulkTags = event.target.closest("[data-bulk-tags]");
-  if (bulkTags) { toggleMenu(bulkTags, tagMenuItems([...state.selectedKeys]), { label: "Tags" }); return; }
+  const bulk = event.target.closest("[data-bulk]");
+  if (bulk) { runBulk(bulk.dataset.bulk, bulk); return; }
+  const bulkMore = event.target.closest("[data-bulk-more]");
+  if (bulkMore) { toggleMenu(bulkMore, bulkMoreItems(bulkMore.closest(".bulk-bar"), bulkMore), { label: "More bulk actions" }); return; }
   const addTagButton = event.target.closest("[data-add-tag]");
   if (addTagButton && state.selectedKey) { addTag([state.selectedKey], addTagButton); return; }
-  if (event.target.closest("[data-bulk-hide]")) { hideInboxJobs([...state.selectedKeys], event.target.closest("[data-bulk-hide]")); return; }
-  if (event.target.closest("[data-clear-selection]")) { state.selectedKeys.clear(); renderInbox(); return; }
+  const clearSelection = event.target.closest("[data-clear-selection]");
+  if (clearSelection) {
+    if (clearSelection.dataset.clearSelection === "inbox") clearInboxSelection(); else clearRows(clearSelection.dataset.clearSelection);
+    return;
+  }
   const tab = event.target.closest("[data-status-tab]");
   if (tab) { state.status = tab.dataset.statusTab; state.scrollTop = 0; state.selectedKeys.clear(); syncInboxUrl(); renderInbox(); return; }
   if (event.target.closest("[data-open-filters]")) { openFilters(event.target.closest("[data-open-filters]")); return; }

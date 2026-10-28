@@ -1642,15 +1642,21 @@ def undo_posting_edit(conn: psycopg.Connection, edit_id: int) -> dict | None:
     return {"id": edit_id, "dedupe_key": edit["dedupe_key"]}
 
 
+# job moved since caller looked
+class StatusConflict(Exception):
+    def __init__(self, status: str):
+        super().__init__("This job changed in another tab.")
+        self.status = status
+
+
+# expected guards undo against newer moves
 def save_application_state(
-    conn: psycopg.Connection, dedupe_key: str, status: str, notes: str
+    conn: psycopg.Connection, dedupe_key: str, status: str, notes: str | None, expected: str | None = None
 ) -> bool:
-    """Persist a person's workflow state, if the posting actually exists."""
     if status not in APPLICATION_STATUSES:
         raise ValueError(f"unknown application status: {status}")
     with conn.cursor() as cur:
-        cur.execute("select 1 from postings where dedupe_key = %s limit 1", (dedupe_key,))
-        if cur.fetchone() is None:
+        if not _lock_job(cur, dedupe_key):
             return False
         cur.execute(
             "select status, notes from application_states where dedupe_key = %s",
@@ -1659,6 +1665,11 @@ def save_application_state(
         existing = cur.fetchone()
         previous = existing["status"] if existing else "new"
         previous_notes = existing["notes"] if existing else ""
+        if expected is not None and previous != expected:
+            conn.rollback()
+            raise StatusConflict(previous)
+        if notes is None:
+            notes = previous_notes
         cur.execute(
             """
             insert into application_states (dedupe_key, status, notes)

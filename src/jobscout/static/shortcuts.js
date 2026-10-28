@@ -37,3 +37,15 @@ export function formatShortcut(spec, mac = false) {
   const mods = parts.map((part) => mac && part === "Mod" ? "⌘" : NAMES[part] || part);
   return [...mods, NAMES[key] || (key.length === 1 ? key.toUpperCase() : key)].join(" ");
 }
+
+// inputs that take no typing
+const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel", "password", "number", "date", "datetime-local", "month", "week", "time"]);
+
+export function isTextEntry(element) {
+  if (!element || typeof element.tagName !== "string") return false;
+  if (element.isContentEditable) return true;
+  const tag = element.tagName.toLowerCase();
+  if (tag === "textarea" || tag === "select") return true;
+  if (["textbox", "searchbox", "combobox"].includes(element.getAttribute?.("role"))) return true;
+  return tag === "input" && TEXT_TYPES.has(String(element.type || "text").toLowerCase());
+}
