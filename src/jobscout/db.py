@@ -2389,7 +2389,7 @@ def merge_companies(conn: psycopg.Connection, source: str, target: str) -> dict 
         merge_id = cur.fetchone()["id"]
         company = _public_company(cur, target)
     conn.commit()
-    return {"merge_id": merge_id, "company": company, "moved": {"contacts": len(contacts), "links": len(links)}}
+    return {"merge_id": merge_id, "company": company, "source": source_row, "moved": {"contacts": len(contacts), "links": len(links)}}
 
 
 def _move_links(cur, source: str, target: str, ids: list[int] | None = None) -> list[int]:

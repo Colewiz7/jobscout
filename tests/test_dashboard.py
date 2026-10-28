@@ -1224,6 +1224,7 @@ def test_a_merge_moves_everything_and_undoes_exactly(dashboard):
     merged = client.post(merge, headers=headers, json={"target": "cloudflare"}).json()
     assert merged["moved"] == {"contacts": 2, "links": 0}
     assert merged["company"]["name"] == "Cloudflare"
+    assert (merged["source"]["key"], merged["source"]["revision"]) == ("datadog", 0)
     index = _index(client)
     assert "datadog" not in index
     assert index["cloudflare"]["aliases"] == ["Datadog"]

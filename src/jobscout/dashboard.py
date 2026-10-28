@@ -1628,6 +1628,7 @@ class DemoStore:
         hidden = next((row for row in (source_row, target_row) if row["hidden_at"] is not None), None)
         if hidden:
             raise ValueError(f"{database.company_name(hidden)} is hidden. Show it in Companies before merging.")
+        source_before = self._public_company(key)
         source_note, target_note = self._company_notes.get(key), self._company_notes.get(target)
         before = {"target_note": copy.deepcopy(target_note), "source_note": copy.deepcopy(source_note)}
         if source_note and source_note["body"].strip():
@@ -1650,7 +1651,7 @@ class DemoStore:
             "before": {**before, "contacts": [contact["id"] for contact in moved], "links": links}, "undone": False,
         }
         self._merges.append(merge)
-        return {"merge_id": merge["id"], "company": self._public_company(target),
+        return {"merge_id": merge["id"], "company": self._public_company(target), "source": source_before,
                 "moved": {"contacts": len(moved), "links": len(links)}}
 
     def _move_links(self, source: str, target: str, ids: list[int] | None = None) -> list[int]:

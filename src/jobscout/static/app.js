@@ -10,6 +10,7 @@ import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, create
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
+import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -114,6 +115,7 @@ const state = {
   trackerQuery: "",
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
+  companiesReload: false, companiesFocusPending: false, companyQuery: "", companyShow: "all",
   rules: null, rulesLoading: false, rulesError: "",
   companyLogos: {}, companyIconKeys: new Set(), pastInterviewsOpen: false,
 };
@@ -1312,9 +1314,52 @@ function normalizeCompany(value) {
   return parts.join(" ");
 }
 
+function parseCompaniesUrl() {
+  const params = new URLSearchParams(window.location.search);
+  state.companyQuery = params.get("q") || "";
+  state.companyShow = companyFilter(params.get("show"));
+}
+
+function syncCompaniesUrl() {
+  const params = new URLSearchParams();
+  if (state.companyQuery) params.set("q", state.companyQuery);
+  if (state.companyShow !== "all") params.set("show", state.companyShow);
+  history.replaceState(history.state, "", `/companies${params.size ? `?${params}` : ""}`);
+}
+
+function companyCardMarkup(company) {
+  const postings = company.postings.length;
+  const applications = company.applications.length;
+  return `<article class="company-card${company.hidden ? " is-hidden" : ""}" data-company-key="${escapeHtml(company.key)}">${companyLogoMarkup(company.name, "company-monogram")}<div><h2><a class="company-card-link" href="/companies/${encodeURIComponent(company.name)}" data-route>${escapeHtml(company.name)}</a></h2><p>${postings} ${postings === 1 ? "posting" : "postings"} · ${applications} ${applications === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}${company.hidden ? "<span>Hidden from Companies</span>" : ""}</div>${moreButtonMarkup(company.name)}</article>`;
+}
+
+function companyResultsMarkup(all) {
+  const companies = filterCompanies(all, { query: state.companyQuery, show: state.companyShow });
+  if (companies.length) return `<div class="company-grid">${companies.map(companyCardMarkup).join("")}</div>`;
+  const query = state.companyQuery.trim();
+  const shown = COMPANY_FILTERS.find(([value]) => value === state.companyShow)[1];
+  const title = query ? `No results for “${escapeHtml(query)}”` : state.companyShow === "hidden" ? "No hidden companies." : `No companies match “${escapeHtml(shown)}”.`;
+  return `<div class="empty-state"><h2>${title}</h2><p>${query && state.companyShow !== "all" ? `Only ${escapeHtml(shown.toLowerCase())} are searched.` : "Try another name or filter."}</p><button class="tonal-button interactive" type="button" data-clear-company-filters>Clear filters</button></div>`;
+}
+
 function companyListMarkup(companies) {
-  if (!companies.length) return '<div class="empty-state"><h2>No companies yet.</h2><p>Companies appear after the scout finds a posting.</p><a class="tonal-button interactive" href="/inbox" data-route>Open inbox</a></div>';
-  return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></header><div class="company-grid">${companies.map((company) => `<a class="company-card interactive" href="/companies/${encodeURIComponent(company.name)}" data-route>${companyLogoMarkup(company.name, "company-monogram")}<div><h2>${escapeHtml(company.name)}</h2><p>${company.postings.length} ${company.postings.length === 1 ? "posting" : "postings"} · ${company.applications.length} ${company.applications.length === 1 ? "application" : "applications"}</p>${company.connections_count ? `<span>${new Intl.NumberFormat().format(company.connections_count)} connections</span>` : ""}</div></a>`).join("")}</div></section>`;
+  const add = '<button class="tonal-button interactive" type="button" data-add-company>Add company</button>';
+  if (!companies.length) return `<div class="empty-state"><h2>No companies yet.</h2><p>Companies appear after the scout finds a posting, or add one yourself.</p>${add}</div>`;
+  const visible = filterCompanies(companies, { query: state.companyQuery, show: state.companyShow }).length;
+  return `<section class="companies-page" aria-labelledby="companies-title"><header class="companies-heading"><div><h1 id="companies-title" tabindex="-1">Companies</h1><p>Roles, applications, contacts, and context in one place.</p></div><div class="companies-actions">${add}<label class="linkedin-import interactive"><span>Import LinkedIn CSV</span><input id="linkedin-csv" type="file" accept=".csv,text/csv"><small>Only connections matching these companies are saved.</small></label></div></header><div class="tracker-tools company-tools"><label>${icons.search}<input id="company-search" type="search" placeholder="Search companies" value="${escapeHtml(state.companyQuery)}" aria-label="Search companies" aria-describedby="company-count" autocomplete="off"></label><label><span class="visually-hidden">Show companies</span><select id="company-show">${COMPANY_FILTERS.map(([value, label]) => `<option value="${value}" ${state.companyShow === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div><p class="company-count" id="company-count" aria-live="polite">${companyCountText(visible)}</p><div id="company-results">${companyResultsMarkup(companies)}</div></section>`;
+}
+
+function companyCountText(count) {
+  return `${new Intl.NumberFormat().format(count)} ${count === 1 ? "company" : "companies"}`;
+}
+
+// typing keeps the search focused
+function renderCompanyResults() {
+  const all = state.companiesData?.companies;
+  const results = document.querySelector("#company-results");
+  if (!all || !results) return;
+  results.innerHTML = companyResultsMarkup(all);
+  document.querySelector("#company-count").textContent = companyCountText(filterCompanies(all, { query: state.companyQuery, show: state.companyShow }).length);
 }
 
 function contactMarkup(contact) {
@@ -1324,30 +1369,64 @@ function contactMarkup(contact) {
   return `<article class="contact-row" data-contact-id="${contact.id}"><div><strong>${escapeHtml(contact.name)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}${contact.email ? `<a href="mailto:${encodeURIComponent(contact.email)}">${escapeHtml(contact.email)}</a>` : ""}</div><div class="row-actions">${linkedin ? `<a class="text-button interactive" href="${escapeHtml(linkedin)}" target="_blank" rel="noopener noreferrer">LinkedIn ${icons.external}</a>` : ""}${moreButtonMarkup(contact.name)}</div></article>`;
 }
 
+function companyLinkMarkup(link) {
+  const href = linkHref(link.url);
+  const label = linkLabel(link);
+  const body = href
+    ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(label)}</span>${icons.external}</a>`
+    : `<span class="company-link-plain">${escapeHtml(label)}<small>Not linked because it isn't https</small></span>`;
+  return `<article class="company-link-row" data-link-id="${link.id}">${body}${moreButtonMarkup(label)}</article>`;
+}
+
 function companyDetailMarkup(company) {
   const account = company.account;
   const accountMarkup = company.account_protected
     ? '<p class="protected-copy">ATS account details stay unavailable until protected profile access is enabled.</p>'
     : account ? `<dl class="company-facts">${factItem("Account", account.account_exists === true ? "Exists" : account.account_exists === false ? "Does not exist" : "Unknown")}${factItem("Sign-in email", account.sign_in_email)}${account.password_manager_url ? `<div><dt>Password manager</dt><dd><a href="${escapeHtml(account.password_manager_url)}" target="_blank" rel="noopener noreferrer">Open entry ${icons.external}</a></dd></div>` : ""}</dl>` : '<p class="muted-copy">No ATS account status recorded.</p>';
-  return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading"><div><a href="/companies" data-route>Companies</a><div class="company-title-row">${companyLogoMarkup(company.name, "company-monogram")}<h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1></div><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p></div></header><div class="company-detail-grid"><main>
+  const aliases = company.aliases?.length ? `<p>Also matches jobs posted as ${escapeHtml(new Intl.ListFormat("en-US", { type: "conjunction" }).format(company.aliases))}.</p>` : "";
+  const hidden = company.hidden ? '<p class="company-warning company-hidden-note"><span aria-hidden="true">!</span><span>Hidden from the Companies index. Its jobs still show everywhere else.</span><button class="text-button interactive" type="button" data-restore-company>Show in Companies</button></p>' : "";
+  return `<article class="company-detail" aria-labelledby="company-title"><header class="company-detail-heading" data-company-key="${escapeHtml(company.key)}"><div><a href="/companies" data-route>Companies</a><div class="company-title-row">${companyLogoMarkup(company.name, "company-monogram")}<h1 id="company-title" tabindex="-1">${escapeHtml(company.name)}</h1>${moreButtonMarkup(company.name)}</div><p>${company.postings.length} postings · ${company.applications.length} applications${company.connections_count ? ` · ${new Intl.NumberFormat().format(company.connections_count)} connections` : ""}</p>${aliases}</div></header>${hidden}<div class="company-detail-grid"><main>
     <section class="company-section" aria-labelledby="company-applications-title"><h2 id="company-applications-title">Applications</h2>${company.applications.length ? `<div class="company-application-list">${company.applications.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${job.applied_at ? `Applied ${escapeHtml(formatDate(job.applied_at))}` : escapeHtml(formatDate(job.application_updated_at))}</span></div>${statusMarkup(job.status)}</article>`).join("")}</div>` : '<p class="muted-copy">No applications at this company yet.</p>'}</section>
-    <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2><div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
+    <section class="company-section" aria-labelledby="company-postings-title"><h2 id="company-postings-title">Postings</h2>${company.postings.length ? "" : '<p class="muted-copy">No postings yet. They show up here once the scout finds one.</p>'}<div class="company-posting-list">${company.postings.map((job) => `<article><div><strong>${escapeHtml(job.title)}</strong><span>${escapeHtml(job.location || "Location not listed")}</span></div><div>${statusMarkup(job.status)}${job.url ? `<a class="icon-button interactive" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(job.title)} posting">${icons.external}</a>` : ""}</div></article>`).join("")}</div></section>
     <section class="company-section" aria-labelledby="company-contacts-title"><div class="section-heading"><div><h2 id="company-contacts-title" tabindex="-1">Contacts</h2><p>${company.contacts.length ? `${company.contacts.length} people connected to this company.` : "Keep useful people with the company."}</p></div></div>${company.contacts.length ? `<div class="contact-list">${company.contacts.map(contactMarkup).join("")}</div>` : ""}<details class="contact-add"><summary>Add contact</summary><form id="contact-form"><input type="hidden" name="company" value="${escapeHtml(company.name)}"><label>Name<input name="name" type="text" required maxlength="500" autocomplete="name"></label><label>Role <span>(optional)</span><input name="title" type="text" maxlength="500" autocomplete="organization-title"></label><label>Email <span>(optional)</span><input name="email" type="email" maxlength="500" autocomplete="email"></label><label>LinkedIn URL <span>(optional)</span><input name="linkedin_url" type="url" maxlength="2000" inputmode="url" placeholder="https://"></label><button class="outlined-button interactive" type="submit">Save contact</button></form></details></section>
   </main><aside>
     <section class="company-section"><h2>Notes</h2><label class="company-notes"><span class="visually-hidden">Notes about ${escapeHtml(company.name)}</span><textarea id="company-note" rows="8" maxlength="20000" placeholder="Interview context, referrals, or follow-up notes">${escapeHtml(company.note?.body || "")}</textarea><small id="company-note-state">Saved automatically</small></label></section>
     <section class="company-section"><h2>ATS account</h2>${accountMarkup}</section>
-    <section class="company-section"><h2>Links</h2><div class="company-links">${company.links.slice(0, 12).map((link) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(link.label)}</span>${icons.external}</a>`).join("")}</div></section>
+    <section class="company-section" aria-labelledby="company-links-title"><div class="section-heading"><h2 id="company-links-title" tabindex="-1">Links</h2><button class="text-button interactive" type="button" data-add-company-link>Add link</button></div>${(company.saved_links || []).length ? `<div class="company-links saved-links">${company.saved_links.map(companyLinkMarkup).join("")}</div>` : ""}${company.links.length ? `<h3 class="company-links-heading">From postings</h3><div class="company-links">${company.links.slice(0, 12).map((link) => linkHref(link.url) ? `<a href="${escapeHtml(linkHref(link.url))}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(link.label)}</span>${icons.external}</a>` : `<span class="company-link-plain">${escapeHtml(link.label)}</span>`).join("")}</div>` : ""}${!(company.saved_links || []).length && !company.links.length ? '<p class="muted-copy">No links yet.</p>' : ""}</section>
   </aside></div></article>`;
 }
 
+// rerenders must keep focus
+function companyFocusPath() {
+  const active = document.activeElement;
+  if (!active || active === document.body || !routeView.contains(active)) return null;
+  const selection = active.matches("input, textarea") ? [active.selectionStart, active.selectionEnd] : null;
+  if (active.id) return { selector: `#${CSS.escape(active.id)}`, selection };
+  const holder = active.closest("[data-company-key], [data-link-id], [data-contact-id]");
+  const attr = holder && ["data-company-key", "data-link-id", "data-contact-id"].find((name) => holder.hasAttribute(name));
+  if (!attr) return null;
+  const role = active.matches("[data-menu-trigger]") ? " [data-menu-trigger]" : active.matches("a") ? " a" : "";
+  return { selector: `[${attr}="${CSS.escape(holder.getAttribute(attr))}"]${role}`, selection };
+}
+
+function restoreCompanyFocus(kept) {
+  const node = kept && document.querySelector(kept.selector);
+  if (!node) return;
+  node.focus({ preventScroll: true });
+  if (kept.selection && node.setSelectionRange) node.setSelectionRange(...kept.selection);
+}
+
 function renderCompanies({ focus = false } = {}) {
-  document.title = `${companyNameFromRoute() || "Companies"} — JobSeer`;
+  document.title = `${state.companiesData?.company?.name || companyNameFromRoute() || "Companies"} — JobSeer`;
+  if (!companyNameFromRoute()) parseCompaniesUrl();
+  const kept = focus ? null : companyFocusPath();
   if (state.companiesError) routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load companies.</h1><p>${escapeHtml(state.companiesError)}</p><button class="tonal-button interactive" type="button" data-retry-companies>Retry</button></div></section>`;
   else if (!state.companiesData) routeView.innerHTML = state.companiesShowLoader ? '<section class="page-shell"><div class="companies-skeleton skeleton"></div></section>' : "";
   else if (state.companiesData.company === null) routeView.innerHTML = '<section class="page-shell"><div class="empty-state"><h1>Company not found.</h1><p>This company is not in the current posting history.</p><a class="tonal-button interactive" href="/companies" data-route>All companies</a></div></section>';
   else if (state.companiesData.company) routeView.innerHTML = companyDetailMarkup(state.companiesData.company);
   else routeView.innerHTML = companyListMarkup(state.companiesData.companies || []);
   if (focus) document.querySelector("#companies-title, #company-title, .empty-state h1")?.focus({ preventScroll: true });
+  else restoreCompanyFocus(kept);
 }
 
 function ruleDescription(rule) {
@@ -1432,19 +1511,28 @@ async function undoRuleAction(id) {
 }
 
 async function loadCompanies(name = companyNameFromRoute()) {
-  if (state.companiesLoading) return;
+  // a write landed mid load
+  if (state.companiesLoading) { state.companiesReload = true; return; }
   state.companiesLoading = true; state.companiesError = ""; state.companyLoadedName = name;
   const timer = setTimeout(() => { state.companiesShowLoader = true; if (routeRoot() === "companies") renderCompanies(); }, 300);
   try {
     const params = name ? `?${new URLSearchParams({ name })}` : "";
     const response = await fetch(`/api/v1/companies${params}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Companies did not respond.");
-    state.companiesData = await response.json();
+    const data = await response.json();
+    // the route moved on mid load
+    if (name === companyNameFromRoute()) state.companiesData = data;
+    else state.companiesReload = true;
   } catch (error) {
     state.companiesError = error instanceof Error ? error.message : "Companies did not respond.";
   } finally {
     clearTimeout(timer); state.companiesLoading = false; state.companiesShowLoader = false;
-    if (routeRoot() === "companies") renderCompanies();
+    if (state.companiesReload) { state.companiesReload = false; loadCompanies(); }
+    else if (routeRoot() === "companies") {
+      const focus = state.companiesFocusPending;
+      state.companiesFocusPending = false;
+      renderCompanies({ focus });
+    }
   }
 }
 
@@ -1482,7 +1570,7 @@ async function importLinkedInCsv(file) {
     const nameIndex = indexOf("name"); const titleIndex = indexOf("position", "title");
     const urlIndex = indexOf("url", "linkedin url"); const emailIndex = indexOf("email address", "email");
     if (companyIndex < 0 || (nameIndex < 0 && firstIndex < 0)) throw new Error("The CSV needs Company and Name columns.");
-    const companies = new Map(state.companiesData.companies.map((company) => [company.key, company.name]));
+    const companies = new Map(state.companiesData.companies.flatMap((company) => (company.match_keys || [company.key]).map((key) => [key, company.name])));
     const dataRows = rows.slice(headerRow + 1);
     const contacts = dataRows.map((values) => {
       const company = companies.get(normalizeCompany(values[companyIndex] || ""));
@@ -2212,7 +2300,8 @@ function renderRoute({ focus = false } = {}) {
     if (name !== state.companyLoadedName) state.companiesData = null;
     renderCompanies({ focus });
     if (!state.loaded && !state.loading) loadInbox();
-    if (!state.companiesData && !state.companiesLoading) loadCompanies(name);
+    // the h1 arrives with the data
+    if (!state.companiesData) { state.companiesFocusPending ||= focus; loadCompanies(name); }
   } else if (root === "profile") {
     renderProfile({ focus });
     if (!state.loaded && !state.loading) loadInbox();
@@ -2992,7 +3081,9 @@ function editFieldMarkup(field) {
     field.inputmode === "url" ? 'spellcheck="false" autocapitalize="off"' : "",
     field.help ? `aria-describedby="${id}-help"` : "",
   ].filter(Boolean).join(" ");
-  const control = field.rows
+  const control = field.options
+    ? `<select id="${id}" name="${field.name}" ${attrs}>${field.options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === (field.value ?? "") ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`
+    : field.rows
     ? `<textarea id="${id}" name="${field.name}" rows="${field.rows}" ${attrs}>${escapeHtml(field.value ?? "")}</textarea>`
     : `<input id="${id}" name="${field.name}" type="${field.type || "text"}" value="${escapeHtml(field.value ?? "")}" ${attrs}>`;
   return `<label class="capture-field" for="${id}"><span>${escapeHtml(field.label)}${field.optional ? " <small>(optional)</small>" : ""}</span>${control}${field.help ? `<small class="edit-help" id="${id}-help">${escapeHtml(field.help)}</small>` : ""}</label>`;
@@ -3082,7 +3173,7 @@ function editPosting(key, { trigger = null, focusBack = null, focus = "" } = {})
     title: "Edit posting", intro: "Fix what the capture got wrong. Scout refreshes keep your changes.",
     key, trigger, focusBack, focus,
     fields: [
-      { name: "company", label: "Company", value: job.company, required: true, maxlength: 500, autocomplete: "organization" },
+      { name: "company", label: "Company", value: job.posting_company ?? job.company, required: true, maxlength: 500, autocomplete: "organization", help: job.posting_company && job.posting_company !== job.company ? `Shown as ${job.company} because that company was renamed or merged.` : "" },
       { name: "title", label: "Role title", value: job.title, required: true, maxlength: 500 },
       { name: "url", label: "Posting URL", type: "url", inputmode: "url", value: job.url, required: Boolean(job.url), optional: !job.url, maxlength: 4096 },
       { name: "description", label: "Description", value: text, rows: 10, optional: true, maxlength: 100000, help: "Correct the posting text. Sections and highlights are read from it." },
@@ -3117,7 +3208,7 @@ async function savePostingEdit(key, changes) {
 
 function applyPostingResult(key, { job, description }) {
   if (job) for (const found of [state.jobs.find((item) => item.dedupe_key === key), state.trackerData?.applications?.find((item) => item.dedupe_key === key)]) {
-    if (found) Object.assign(found, { company: job.company, title: job.title, url: job.url });
+    if (found) Object.assign(found, { company: job.company, posting_company: job.posting_company, company_key: job.company_key, title: job.title, url: job.url });
   }
   if (description) {
     state.descriptions.set(key, { loading: false, showLoader: false, value: description, error: description.description_error || "" });
@@ -3375,6 +3466,290 @@ async function restoreContact(contact, index, list) {
   shiftConnections(contact, 1);
   rerenderRecords(contactFocus(contact.id));
   showSnackbar(`${contact.name} restored.`);
+}
+
+// --- companies ---
+
+function companyPath(company) {
+  return `/api/v1/companies/${encodeURIComponent(company.key)}`;
+}
+
+async function companyWrite(url, init, fallback) {
+  try {
+    const response = await secureWrite(url, { headers: jsonHeaders, ...init });
+    const body = await response.json().catch(() => ({}));
+    return { status: response.status, body, error: response.ok ? "" : body.error || fallback };
+  } catch (error) {
+    return { status: 0, body: {}, error: error instanceof Error ? error.message : fallback };
+  }
+}
+
+// job cards show company names
+function companiesChanged() {
+  jobsWriteLanded(); trackerWriteLanded();
+  if (routeRoot() === "companies") loadCompanies();
+  else state.companiesData = null;
+}
+
+function findCompany(key) {
+  const data = state.companiesData;
+  return data?.company?.key === key ? data.company : data?.companies?.find((item) => item.key === key) || null;
+}
+
+async function companyIndex() {
+  if (state.companiesData?.companies) return state.companiesData.companies;
+  try {
+    const response = await fetch("/api/v1/companies", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) return null;
+    return (await response.json()).companies;
+  } catch { return null; }
+}
+
+function addCompany(trigger) {
+  openEditor({
+    title: "Add company", intro: "Keep contacts and notes before the scout finds a job there. Its jobs join it once found.",
+    trigger,
+    fields: [{ name: "name", label: "Company name", value: "", required: true, maxlength: 500, autocomplete: "organization" }],
+    async save({ name }) {
+      const { body, error } = await companyWrite("/api/v1/companies", { method: "POST", body: JSON.stringify({ name }) }, "Couldn't add the company. Retry shortly.");
+      if (error) return error;
+      // after the editor hands focus back
+      setTimeout(() => {
+        state.companiesData = null;
+        navigate(`/companies/${encodeURIComponent(body.company.name)}`);
+        showSnackbar(body.created ? `${body.company.name} added.` : `${body.company.name} is already a company, so it's open now.`);
+      }, 0);
+      return "";
+    },
+  });
+}
+
+function companyFocus(key) {
+  return recordFocus(`[data-company-key="${CSS.escape(key)}"]`, "#companies-title, #company-title");
+}
+
+function renameCompany(company) {
+  openEditor({
+    title: `Rename ${company.name}`, intro: "The scout keeps matching its jobs, even under the old name.",
+    focusBack: companyFocus(company.key),
+    fields: [{ name: "name", label: "Company name", value: company.name, required: true, maxlength: 500, autocomplete: "organization" }],
+    save: ({ name }) => saveCompanyName(company.key, name, { message: `Renamed to ${name}.`, undone: "Rename undone." }),
+  });
+}
+
+function placeCompany(key, company) {
+  const found = findCompany(key);
+  if (found) Object.assign(found, { name: company.name, revision: company.revision, hidden: company.hidden });
+  // the url names the company
+  if (state.companiesData?.company?.key === key) {
+    state.companyLoadedName = company.name;
+    history.replaceState(history.state, "", `/companies/${encodeURIComponent(company.name)}`);
+  }
+  if (routeRoot() === "companies") renderCompanies();
+}
+
+// undo sends the old name back
+async function saveCompanyName(key, name, { message = "", undone = "", offer = true, expected = null, aliasFrom = null } = {}) {
+  const payload = expected === null ? { name } : { name, expected_revision: expected };
+  const { status, body, error } = await companyWrite(`/api/v1/companies/${encodeURIComponent(key)}`, { method: "PATCH", body: JSON.stringify(payload) }, "Couldn't rename the company. Retry shortly.");
+  if (status === 404) return "This company was merged into another in another tab.";
+  // show what the other tab saved
+  if (status === 409 && body.company) { placeCompany(key, body.company); return "It changed in another tab, so it now shows that version."; }
+  if (error) return error;
+  placeCompany(key, body.company);
+  companiesChanged();
+  if (aliasFrom !== null) revisionAliases.set(`company:${key}@${aliasFrom}`, body.company.revision);
+  if (offer) {
+    const after = body.company.revision;
+    offerUndoSnackbar(message, [`company:${key}`], async () => {
+      const failed = await saveCompanyName(key, body.previous.name, { offer: false, expected: currentRevision(`company:${key}`, after), aliasFrom: body.previous.revision });
+      showSnackbar(failed ? `Couldn't undo. ${failed}` : undone);
+    }, { latest: `company:${key}` });
+  }
+  return "";
+}
+
+async function pickMergeTarget(c) {
+  const companies = await companyIndex();
+  if (!companies) { showSnackbar("Couldn't load companies. Retry shortly."); return; }
+  const source = companies.find((item) => item.key === c.company.key) || c.company;
+  const targets = mergeTargets(companies, source);
+  if (!targets.length) { showSnackbar("There's no other company to merge into."); return; }
+  openEditor({
+    title: `Merge ${source.name}`, intro: "The company you pick keeps its name, ATS account and logo.",
+    focusBack: companyFocus(source.key),
+    fields: [{ name: "target", label: "Merge into", value: "", required: true, options: [["", "Pick a company"], ...targets.map((item) => [item.key, item.name])] }],
+    save({ target }) {
+      const picked = targets.find((item) => item.key === target);
+      if (!picked) return Promise.resolve("Pick a company to merge into.");
+      setTimeout(() => confirmMerge(source, picked, c), 0);
+      return Promise.resolve("");
+    },
+  });
+}
+
+async function confirmMerge(source, target, c) {
+  const trigger = document.activeElement;
+  if (!await confirmDelete({ ...mergeCopy(source, target), action: "Merge", trigger })) return;
+  const list = state.companiesData?.companies;
+  const order = list ? filterCompanies(list, { query: state.companyQuery, show: state.companyShow }).map((item) => item.key) : [];
+  const { status, body, error } = await companyWrite(`${companyPath(source)}/merge`, { method: "POST", body: JSON.stringify({ target: target.key }) }, "Couldn't merge. Retry shortly.");
+  if (error) {
+    const message = status === 404 ? "One of these was merged into another company in another tab. Reload and retry." : error;
+    assertiveRegion.textContent = message;
+    showSnackbar(message);
+    return;
+  }
+  if (c.detail) {
+    state.companiesData = null;
+    navigate(`/companies/${encodeURIComponent(body.company.name)}`, { replace: true });
+  } else if (list) {
+    // carrel: next card, else previous
+    const focus = focusAfterRemoval(order, [source.key], ".company-card", "data-company-key", "[data-add-company]");
+    list.splice(list.findIndex((item) => item.key === source.key), 1);
+    renderCompanies();
+    focus();
+  }
+  companiesChanged();
+  const after = body.company.revision;
+  offerUndoSnackbar(`Merged ${source.name} into ${target.name}.`, [`company:${target.key}`, `company:${source.key}`],
+    () => undoMerge(body, source, target, after), { latest: `company:${target.key}` });
+}
+
+async function undoMerge(merged, source, target, after) {
+  const expected = currentRevision(`company:${target.key}`, after);
+  const { body, error } = await companyWrite(`/api/v1/company-merges/${merged.merge_id}/undo`, { method: "POST", body: JSON.stringify({ expected_revision: expected }) }, "Couldn't undo the merge.");
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  // both match their pre-merge state
+  revisionAliases.set(`company:${target.key}@${after - 1}`, body.target.revision);
+  revisionAliases.set(`company:${source.key}@${merged.source.revision}`, body.company.revision);
+  companiesChanged();
+  showSnackbar(`${source.name} is its own company again.`);
+}
+
+async function setCompanyHidden(c, hidden, { offer = true } = {}) {
+  const company = findCompany(c.company.key) || c.company;
+  const list = state.companiesData?.companies;
+  const leaving = !c.detail && list && state.companyShow !== (hidden ? "hidden" : "all");
+  const order = leaving ? filterCompanies(list, { query: state.companyQuery, show: state.companyShow }).map((item) => item.key) : [];
+  const focus = leaving ? focusAfterRemoval(order, [company.key], ".company-card", "data-company-key", "#company-search") : null;
+  company.hidden = hidden;
+  renderCompanies();
+  focus?.();
+  const { status, error } = await companyWrite(`${companyPath(company)}/${hidden ? "hide" : "restore"}`, { method: "POST", body: "{}" }, "Couldn't save the change.");
+  // another tab got there first
+  if (status === 404) { showSnackbar(hidden ? "Already hidden in another tab." : "Already shown in another tab."); return; }
+  if (error) {
+    company.hidden = !hidden;
+    renderCompanies();
+    companyFocus(company.key)();
+    assertiveRegion.textContent = `${error} Change undone.`;
+    showSnackbar(`${error} Change undone.`);
+    return;
+  }
+  if (!offer) return;
+  offerUndoSnackbar(hidden ? `${company.name} hidden from Companies.` : `${company.name} is back in Companies.`, [`company-hidden:${company.key}`], async () => {
+    await setCompanyHidden({ ...c, company }, !hidden, { offer: false });
+    if (document.activeElement === document.body) companyFocus(company.key)();
+  });
+}
+
+function linkFocus(id) {
+  return recordFocus(`.company-link-row[data-link-id="${id}"]`, "[data-add-company-link]");
+}
+
+function companyLinks() {
+  return state.companiesData?.company?.saved_links || null;
+}
+
+function linkFields(link) {
+  return [
+    { name: "url", label: "URL", type: "url", inputmode: "url", value: link.url, required: true, maxlength: 2000, help: "Only https:// addresses are saved." },
+    { name: "label", label: "Label", value: link.label, optional: true, maxlength: 200, help: "Shown instead of the address." },
+  ];
+}
+
+function addCompanyLink(trigger) {
+  const company = state.companiesData?.company;
+  if (!company) return;
+  openEditor({
+    title: `Add a ${company.name} link`, trigger, fields: linkFields({ url: "", label: "" }),
+    async save(changes) {
+      const { body, error } = await companyWrite(`${companyPath(company)}/links`, { method: "POST", body: JSON.stringify({ url: changes.url, label: changes.label || "" }) }, "Couldn't add the link. Retry shortly.");
+      if (error) return error;
+      const list = companyLinks();
+      if (list && state.companiesData.company.key === company.key) list.push(body.link);
+      rerenderRecords();
+      // carrel: added items take focus
+      setTimeout(() => linkFocus(body.link.id)(), 0);
+      offerUndoSnackbar("Link added.", [`link:${body.link.id}`], () => deleteLink(body.link, { offer: false }));
+      return "";
+    },
+  });
+}
+
+function editLink(link) {
+  openEditor({
+    title: "Edit link", focusBack: linkFocus(link.id), fields: linkFields(link),
+    save: (changes) => saveLink(link.id, changes, { message: "Link updated.", undone: "Link edit undone." }),
+  });
+}
+
+async function saveLink(id, payload, { message = "", undone = "", offer = true, aliasFrom = null } = {}) {
+  const list = companyLinks();
+  const place = (link) => {
+    const index = list ? list.findIndex((item) => item.id === id) : -1;
+    if (index >= 0) list[index] = link;
+    rerenderRecords(linkFocus(id));
+  };
+  const { status, body, error } = await companyWrite(`/api/v1/company-links/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, "Couldn't save the link. Retry shortly.");
+  if (status === 404) return "This link was deleted in another tab.";
+  // show what the other tab saved
+  if (status === 409 && body.link) { place(body.link); return "It changed in another tab, so it now shows that version."; }
+  if (error) return error;
+  place(body.link);
+  if (aliasFrom !== null) revisionAliases.set(`link:${id}@${aliasFrom}`, body.link.revision);
+  if (offer) {
+    const restore = pickFields(body.previous, Object.keys(payload));
+    const after = body.link.revision;
+    offerUndoSnackbar(message, [`link:${id}`], async () => {
+      restore.expected_revision = currentRevision(`link:${id}`, after);
+      const failed = await saveLink(id, restore, { offer: false, aliasFrom: body.previous.revision });
+      showSnackbar(failed ? `Couldn't undo. ${failed}` : undone);
+    }, { latest: `link:${id}` });
+  }
+  return "";
+}
+
+async function deleteLink(link, { offer = true } = {}) {
+  const list = companyLinks();
+  const index = list ? list.findIndex((item) => item.id === link.id) : -1;
+  if (index < 0) return;
+  const focus = focusAfterRemoval(list.map((item) => String(item.id)), [String(link.id)], ".company-link-row", "data-link-id", "[data-add-company-link]");
+  const [removed] = list.splice(index, 1);
+  rerenderRecords();
+  focus();
+  const { status, error } = await companyWrite(`/api/v1/company-links/${link.id}`, { method: "DELETE" }, "Couldn't delete the link.");
+  // another tab got there first
+  if (status === 404) { showSnackbar("Already deleted in another tab."); return; }
+  if (error) {
+    if (companyLinks() === list) list.splice(index, 0, removed);
+    rerenderRecords(linkFocus(link.id));
+    assertiveRegion.textContent = `${error} Change undone.`;
+    showSnackbar(`${error} Change undone.`);
+    return;
+  }
+  if (offer) offerUndoSnackbar("Link deleted.", [`link:${link.id}`], () => restoreLink(removed, index, list));
+  else showSnackbar("Link removed.");
+}
+
+async function restoreLink(link, index, list) {
+  const { body, error } = await companyWrite(`/api/v1/company-links/${link.id}/restore`, { method: "POST" }, "Couldn't restore the link.");
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  // another company may be open now
+  if (companyLinks() === list && !list.some((item) => item.id === link.id)) list.splice(Math.min(index, list.length), 0, body.link);
+  rerenderRecords(linkFocus(link.id));
+  showSnackbar("Link restored.");
 }
 
 function openProfileItem(c, role) {
@@ -4136,6 +4511,14 @@ const profileMenuItems = [
   { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
 ];
 
+const companyMenuItems = [
+  { label: "Open", when: (c) => !c.detail, run: (c) => navigate(`/companies/${encodeURIComponent(c.company.name)}`) },
+  { label: "Rename…", run: (c) => renameCompany(c.company) },
+  { label: "Merge into…", when: (c) => !c.company.hidden, run: (c) => pickMergeTarget(c) },
+  { label: "Add link…", when: (c) => c.detail, run: () => addCompanyLink(document.querySelector("[data-add-company-link]")) },
+  { label: (c) => c.company.hidden ? "Show in Companies" : "Hide from Companies", divider: true, run: (c) => setCompanyHidden(c, !c.company.hidden) },
+];
+
 const objectMenus = [
   {
     selector: ".profile-item[data-profile-ref]", keyAttr: "data-profile-ref", fallback: ".quick-fill-header h2",
@@ -4236,6 +4619,37 @@ const objectMenus = [
       { label: "Open LinkedIn", when: (c) => safeHttpsUrl(c.contact.linkedin_url), run: (c) => window.open(safeHttpsUrl(c.contact.linkedin_url), "_blank", "noopener") },
       { label: "Edit…", divider: true, run: (c) => editContact(c.contact) },
       { label: "Delete", danger: true, divider: true, run: (c) => deleteContact(c.contact) },
+    ],
+  },
+  {
+    selector: ".company-card[data-company-key]", keyAttr: "data-company-key", fallback: "#companies-title",
+    label: (c) => c.company.name,
+    context(el) {
+      const company = state.companiesData?.companies?.find((item) => item.key === el.dataset.companyKey);
+      return company && { company, detail: false };
+    },
+    items: companyMenuItems,
+  },
+  {
+    selector: ".company-detail-heading[data-company-key]", keyAttr: "data-company-key", fallback: "#company-title",
+    label: (c) => c.company.name,
+    context() {
+      const company = state.companiesData?.company;
+      return company && { company, detail: true };
+    },
+    items: companyMenuItems,
+  },
+  {
+    selector: ".company-link-row[data-link-id]", keyAttr: "data-link-id", fallback: "#company-links-title",
+    label: (c) => linkLabel(c.link),
+    context(el) {
+      const link = companyLinks()?.find((item) => String(item.id) === el.dataset.linkId);
+      return link && { link };
+    },
+    items: [
+      { label: "Open link", when: (c) => linkHref(c.link.url), run: (c) => window.open(linkHref(c.link.url), "_blank", "noopener") },
+      { label: "Edit…", run: (c) => editLink(c.link) },
+      { label: "Delete", danger: true, divider: true, run: (c) => deleteLink(c.link) },
     ],
   },
 ];
@@ -4352,6 +4766,15 @@ document.addEventListener("click", (event) => {
   if (reminderAction) { updateReminder(Number(reminderAction.dataset.reminderId), reminderAction.dataset.reminderAction); return; }
   if (event.target.closest("[data-retry-tracker]")) { state.trackerData = null; state.trackerError = ""; loadTrackerData(); return; }
   if (event.target.closest("[data-retry-companies]")) { state.companiesData = null; state.companiesError = ""; loadCompanies(); return; }
+  const addCompanyButton = event.target.closest("[data-add-company]");
+  if (addCompanyButton) { addCompany(addCompanyButton); return; }
+  const addLinkButton = event.target.closest("[data-add-company-link]");
+  if (addLinkButton) { addCompanyLink(addLinkButton); return; }
+  if (event.target.closest("[data-restore-company]") && state.companiesData?.company) { setCompanyHidden({ company: state.companiesData.company, detail: true }, false); return; }
+  if (event.target.closest("[data-clear-company-filters]")) {
+    state.companyQuery = ""; state.companyShow = "all"; syncCompaniesUrl(); renderCompanies();
+    document.querySelector("#company-search")?.focus(); return;
+  }
   if (event.target.closest("[data-retry-rules]")) { state.rules = null; state.rulesError = ""; loadRules(); return; }
   const undoRule = event.target.closest("[data-undo-rule-action]");
   if (undoRule) { undoRuleAction(Number(undoRule.dataset.undoRuleAction)); return; }
@@ -4641,6 +5064,8 @@ document.addEventListener("input", (event) => {
   } else if (event.target.id === "tracker-search") {
     state.trackerQuery = event.target.value; syncTrackerUrl({ replace: true }); renderTracker();
     const search = document.querySelector("#tracker-search"); search?.focus(); search?.setSelectionRange(state.trackerQuery.length, state.trackerQuery.length);
+  } else if (event.target.id === "company-search") {
+    state.companyQuery = event.target.value; syncCompaniesUrl(); renderCompanyResults();
   } else if (event.target.id === "company-note") {
     const company = state.companiesData?.company?.name;
     const body = event.target.value;
@@ -4657,6 +5082,7 @@ document.addEventListener("change", (event) => {
   else if (event.target.matches("[data-board-status-select]")) setTrackerStatus(event.target.dataset.boardStatusSelect, event.target.value);
   else if (event.target.matches("[data-tracker-status-select]")) setTrackerStatus(event.target.dataset.trackerStatusSelect, event.target.value);
   else if (event.target.matches("[data-job-status-select]")) setTrackerStatus(event.target.dataset.jobStatusSelect, event.target.value);
+  else if (event.target.id === "company-show") { state.companyShow = companyFilter(event.target.value); syncCompaniesUrl(); renderCompanyResults(); }
   else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
   else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
 });
