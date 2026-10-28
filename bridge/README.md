@@ -15,6 +15,32 @@ Point it at a local demo dashboard (`python -m jobscout dashboard --demo`) first
 The server speaks the stdio tool protocol, so register the `jobseer-bridge`
 command and its env in your client's server config.
 
+## Client setup
+
+Register the bridge as a stdio server in your tool client. Use the absolute path to the
+venv script, since the system python does not have the protocol library and the venv is required:
+
+    {
+      "mcpServers": {
+        "jobseer": {
+          "command": "/ABSOLUTE/PATH/TO/bridge/.venv/bin/jobseer-bridge",
+          "env": {
+            "JOBSEER_URL": "http://127.0.0.1:8080",
+            "JOBSEER_READONLY": "1"
+          }
+        }
+      }
+    }
+
+Drop `JOBSEER_READONLY` to enable writes. Most clients also have a command-line add form that
+takes the same command and env pairs; check your client's docs for it. No secrets go in this config.
+
+- The profile tools (`profile_get`, `profile_update`, `profile_context_set`) need
+  `JOBSCOUT_QUICK_FILL_ENABLED=1` on the dashboard. It is off in a plain `--demo` run.
+- In read-only mode the write tools are not registered, so calling one gets "Unknown tool".
+- A confirm attempt with different arguments burns its `confirm_id`; ask for a new preview.
+- `python -m jobscout dashboard --demo` binds 0.0.0.0. Only run it on a trusted network.
+
 | env | meaning |
 | --- | --- |
 | `JOBSEER_URL` | dashboard address, default `http://127.0.0.1:8080` |

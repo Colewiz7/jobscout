@@ -58,7 +58,7 @@ class ReadTools:
         session = self.client.get("/api/v1/queue/session")
         return {"queue": [slim(row) for row in queued], "session": session["session"], "documents": session["documents"]}
 
-    @tool("read", "Show tracked applications, follow-ups and interviews. Optionally keep one status.")
+    @tool("read", "Show tracked applications, follow-ups and interviews. The status filter applies to applications only; interviews and follow-ups are always returned unfiltered.")
     def tracker_get(self, status: str | None = None) -> dict:
         data = self.client.get("/api/v1/tracker")
         apps = data.get("applications", [])
