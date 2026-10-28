@@ -641,7 +641,7 @@ function eligibilityMarkup(job) {
   const action = active.length
     ? '<button class="outlined-button interactive" type="button" data-override-eligibility>Override verdict</button>'
     : (result.overrides || []).length ? '<button class="text-button interactive" type="button" data-revoke-override>Revoke override</button>' : "";
-  return `<section class="eligibility-banner${active.length ? " is-blocked" : ""}" aria-labelledby="eligibility-heading"><div><p class="eyebrow">Eligibility</p><h2 id="eligibility-heading" tabindex="-1"><span aria-hidden="true">${active.length ? "!" : "✓"}</span>${heading}</h2><p>${intro}</p></div><ul>${evidence}</ul>${noteMarkup}${action ? `<div class="eligibility-actions">${action}</div>` : ""}</section>`;
+  return `<section class="eligibility-banner${active.length ? " is-blocked" : ""}" aria-labelledby="eligibility-heading"><div><p class="banner-label">Eligibility</p><h2 id="eligibility-heading" tabindex="-1"><span aria-hidden="true">${active.length ? "!" : "✓"}</span>${heading}</h2><p>${intro}</p></div><ul>${evidence}</ul>${noteMarkup}${action ? `<div class="eligibility-actions">${action}</div>` : ""}</section>`;
 }
 
 function jobHasActiveBlocker(job) {

@@ -43,6 +43,18 @@ a {
   color: inherit;
 }
 
+/* browsers shrink below 12px */
+small {
+  font-size: 12px;
+}
+
+/* rubik ships 400 and 500 only */
+b,
+strong,
+th {
+  font-weight: 500;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -380,6 +392,7 @@ kbd {
 
 .empty-state {
   max-width: var(--measure);
+  margin-inline: auto;
   padding: var(--s-12) var(--s-6);
   text-align: center;
 }
@@ -404,6 +417,13 @@ kbd {
   color: var(--on-surface);
   font: 400 28px/1.2 var(--font-serif);
   letter-spacing: -.005em;
+  text-wrap: balance;
+}
+
+.empty-state h2 {
+  margin: 0;
+  color: var(--on-surface);
+  font: 400 22px/1.25 var(--font-serif);
   text-wrap: balance;
 }
 
@@ -1268,8 +1288,8 @@ dialog[open]::backdrop {
   border-radius: var(--r-sm);
   background: var(--surface-container-high);
   color: var(--on-surface-variant);
-  font-size: 11px;
-  line-height: 16px;
+  font: 500 12px/16px var(--font-sans);
+  letter-spacing: .01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1667,13 +1687,15 @@ dialog[open]::backdrop {
   color: var(--on-error-container);
 }
 
-.eligibility-banner .eyebrow {
+.eligibility-banner .banner-label {
   margin: 0 0 var(--s-1);
+  color: var(--on-surface-variant);
+  font: 500 12px/1.25 var(--font-sans);
+  letter-spacing: .01em;
+}
+
+.eligibility-banner.is-blocked .banner-label {
   color: inherit;
-  font-size: 11px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  opacity: .75;
 }
 
 .eligibility-banner h2 {
@@ -2026,7 +2048,7 @@ dialog[open]::backdrop {
   border-radius: var(--r-full);
   background: var(--warning-container);
   color: var(--on-warning-container);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .company-role {
@@ -2474,7 +2496,7 @@ dialog[open]::backdrop {
 
 .profile-error::before {
   content: "! ";
-  font-weight: 600;
+  font-weight: 500;
 }
 
 /* Queue and application sessions */
@@ -3098,7 +3120,8 @@ dialog[open]::backdrop {
 
 .rule-form small {
   color: var(--on-surface-faint);
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .rule-list {
@@ -3541,7 +3564,7 @@ dialog[open]::backdrop {
   display: block;
   margin-top: var(--s-1);
   color: var(--on-surface-variant);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .next-step-input {
@@ -3828,7 +3851,8 @@ dialog[open]::backdrop {
 .linkedin-import small {
   margin-top: var(--s-1);
   color: var(--on-surface-variant);
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .company-grid {
@@ -3986,7 +4010,7 @@ dialog[open]::backdrop {
 
 .company-link-plain small {
   color: var(--on-surface-variant);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .company-detail-heading > div > a {
@@ -4039,7 +4063,7 @@ dialog[open]::backdrop {
 
 .company-notes small {
   color: var(--on-surface-faint);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .company-facts {
@@ -4050,7 +4074,8 @@ dialog[open]::backdrop {
 
 .company-facts dt {
   color: var(--on-surface-faint);
-  font-size: 11px;
+  font: 500 12px/1.25 var(--font-sans);
+  letter-spacing: .01em;
 }
 
 .company-facts dd {
@@ -4435,6 +4460,11 @@ body.quick-fill-popout {
 
 .capture-field small {
   color: var(--on-surface-variant);
+}
+
+.capture-field .edit-help {
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .edit-dialog {
