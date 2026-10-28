@@ -6555,7 +6555,7 @@ document.addEventListener("submit", (event) => {
 
 document.addEventListener("paste", (event) => {
   if (routeRoot() !== "inbox" || captureDialog.open) return;
-  if (event.target.closest("input, textarea, [contenteditable='true']")) return;
+  if (isTextEntry(event.target)) return;
   const pasted = event.clipboardData?.getData("text/plain")?.trim() || "";
   if (!/^https:\/\/\S+$/i.test(pasted)) return;
   event.preventDefault();
