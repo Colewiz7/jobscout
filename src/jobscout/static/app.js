@@ -6919,8 +6919,6 @@ const bookmarklet = document.querySelector("#capture-bookmarklet");
 bookmarklet.href = `javascript:(()=>{window.open(${JSON.stringify(`${window.location.origin}/inbox?share_url=`)}+encodeURIComponent(location.href),'_blank')})()`;
 bookmarklet.addEventListener("click", (event) => { event.preventDefault(); showSnackbar("Drag this link to your bookmarks bar."); });
 
-const themeColor = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
-document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
 updateOfflineState();
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
   navigator.serviceWorker.register("/service-worker.js").catch(() => {});
