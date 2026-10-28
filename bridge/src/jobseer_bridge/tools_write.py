@@ -2,6 +2,8 @@ from .client import BridgeError, key_path
 from .common import BoardStatus, Status, drop_none, need
 from .registry import tool
 
+TAG_BULK = 10
+
 
 class WriteTools:
     def _known(self, key: str) -> dict:
@@ -23,9 +25,14 @@ class WriteTools:
         })
         return self.client.send("PATCH", "/api/v1/jobs/" + key_path(key), body)
 
-    @tool("write", "Add or remove one tag on up to 500 jobs.", routes=("/api/v1/job-tags",), idempotentHint=True)
-    def jobs_tag(self, keys: list[str], tag: str, remove: bool = False) -> dict:
+    @tool("write", "Add or remove one tag on up to 500 jobs. More than 10 jobs takes two steps: repeat the call with the confirm_id from the preview.", routes=("/api/v1/job-tags",), idempotentHint=True)
+    def jobs_tag(self, keys: list[str], tag: str, remove: bool = False, confirm_id: str | None = None) -> dict:
         need(keys, "keys")
+        if len(keys) > TAG_BULK:
+            args = {"keys": keys, "tag": tag, "remove": remove}
+            held = self._gate("jobs_tag", args, confirm_id, lambda: {"tag": tag, "remove": remove, **self._brief(keys)})
+            if held:
+                return held
         return self.client.send("POST", "/api/v1/job-tags", {"dedupe_keys": keys, "tag": tag, "remove": remove})
 
     @tool("write", "Edit a posting's company, title, URL or pasted description text. Returns an edit id.", routes=("/api/v1/jobs/", "/posting", "/api/v1/posting-edits/"))

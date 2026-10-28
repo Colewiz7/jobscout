@@ -111,7 +111,7 @@ class RecordTools:
     @tool(
         "write",
         "Save one quick-fill detail for a job's company: an answer override (kind override, name is the template id) or a company account property (kind account). The current value is sent as expected unless you pass one.",
-        routes=("/api/v1/profile/context", "/api/v1/profile/copy"),
+        routes=("/api/v1/profile/context",),
     )
     def profile_context_set(self, job: str, company: str, kind: Literal["override", "account"], name: str, value: str | bool | None, expected: str | bool | None = None) -> dict:
         field = {"kind": kind, "name": name, "value": value}

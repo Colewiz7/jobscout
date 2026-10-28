@@ -92,7 +92,9 @@ class Client:
 
     def _write(self, method: str, path: str, body: dict | None) -> httpx.Response:
         headers = {"X-CSRF-Token": self._token or "", "Origin": self.config.origin}
-        return self._http.request(method, path, json={} if body is None else body, headers=headers)
+        # the server leaves an unread body on a kept-alive socket
+        extra = {} if body is None else {"json": body}
+        return self._http.request(method, path, headers=headers, **extra)
 
     def _raise_for(self, reply: httpx.Response) -> None:
         if reply.status_code < 400:
