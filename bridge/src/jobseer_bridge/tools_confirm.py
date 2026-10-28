@@ -1,3 +1,4 @@
+import re
 from typing import Literal
 
 from .client import BridgeError, key_path
@@ -14,8 +15,27 @@ RECORD_PATHS = {
 }
 
 
+# mirrors the dashboard's fetch hosts
+CAPTURE_HOSTS = frozenset({"boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com"})
+WORKDAY_HOST = re.compile(r"^(?P<tenant>[a-z0-9-]+)\.(?P<dc>[a-z0-9-]+)\.myworkdayjobs\.com$", re.I)
+SITES = "Greenhouse, Lever, Ashby and Workday"
+
+
+def public_address(text: str) -> bool:
+    import ipaddress
+
+    try:
+        address = ipaddress.ip_address(text.split("%")[0])
+    except ValueError:
+        return False
+    # mapped form hides private v4
+    if getattr(address, "ipv4_mapped", None):
+        address = address.ipv4_mapped
+    return address.is_global
+
+
 # server fetches it, stay public
-def check_capture_url(url: str) -> None:
+def check_capture_url(url: str, resolve=None, providers_only: bool = False) -> None:
     import ipaddress
     from urllib.parse import urlsplit
 
@@ -25,12 +45,27 @@ def check_capture_url(url: str) -> None:
         raise BridgeError("capture needs a plain https address")
     if host == "localhost" or host.endswith((".local", ".localhost", ".internal")):
         raise BridgeError("capture needs a public address, not %s" % host)
+    # later fetches follow redirects
+    if providers_only and (parts.port not in (None, 443) or not (host in CAPTURE_HOSTS or WORKDAY_HOST.match(host))):
+        raise BridgeError("remote capture only accepts postings on %s sites" % SITES)
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        address = None
+    if address is not None:
+        if not address.is_global:
+            raise BridgeError("capture needs a public address, not %s" % host)
         return
-    if not address.is_global:
-        raise BridgeError("capture needs a public address, not %s" % host)
+    if resolve is None:
+        return
+    # resolution may differ at fetch
+    try:
+        found = resolve(host, parts.port or 443, type=1)
+    except OSError:
+        raise BridgeError("capture could not resolve %s" % host) from None
+    addresses = {entry[4][0] for entry in found}
+    if not addresses or not all(public_address(item) for item in addresses):
+        raise BridgeError("capture needs a public address, but %s resolves to a non-public one" % host)
 
 
 class ConfirmTools:
@@ -127,7 +162,7 @@ class ConfirmTools:
     @tool("confirm", "Add a posting by URL. The server fetches that address. Pass company and title for sites it cannot read itself. Two steps with confirm_id.", routes=("/api/v1/capture",), openWorldHint=True)
     def job_capture(self, url: str, company: str | None = None, title: str | None = None, location: str | None = None, terms: str | None = None, remote: bool | None = None, confirm_id: str | None = None) -> dict:
         body = drop_none({"url": url, "company": company, "title": title, "location": location, "terms": terms, "remote": remote})
-        check_capture_url(url)
+        check_capture_url(url, self.resolver, self.remote)
         held = self._gate("job_capture", body, confirm_id, lambda: {"server_will_fetch": url, "fields": body})
         if held:
             return held

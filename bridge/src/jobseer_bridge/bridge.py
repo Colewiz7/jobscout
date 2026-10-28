@@ -23,7 +23,7 @@ def pack(payload) -> str:
 
 
 class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools):
-    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False, audit=None):
+    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False, audit=None, resolver=None):
         self.config = config
         self.confirms = confirms or Confirms()
         self.client = client or Client(config)
@@ -31,6 +31,7 @@ class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, Profi
         self.limiter = limiter
         self.remote = remote
         self.audit = audit
+        self.resolver = resolver
         if isinstance(selection, frozenset):
             unknown = selection - {spec.name for spec, _ in collect(self)}
             if unknown:
