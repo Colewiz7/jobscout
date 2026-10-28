@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Countdown, EditSessions, SNACKBAR, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "../src/jobscout/static/undo-stack.js";
+import { Countdown, EditSessions, SNACKBAR, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "../src/jobscout/static/undo-stack.js";
 
 const labels = (taken) => taken && [taken.entry.label, ...taken.dropped.map((entry) => entry.label)];
 
@@ -248,4 +248,23 @@ test("textChange skips edits that end where they began", () => {
   assert.deepEqual(textChange("old", ""), { before: "old", after: "" });
   assert.equal(textChange(["a", "b"], ["a", "b"]), null);
   assert.deepEqual(textChange(["a"], ["a", "b"]), { before: ["a"], after: ["a", "b"] });
+});
+
+test("closedUndoIds names only undos that end with the bar", () => {
+  const closing = new Set([3, 5]);
+  const item = { undoId: 5, history: [{ undoId: 2 }, { undoId: 3 }, { undoId: 5 }] };
+  assert.deepEqual(closedUndoIds(item, closing), [5, 3]);
+  assert.deepEqual(closedUndoIds({ undoId: 0, history: [] }, closing), []);
+});
+
+test("a hide entry leaves the stack once its bar closes", () => {
+  const stack = new UndoStack();
+  const closing = new Set();
+  const kept = stack.push({ label: "notes" });
+  const hide = stack.push({ label: "hide" });
+  closing.add(hide);
+  for (const id of closedUndoIds({ undoId: hide, history: [{ undoId: hide }] }, closing)) { stack.remove(id); closing.delete(id); }
+  assert.ok(!stack.has(hide));
+  assert.ok(stack.has(kept));
+  assert.equal(stack.pop().entry.label, "notes");
 });

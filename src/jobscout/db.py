@@ -176,7 +176,20 @@ def title_key(company: str, title: str) -> str:
     return f"{company}\t{title}" if company and title else ""
 
 
-def hide_jobs(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[dict]:
+HIDE_UNDO_SECONDS = 60
+
+
+# undo outlived its snackbar
+class HideUndoRefused(Exception):
+    def __init__(self, message: str, *, unknown: bool = False):
+        super().__init__(message)
+        self.unknown = unknown
+
+
+def hide_jobs(
+    conn: psycopg.Connection, dedupe_keys: list[str], undo_hash: str | None = None,
+    undo_seconds: int = HIDE_UNDO_SECONDS,
+) -> list[dict]:
     created = []
     with conn.cursor() as cur:
         for key in dict.fromkeys(dedupe_keys):
@@ -209,8 +222,41 @@ def hide_jobs(conn: psycopg.Connection, dedupe_keys: list[str]) -> list[dict]:
             if entry:
                 created.append({"id": entry["id"], "dedupe_key": key})
         _apply_hidden_cursor(cur)
+        if created and undo_hash:
+            cur.execute("delete from hide_undo_tokens where expires_at < now() - interval '1 day'")
+            cur.execute(
+                """
+                insert into hide_undo_tokens (token_hash, hidden_ids, expires_at)
+                values (%s, %s, now() + make_interval(secs => %s))
+                """,
+                (undo_hash, [entry["id"] for entry in created], undo_seconds),
+            )
     conn.commit()
     return created
+
+
+def undo_hide(conn: psycopg.Connection, undo_hash: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select hidden_ids, used_at, expires_at < now() as expired
+              from hide_undo_tokens where token_hash = %s for update
+            """,
+            (undo_hash,),
+        )
+        token = cur.fetchone()
+        if token is None or token["used_at"] is not None or token["expired"]:
+            conn.rollback()
+            if token is None:
+                raise HideUndoRefused("This hide can't be undone from here.", unknown=True)
+            raise HideUndoRefused("This hide was already undone." if token["used_at"] else "The time to undo this hide has passed.")
+        cur.execute("update hide_undo_tokens set used_at = now() where token_hash = %s", (undo_hash,))
+        cur.execute("delete from hidden_jobs where id = any(%s)", (token["hidden_ids"],))
+        removed = cur.rowcount
+        # other entries may still match
+        _apply_hidden_cursor(cur)
+    conn.commit()
+    return removed
 
 
 def hidden_keys(conn: psycopg.Connection, dedupe_keys: list[str]) -> set[str]:
@@ -222,14 +268,6 @@ def hidden_keys(conn: psycopg.Connection, dedupe_keys: list[str]) -> set[str]:
         return {row["dedupe_key"] for row in cur.fetchall()}
 
 
-def unhide_jobs(conn: psycopg.Connection, hidden_ids: list[int]) -> int:
-    with conn.cursor() as cur:
-        cur.execute("delete from hidden_jobs where id = any(%s)", (list(hidden_ids),))
-        removed = cur.rowcount
-        # other entries may still match
-        _apply_hidden_cursor(cur)
-    conn.commit()
-    return removed
 
 
 def _apply_hidden_cursor(cur) -> None:

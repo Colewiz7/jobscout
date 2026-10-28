@@ -66,6 +66,11 @@ export function textChange(before, after) {
   return { before, after };
 }
 
+// these undos die with their bar
+export function closedUndoIds(item, closing) {
+  return [...new Set([item.undoId, ...(item.history || []).map((step) => step.undoId)])].filter((id) => id && closing.has(id));
+}
+
 // merges restore their own action
 export function mergeSnackbar(item, next) {
   const step = { message: next.message, action: next.action, onAction: next.onAction, undoId: next.undoId };

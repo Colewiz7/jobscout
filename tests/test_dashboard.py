@@ -327,7 +327,7 @@ def test_hidden_jobs_leave_every_view_until_undone(dashboard):
     assert client.post("/api/v1/hidden", json={"dedupe_keys": []}, headers=headers).status_code == 400
 
     hidden = client.post("/api/v1/hidden", json={"dedupe_keys": ["demo:1", "missing"]}, headers=headers)
-    assert hidden.json() == {"hidden": [{"id": 1, "dedupe_key": "demo:1"}]}
+    assert hidden.json()["hidden"] == [{"id": 1, "dedupe_key": "demo:1"}]
     assert jobs() == ["demo:2"]
     assert client.get("/api/v1/tracker").json()["applications"] == []
     recaptured = client.post("/api/v1/capture", headers=headers, json={
@@ -337,7 +337,7 @@ def test_hidden_jobs_leave_every_view_until_undone(dashboard):
     assert recaptured.status_code == 400
     assert recaptured.json()["error"] == "You hid this job, so it stays hidden."
 
-    undone = client.post("/api/v1/hidden/undo", json={"ids": [1]}, headers=headers)
+    undone = client.post("/api/v1/hidden/undo", json={"undo_token": hidden.json()["undo_token"]}, headers=headers)
     assert undone.json() == {"restored": 1}
     assert jobs() == ["demo:1", "demo:2"]
 
@@ -347,11 +347,11 @@ def test_undo_from_a_stale_tab_cannot_reverse_an_earlier_hide(dashboard):
     first_tab, token = authenticated_client(base)
     second_tab, second_token = authenticated_client(base)
     hide = {"dedupe_keys": ["demo:1"]}
-    first = first_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": token}).json()["hidden"]
-    second = second_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": second_token}).json()["hidden"]
-    assert len(first) == 1 and second == []
+    first = first_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": token}).json()
+    second = second_tab.post("/api/v1/hidden", json=hide, headers={"X-CSRF-Token": second_token}).json()
+    assert len(first["hidden"]) == 1 and second == {"hidden": [], "undo_token": None}
 
-    undo = second_tab.post("/api/v1/hidden/undo", json={"ids": [entry["id"] for entry in second]},
+    undo = second_tab.post("/api/v1/hidden/undo", json={"undo_token": second["undo_token"]},
                            headers={"X-CSRF-Token": second_token})
     assert undo.status_code == 400
     jobs = [job["dedupe_key"] for job in second_tab.get("/api/v1/jobs").json()["jobs"]]
@@ -1947,7 +1947,7 @@ def test_tag_writes_check_auth_csrf_input_and_hidden_jobs(dashboard):
         no_keys = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": [], "tag": "Later"})
         bad_remove = client.post("/api/v1/job-tags", headers=headers, json={**body, "remove": "yes"})
         missing = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:1", "demo:404"], "tag": "Later"})
-        client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]})
+        hide = client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]}).json()
         hidden = client.post("/api/v1/job-tags", headers=headers, json={"dedupe_keys": ["demo:1", "demo:2"], "tag": "Later"})
         untouched = client.get("/api/v1/jobs").json()["jobs"][0]
         bad_ids = client.post("/api/v1/job-tags/undo", headers=headers, json={"ids": ["1"], "remove": True})
@@ -1958,7 +1958,7 @@ def test_tag_writes_check_auth_csrf_input_and_hidden_jobs(dashboard):
         client.close()
     client, csrf = authenticated_client(base)
     try:
-        client.post("/api/v1/hidden/undo", headers={"X-CSRF-Token": csrf}, json={"ids": [1]})
+        client.post("/api/v1/hidden/undo", headers={"X-CSRF-Token": csrf}, json={"undo_token": hide["undo_token"]})
         tagged = client.post("/api/v1/job-tags", headers={"X-CSRF-Token": csrf}, json={"dedupe_keys": ["demo:2"], "tag": "Later"}).json()
         client.post("/api/v1/hidden", headers={"X-CSRF-Token": csrf}, json={"dedupe_keys": ["demo:2"]})
         hidden_undo = client.post("/api/v1/job-tags/undo", headers={"X-CSRF-Token": csrf}, json={"ids": tagged["ids"], "remove": True})
@@ -2432,3 +2432,39 @@ def test_a_stale_tab_cannot_reorder_saved_views(dashboard):
     assert no_auth.status_code == 401
     assert [item["id"] for item in final["saved_views"]] == ids[::-1]
     assert final["order_revision"] == 1
+
+
+def test_a_hide_undo_token_works_once_and_only_for_its_own_hide(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    jobs = lambda: [job["dedupe_key"] for job in client.get("/api/v1/jobs?closed=1").json()["jobs"]]
+    try:
+        first = client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:1"]}).json()
+        second = client.post("/api/v1/hidden", headers=headers, json={"dedupe_keys": ["demo:2"]}).json()
+        no_csrf = client.post("/api/v1/hidden/undo", json={"undo_token": first["undo_token"]})
+        old_shape = client.post("/api/v1/hidden/undo", headers=headers, json={"ids": [1, 2]})
+        foreign = client.post("/api/v1/hidden/undo", headers=headers, json={"undo_token": "x" * 43})
+        undone = client.post("/api/v1/hidden/undo", headers=headers, json={"undo_token": first["undo_token"]})
+        reused = client.post("/api/v1/hidden/undo", headers=headers, json={"undo_token": first["undo_token"]})
+        after_first = jobs()
+        # the window has closed
+        for entry in store._hide_tokens.values():
+            entry["expires_at"] = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        expired = client.post("/api/v1/hidden/undo", headers=headers, json={"undo_token": second["undo_token"]})
+        after_expiry = jobs()
+    finally:
+        client.close()
+    no_auth = httpx.post(f"{base}/api/v1/hidden/undo", json={"undo_token": second["undo_token"]}, timeout=2)
+
+    assert first["undo_token"] != second["undo_token"]
+    assert first["undo_token"] not in str(store._hide_tokens)
+    assert no_csrf.status_code == 403
+    assert no_auth.status_code == 401
+    assert old_shape.status_code == 400
+    assert foreign.status_code == 404
+    assert undone.json() == {"restored": 1}
+    assert reused.status_code == 409 and "already undone" in reused.json()["error"]
+    assert after_first == ["demo:1"]
+    assert expired.status_code == 409 and "passed" in expired.json()["error"]
+    assert after_expiry == ["demo:1"]

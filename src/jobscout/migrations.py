@@ -614,6 +614,18 @@ MIGRATIONS = (
         insert into saved_view_order (id) values (true) on conflict (id) do nothing;
         """,
     ),
+    Migration(
+        29,
+        "hide_undo_tokens",
+        """
+        create table if not exists hide_undo_tokens (
+            token_hash text primary key,
+            hidden_ids bigint[] not null,
+            expires_at timestamptz not null,
+            used_at    timestamptz
+        );
+        """,
+    ),
 )
 
 

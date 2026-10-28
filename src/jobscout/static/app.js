@@ -4,7 +4,7 @@ import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
-import { Countdown, EditSessions, UndoStack, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
+import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
@@ -135,6 +135,8 @@ let snackbarCurrent = null;
 const snackbarQueue = [];
 const undoStack = new UndoStack(20);
 const textSessions = new EditSessions();
+// hide tokens expire with the bar
+const closingUndos = new Set();
 let jobViewTransition = null;
 let sessionCheckedAt = 0;
 let sessionCheckPromise = null;
@@ -2607,7 +2609,7 @@ async function hideJobs(keys, { trigger = null, focus = null } = {}) {
   if (routeRoot() === "inbox") { state.selectedKey = nextKey; syncInboxUrl(); }
   renderJobSurface();
   focus?.();
-  let created;
+  let created, undoToken;
   try {
     const response = await secureWrite("/api/v1/hidden", {
       method: "POST",
@@ -2615,7 +2617,7 @@ async function hideJobs(keys, { trigger = null, focus = null } = {}) {
       body: JSON.stringify({ dedupe_keys: [...hidden] }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't hide the job.");
-    created = (await response.json()).hidden || [];
+    ({ hidden: created = [], undo_token: undoToken } = await response.json());
   } catch (error) {
     restore();
     renderJobSurface();
@@ -2628,15 +2630,15 @@ async function hideJobs(keys, { trigger = null, focus = null } = {}) {
   if (!created.length) { showSnackbar("Already hidden in another tab."); return; }
   const mine = new Set(created.map((entry) => entry.dedupe_key));
   const message = mine.size === 1 ? "Role hidden." : `${new Intl.NumberFormat().format(mine.size)} roles hidden.`;
-  offerUndoSnackbar(message, [...mine], () => unhideJobs(created.map((entry) => entry.id), () => restore(mine)));
+  offerUndoSnackbar(message, [...mine], () => unhideJobs(undoToken, () => restore(mine)), { untilClosed: true });
 }
 
-async function unhideJobs(ids, restore) {
+async function unhideJobs(undoToken, restore) {
   try {
     const response = await secureWrite("/api/v1/hidden/undo", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ undo_token: undoToken }),
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't undo.");
   } catch (error) {
@@ -5669,7 +5671,8 @@ function syncSnackbar(item) {
   Object.assign(added, { className: "snackbar-action", type: "button", textContent: item.action, title: `${item.action} (${formatShortcut("Mod+Z")})` });
   added.dataset.snackbarAction = "";
   added.setAttribute("aria-keyshortcuts", ariaKeyshortcuts(["Mod+Z", "u"]));
-  added.addEventListener("click", () => { exitSnackbar(item); item.onAction?.(); });
+  // take before exit drops it
+  added.addEventListener("click", () => { item.onAction?.(); exitSnackbar(item); });
   text.after(added);
 }
 
@@ -5700,6 +5703,7 @@ function holdSnackbar(reason, on) {
 function exitSnackbar(item) {
   if (item.leaving || snackbarCurrent !== item) return;
   item.leaving = true;
+  for (const id of closedUndoIds(item, closingUndos)) { undoStack.remove(id); closingUndos.delete(id); }
   clearTimeout(item.timer);
   if (item.bar.contains(document.activeElement)) document.activeElement.blur();
   item.bar.classList.add("leaving");
@@ -5728,8 +5732,9 @@ function withdrawUndo(undoId) {
 }
 
 // lets undo spot stale entries
-function offerUndoSnackbar(message, keys, run, { latest = "" } = {}) {
+function offerUndoSnackbar(message, keys, run, { latest = "", untilClosed = false } = {}) {
   const undoId = undoStack.push({ message, keys, run, latest });
+  if (untilClosed) closingUndos.add(undoId);
   showSnackbar(message, { action: "Undo", undoId, onAction: () => runUndo(undoStack.take(undoId)) });
 }
 

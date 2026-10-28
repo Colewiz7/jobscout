@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime as dt
+import hashlib
 import hmac
 import json
 import logging
@@ -140,6 +141,18 @@ def _expected_revision(payload: dict) -> int | None:
     if expected is not None and (type(expected) is not int or expected < 0):
         raise ValueError("expected_revision must be a whole number")
     return expected
+
+
+# only the hash is stored
+def _hide_undo_token() -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    return token, hashlib.sha256(token.encode()).hexdigest()
+
+
+def _hide_undo_hash(token) -> str:
+    if not isinstance(token, str) or not 20 <= len(token) <= 100:
+        raise ValueError("undo_token must be the token the hide returned")
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _view_changes(payload: dict) -> dict:
@@ -741,15 +754,17 @@ class PostgresStore:
             "liveness": dataclasses.asdict(liveness) if liveness else None,
         }
 
-    def hide(self, dedupe_keys: list[str]) -> list[dict]:
+    def hide(self, dedupe_keys: list[str]) -> dict:
+        token, digest = _hide_undo_token()
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.hide_jobs(conn, dedupe_keys)
+            created = database.hide_jobs(conn, dedupe_keys, digest)
+        return {"hidden": created, "undo_token": token if created else None}
 
-    def unhide(self, hidden_ids: list[int]) -> int:
+    def undo_hide(self, token: str) -> int:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.unhide_jobs(conn, hidden_ids)
+            return database.undo_hide(conn, _hide_undo_hash(token))
 
     def hidden_keys(self, dedupe_keys: list[str]) -> set[str]:
         with database.connect(self.dsn) as conn:
@@ -1279,6 +1294,7 @@ class DemoStore:
         self.rows = _demo_rows(count, seed, now) if count > 2 else base_rows[:count]
         self._hidden: dict[str, dict] = {}
         self._next_hidden_id = 1
+        self._hide_tokens: dict[str, dict] = {}
         self._overrides: dict[str, dict] = {}
         self._posting_edits: list[dict] = []
         self._descriptions: dict[str, dict] = {}
@@ -1405,10 +1421,25 @@ class DemoStore:
             }
             created.append({"id": self._next_hidden_id, "dedupe_key": key})
             self._next_hidden_id += 1
-        return created
+        if not created:
+            return {"hidden": [], "undo_token": None}
+        token, digest = _hide_undo_token()
+        self._hide_tokens[digest] = {
+            "ids": [entry["id"] for entry in created], "used": False,
+            "expires_at": dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=database.HIDE_UNDO_SECONDS),
+        }
+        return {"hidden": created, "undo_token": token}
 
-    def unhide(self, hidden_ids: list[int]) -> int:
-        doomed = [key for key, entry in self._hidden.items() if entry["id"] in hidden_ids]
+    def undo_hide(self, token: str) -> int:
+        entry = self._hide_tokens.get(_hide_undo_hash(token))
+        if entry is None:
+            raise database.HideUndoRefused("This hide can't be undone from here.", unknown=True)
+        if entry["used"]:
+            raise database.HideUndoRefused("This hide was already undone.")
+        if entry["expires_at"] < dt.datetime.now(dt.timezone.utc):
+            raise database.HideUndoRefused("The time to undo this hide has passed.")
+        entry["used"] = True
+        doomed = [key for key, hidden in self._hidden.items() if hidden["id"] in entry["ids"]]
         for key in doomed:
             del self._hidden[key]
         return len(doomed)
@@ -3317,15 +3348,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     keys = payload.get("dedupe_keys")
                     if not isinstance(keys, list) or not keys or len(keys) > 500 or not all(isinstance(key, str) and key for key in keys):
                         raise ValueError("dedupe_keys must be a list of job keys")
-                    self._json({"hidden": self.app.store.hide(keys)})
+                    self._json(self.app.store.hide(keys))
                 else:
-                    # only ids this tab created
-                    ids = payload.get("ids")
-                    if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(type(item) is int for item in ids):
-                        raise ValueError("ids must be a list of hide ids")
-                    self._json({"restored": self.app.store.unhide(ids)})
+                    # single use, short lived
+                    self._json({"restored": self.app.store.undo_hide(payload.get("undo_token"))})
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 self._error(HTTPStatus.BAD_REQUEST, str(error))
+            except database.HideUndoRefused as refused:
+                self._error(HTTPStatus.NOT_FOUND if refused.unknown else HTTPStatus.CONFLICT, str(refused))
             except Exception:
                 log.exception("could not change hidden jobs")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the change. Retry shortly.")

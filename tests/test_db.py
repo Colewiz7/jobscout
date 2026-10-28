@@ -35,6 +35,7 @@ def conn():
         cur.execute("drop table if exists rules")
         cur.execute("drop table if exists rule_order")
         cur.execute("drop table if exists saved_view_order")
+        cur.execute("drop table if exists hide_undo_tokens")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
         cur.execute("drop table if exists eligibility_overrides")
@@ -109,6 +110,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 26, "name": "reminder_edits"},
             {"version": 27, "name": "activity_and_overview_dismissals"},
             {"version": 28, "name": "saved_view_edits"},
+            {"version": 29, "name": "hide_undo_tokens"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -635,11 +637,11 @@ def test_unhiding_restores_only_that_job(conn):
     first = _p(url="https://boards.greenhouse.io/acme/jobs/1")
     second = _p(title="Data Intern", url="https://boards.greenhouse.io/acme/jobs/2")
     database.upsert_open(conn, [first, second])
-    [entry] = database.hide_jobs(conn, [first.dedupe_key])
-    database.hide_jobs(conn, [second.dedupe_key])
+    database.hide_jobs(conn, [first.dedupe_key], "first-token")
+    database.hide_jobs(conn, [second.dedupe_key], "second-token")
     assert _visible(conn) == []
 
-    assert database.unhide_jobs(conn, [entry["id"]]) == 1
+    assert database.undo_hide(conn, "first-token") == 1
     assert _visible(conn) == [first.dedupe_key]
     database.upsert_open(conn, [first, second])
     assert _visible(conn) == [first.dedupe_key]
@@ -668,14 +670,35 @@ def test_hiding_a_workday_copy_hides_its_requisition_twins(conn):
 def test_a_repeat_hide_gives_the_second_tab_nothing_to_undo(conn):
     posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
     database.upsert_open(conn, [posting])
-    first_tab = database.hide_jobs(conn, [posting.dedupe_key])
-    second_tab = database.hide_jobs(conn, [posting.dedupe_key])
+    first_tab = database.hide_jobs(conn, [posting.dedupe_key], "first-tab")
+    second_tab = database.hide_jobs(conn, [posting.dedupe_key], "second-tab")
     assert len(first_tab) == 1 and second_tab == []
 
-    assert database.unhide_jobs(conn, [entry["id"] for entry in second_tab]) == 0
+    # nothing hidden, no token
+    with pytest.raises(database.HideUndoRefused) as refused:
+        database.undo_hide(conn, "second-tab")
+    assert refused.value.unknown
     assert _visible(conn) == []
-    assert database.unhide_jobs(conn, [first_tab[0]["id"]]) == 1
+    assert database.undo_hide(conn, "first-tab") == 1
     assert _visible(conn) == [posting.dedupe_key]
+
+
+def test_a_hide_undo_token_is_single_use_and_expires(conn):
+    first = _p(url="https://boards.greenhouse.io/acme/jobs/1")
+    second = _p(title="Data Intern", url="https://boards.greenhouse.io/acme/jobs/2")
+    database.upsert_open(conn, [first, second])
+    database.hide_jobs(conn, [first.dedupe_key], "first")
+    database.hide_jobs(conn, [second.dedupe_key], "second", undo_seconds=0)
+
+    assert database.undo_hide(conn, "first") == 1
+    with pytest.raises(database.HideUndoRefused, match="already undone"):
+        database.undo_hide(conn, "first")
+    with pytest.raises(database.HideUndoRefused, match="passed"):
+        database.undo_hide(conn, "second")
+    with pytest.raises(database.HideUndoRefused) as unknown:
+        database.undo_hide(conn, "never issued")
+    assert unknown.value.unknown
+    assert _visible(conn) == [first.dedupe_key]
 
 
 def test_queue_order_skips_hidden_jobs(conn):
