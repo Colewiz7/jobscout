@@ -529,13 +529,13 @@ dialog[open]::backdrop {
   align-items: center;
   gap: var(--s-3);
   padding: 0 var(--s-3) 0 var(--s-4);
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--outline);
   border-radius: var(--r-md);
   background: var(--surface-container-high);
 }
 
 .command-search:hover {
-  border-color: var(--outline);
+  border-color: var(--on-surface-variant);
 }
 
 .command-search:focus-within {
@@ -642,7 +642,7 @@ dialog[open]::backdrop {
 
 .shortcut-note {
   margin: var(--s-6) 0 0;
-  color: var(--on-surface-faint);
+  color: var(--on-surface-variant);
   font-size: 13px;
 }
 
@@ -1034,6 +1034,12 @@ dialog[open]::backdrop {
 
 .job-row[aria-current="true"] {
   background: color-mix(in srgb, var(--primary-container) 40%, transparent);
+}
+
+/* faint text fails on the pill */
+.job-row[aria-current="true"] .row-location,
+.job-row[aria-current="true"] .job-row-end time {
+  color: var(--on-surface-variant);
 }
 
 /* lighter, the check carries it */
@@ -2238,6 +2244,7 @@ dialog[open]::backdrop {
 }
 
 .copy-shortcut {
+  color: var(--on-surface-variant);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -3424,7 +3431,7 @@ dialog[open]::backdrop {
   width: 100%;
   min-height: 44px;
   padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--outline);
   border-radius: var(--r-md);
   background: var(--surface-container-high);
   color: var(--on-surface);
@@ -3571,7 +3578,7 @@ dialog[open]::backdrop {
   max-width: 100%;
   min-height: 40px;
   padding: 0 var(--s-3);
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--outline);
   border-radius: var(--r-sm);
   background: var(--surface-container-low);
   color: var(--on-surface);
@@ -4413,7 +4420,7 @@ body.quick-fill-popout {
   min-width: 0;
   min-height: 44px;
   padding: 0 var(--s-3);
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--outline);
   border-radius: var(--r-md);
   background: var(--surface-container-low);
   color: var(--on-surface);
@@ -4628,7 +4635,7 @@ body.quick-fill-popout {
   min-height: 160px;
   margin: var(--s-2) 0 var(--s-3);
   padding: var(--s-3);
-  border: 1px solid var(--outline-variant);
+  border: 1px solid var(--outline);
   border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--on-surface);
