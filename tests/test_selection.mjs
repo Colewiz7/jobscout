@@ -207,6 +207,15 @@ test("stepKey clamps at both ends and starts from an edge", () => {
   assert.equal(stepKey([], "a", 1), "");
 });
 
+// board keys come column by column
+test("stepKey and rangeSelection cross board columns", () => {
+  const order = [...["a1", "a2"], ...["b1"], ...["c1", "c2"]];
+  assert.equal(stepKey(order, "a2", 1), "b1");
+  assert.equal(stepKey(order, "b1", 1), "c1");
+  assert.equal(stepKey(order, "c1", -1), "b1");
+  assert.deepEqual([...rangeSelection(order, new Set(), "a2", "c1")].sort(), ["a2", "b1", "c1"]);
+});
+
 test("moveGroup keeps the picked jobs in queue order", () => {
   const order = ["a", "b", "c", "d", "e"];
   assert.deepEqual(moveGroup(order, new Set(["d", "b"]), "top"), ["b", "d", "a", "c", "e"]);

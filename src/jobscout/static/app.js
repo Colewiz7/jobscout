@@ -1422,7 +1422,7 @@ function trackerTableMarkup(applications) {
 function trackerBoardMarkup(applications) {
   return `<div class="tracker-board" aria-label="Applications by status">${boardStatuses.map((status) => {
     const jobs = applications.filter((job) => job.status === status);
-    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" data-tracker-key="${escapeHtml(job.dedupe_key)}"><button class="board-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${roleLinkMarkup(job.dedupe_key, job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}${moreButtonMarkup(job.title)}</article>`).join("")}</div></section>`;
+    return `<section class="board-column" data-board-status="${status}"><header><h2>${escapeHtml(statusLabel(status))}</h2><span>${jobs.length}</span></header><div>${jobs.map((job) => `<article class="board-card" data-tracker-key="${escapeHtml(job.dedupe_key)}">${rowSelectMarkup("tracker", job)}<button class="board-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button><a href="/companies/${encodeURIComponent(job.company)}" data-route>${escapeHtml(job.company)}</a><strong>${roleLinkMarkup(job.dedupe_key, job.title)}</strong>${job.connections_count ? `<span>${new Intl.NumberFormat().format(job.connections_count)} connections</span>` : ""}${statusSelectMarkup(job, "data-board-status-select")}${moreButtonMarkup(job.title)}</article>`).join("")}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -5177,7 +5177,8 @@ function selectAllInbox() {
 
 const rowLists = {
   queue: { rows: ".queue-list > .queue-card[data-queue-key]", attr: "queueKey", after: ".queue-list" },
-  tracker: { rows: ".tracker-table tbody tr[data-tracker-key]", attr: "trackerKey", after: ".tracker-table-wrap" },
+  // board walks column by column
+  tracker: { rows: ".tracker-table tbody tr[data-tracker-key], .board-card[data-tracker-key]", attr: "trackerKey", after: ".tracker-table-wrap, .tracker-board" },
 };
 
 function rowSelectMarkup(name, job) {
@@ -5196,7 +5197,7 @@ function selectedRows(name) {
 
 function activeRowList() {
   if (routeRoot() === "queue" && document.querySelector(".queue-list")) return "queue";
-  if (routeRoot() === "tracker" && document.querySelector(".tracker-table")) return "tracker";
+  if (routeRoot() === "tracker" && document.querySelector(".tracker-table, .tracker-board")) return "tracker";
   return "";
 }
 
@@ -5415,7 +5416,7 @@ function hideRows(name, trigger) {
   const order = rowKeys(name);
   const focus = name === "queue"
     ? focusAfterRemoval(order, keys, ".queue-card", "data-queue-key", "#queue-title")
-    : focusAfterRemoval(order, keys, ".tracker-table tr", "data-tracker-key", "#tracker-title");
+    : focusAfterRemoval(order, keys, state.trackerView === "board" ? ".board-card" : ".tracker-table tr", "data-tracker-key", "#tracker-title");
   hideJobs(keys, { trigger, focus });
 }
 
@@ -6238,7 +6239,7 @@ document.addEventListener("scroll", () => {
 
 // shift-click shouldnt select text
 document.addEventListener("mousedown", (event) => {
-  if (event.shiftKey && event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key]") && !event.target.closest(rowControls)) event.preventDefault();
+  if (event.shiftKey && event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key], .board-card[data-tracker-key]") && !event.target.closest(rowControls)) event.preventDefault();
 });
 
 function shortcutScopeAllows(event) {
@@ -6420,7 +6421,7 @@ document.addEventListener("click", (event) => {
   if (rowBox) { pickRow(rowBox.dataset.rowSelect, rowBox.value, event, true); return; }
   const allBox = event.target.closest("[data-row-select-all]");
   if (allBox) { if (allBox.checked) selectAllRows(allBox.dataset.rowSelectAll); else clearRows(allBox.dataset.rowSelectAll); return; }
-  const pickable = event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key]");
+  const pickable = event.target.closest(".queue-card[data-queue-key], .tracker-table tbody tr[data-tracker-key], .board-card[data-tracker-key]");
   if (pickable && !event.target.closest(rowControls) && !window.getSelection()?.toString()) {
     pickRow(pickable.matches(".queue-card") ? "queue" : "tracker", pickable.dataset.queueKey || pickable.dataset.trackerKey, event, false);
     return;
