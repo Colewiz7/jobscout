@@ -1052,6 +1052,31 @@ def test_a_session_survives_a_reload_and_undoes_by_revision(dashboard):
         client.close()
 
 
+def test_a_session_reads_by_id_behind_auth(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        _queue(client, csrf, "demo:1", "demo:2")
+        first = client.post("/api/v1/queue/session", headers={"X-CSRF-Token": csrf}).json()["session"]
+        client.patch("/api/v1/queue/session/%d" % first["id"], headers={"X-CSRF-Token": csrf}, json={"expected_revision": 0, "applied": ["demo:1"]})
+        second = client.post("/api/v1/queue/session", headers={"X-CSRF-Token": csrf}).json()["session"]
+        older = client.get("/api/v1/queue/session/%d" % first["id"])
+        newer = client.get("/api/v1/queue/session/%d" % second["id"])
+        missing = client.get("/api/v1/queue/session/999")
+        malformed = client.get("/api/v1/queue/session/nope")
+    finally:
+        client.close()
+    anonymous = httpx.get(f"{base}/api/v1/queue/session/{first['id']}", timeout=2)
+    stranger = httpx.get(f"{base}/api/v1/queue/session/{first['id']}", headers={**AUTH, "X-authentik-username": "someone-else"}, timeout=2)
+
+    assert older.status_code == newer.status_code == 200
+    assert older.json()["session"]["id"] == first["id"] and older.json()["session"]["applied"] == ["demo:1"]
+    assert older.json()["session"]["revision"] == 1
+    assert newer.json()["session"]["id"] == second["id"]
+    assert missing.status_code == malformed.status_code == 404
+    assert anonymous.status_code == stranger.status_code == 401
+
+
 def test_session_writes_check_auth_csrf_input_and_unknown_sessions(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)
@@ -1073,6 +1098,8 @@ def test_session_writes_check_auth_csrf_input_and_unknown_sessions(dashboard):
             {"expected_revision": 0, "applied": ["demo:9"]},
             {"expected_revision": 0, "skipped": [{"dedupe_key": "demo:9"}]},
             {"expected_revision": 0, "skipped": ["demo:1"]},
+            {"expected_revision": 0, "skipped": [{"dedupe_key": "demo:1"}, {"dedupe_key": "demo:1", "reason": "again"}]},
+            {"expected_revision": 0, "applied": ["demo:1"], "skipped": [{"dedupe_key": "demo:1"}]},
             {"expected_revision": 0, "index": 2},
         ]
         for payload in bad:

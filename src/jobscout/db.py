@@ -2179,18 +2179,26 @@ def start_apply_session(conn: psycopg.Connection, keys: list[str]) -> dict:
     return session
 
 
-def apply_session(conn: psycopg.Connection) -> dict | None:
+def apply_session(conn: psycopg.Connection, session_id: int | None = None) -> dict | None:
     with conn.cursor() as cur:
-        cur.execute(f"select {_SESSION_COLUMNS} from apply_sessions order by id desc limit 1")
+        if session_id is None:
+            cur.execute(f"select {_SESSION_COLUMNS} from apply_sessions order by id desc limit 1")
+        else:
+            cur.execute(f"select {_SESSION_COLUMNS} from apply_sessions where id = %s", (session_id,))
         return cur.fetchone()
 
 
-def check_session_changes(keys: list[str], changes: dict) -> None:
-    allowed = set(keys)
+def check_session_changes(current: dict, changes: dict) -> None:
+    allowed = set(current["keys"])
     if not set(changes.get("applied", [])) <= allowed:
         raise ValueError("applied jobs must be in the session")
     if not {item["dedupe_key"] for item in changes.get("skipped", [])} <= allowed:
         raise ValueError("skipped jobs must be in the session")
+    # a job sits in one list
+    applied = set(changes.get("applied", current["applied"]))
+    skipped = {item["dedupe_key"] for item in changes.get("skipped", current["skipped"])}
+    if applied & skipped:
+        raise ValueError("a job cannot be both applied and skipped")
 
 
 def update_apply_session(conn: psycopg.Connection, session_id: int, changes: dict, expected: int) -> dict | None:
@@ -2203,7 +2211,7 @@ def update_apply_session(conn: psycopg.Connection, session_id: int, changes: dic
         if current["revision"] != expected:
             conn.rollback()
             raise RecordConflict(current)
-        check_session_changes(current["keys"], changes)
+        check_session_changes(current, changes)
         ended = changes.get("ended")
         cur.execute(
             f"""

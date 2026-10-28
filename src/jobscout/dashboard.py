@@ -165,6 +165,8 @@ def _session_changes(payload: dict) -> tuple[dict, int]:
             if not isinstance(item, dict) or not isinstance(item.get("dedupe_key"), str) or not isinstance(item.get("reason", ""), str):
                 raise ValueError("each skipped job needs a dedupe_key and a reason")
             changes["skipped"].append({"dedupe_key": item["dedupe_key"], "reason": item.get("reason", "")[:200]})
+        if len({item["dedupe_key"] for item in changes["skipped"]}) != len(changes["skipped"]):
+            raise ValueError("skipped must not repeat a job")
     if "ended" in payload:
         if not isinstance(payload["ended"], bool):
             raise ValueError("ended must be true or false")
@@ -836,10 +838,10 @@ class PostgresStore:
             database.require_schema(conn)
             return database.start_apply_session(conn, keys)
 
-    def apply_session(self) -> dict | None:
+    def apply_session(self, session_id: int | None = None) -> dict | None:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
-            return database.apply_session(conn)
+            return database.apply_session(conn, session_id)
 
     def update_apply_session(self, session_id: int, changes: dict, expected: int) -> dict | None:
         with database.connect(self.dsn) as conn:
@@ -1824,7 +1826,10 @@ class DemoStore:
         self._apply_sessions.append(session)
         return self._public_session(session)
 
-    def apply_session(self) -> dict | None:
+    def apply_session(self, session_id: int | None = None) -> dict | None:
+        if session_id is not None:
+            session = next((item for item in self._apply_sessions if item["id"] == session_id), None)
+            return self._public_session(session) if session else None
         return self._public_session(self._apply_sessions[-1]) if self._apply_sessions else None
 
     def update_apply_session(self, session_id: int, changes: dict, expected: int) -> dict | None:
@@ -1833,7 +1838,7 @@ class DemoStore:
             return None
         if session["revision"] != expected:
             raise database.RecordConflict(self._public_session(session))
-        database.check_session_changes(session["keys"], changes)
+        database.check_session_changes(session, changes)
         now = dt.datetime.now(dt.timezone.utc)
         if changes.get("ended") is True and session["ended_at"] is None:
             session["ended_at"] = now
@@ -2997,6 +3002,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception:
                     log.exception("could not load apply session")
                     self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load the session. Retry shortly.")
+                return
+            if parsed.path.startswith("/api/v1/queue/session/"):
+                raw_id = parsed.path.removeprefix("/api/v1/queue/session/")
+                try:
+                    session = self.app.store.apply_session(int(raw_id)) if raw_id.isdigit() and len(raw_id) <= 18 else None
+                except Exception:
+                    log.exception("could not load apply session")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load the session. Retry shortly.")
+                    return
+                if session is None:
+                    self._error(HTTPStatus.NOT_FOUND, "session not found")
+                else:
+                    self._json({"session": session})
                 return
             if parsed.path == "/api/v1/tracker":
                 try:

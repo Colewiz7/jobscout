@@ -703,6 +703,21 @@ def test_a_hide_undo_token_is_single_use_and_expires(conn):
     assert _visible(conn) == [first.dedupe_key]
 
 
+def test_an_apply_session_reads_by_id_and_keeps_a_job_in_one_list(conn):
+    first = database.start_apply_session(conn, ["a", "b"])
+    database.update_apply_session(conn, first["id"], {"skipped": [{"dedupe_key": "a", "reason": "Skipped in session"}]}, 0)
+    second = database.start_apply_session(conn, ["c"])
+
+    assert database.apply_session(conn, first["id"])["skipped"] == [{"dedupe_key": "a", "reason": "Skipped in session"}]
+    assert database.apply_session(conn, second["id"])["keys"] == ["c"]
+    assert database.apply_session(conn)["id"] == second["id"]
+    assert database.apply_session(conn, second["id"] + 100) is None
+    with pytest.raises(ValueError):
+        database.update_apply_session(conn, first["id"], {"applied": ["a"]}, 1)
+    conn.rollback()
+    assert database.apply_session(conn, first["id"])["revision"] == 1
+
+
 def test_an_apply_session_saves_conditionally_and_pauses_while_ended(conn):
     assert database.apply_session(conn) is None
     started = database.start_apply_session(conn, ["a", "b"])

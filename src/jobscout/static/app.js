@@ -6,7 +6,7 @@ import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
 import { fuzzyScore, menuCommands, rankCommands } from "./command-palette.js";
-import { recordedAs, routeIndex, sessionFromServer, sessionLists, sessionPatch, stepAfter, withRecord } from "./apply-session.js";
+import { recordedAs, restoreUnsaved, routeIndex, saveStep, sessionFromServer, sessionLists, sessionPatch, staleRead, stepAfter, stepUndo, undoStep, undoUnsaved, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, mergeDocuments, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
@@ -2699,8 +2699,8 @@ function adoptSession(row, documents = null) {
 
 function sessionScope(session) { return `session:${session.id}`; }
 
-// lists are whole, so a retry heals
-async function writeSession(session, lists, expected = session.revision) {
+// whole lists need their own revision
+async function writeSession(session, lists, expected) {
   const response = await secureWrite(`/api/v1/queue/session/${session.id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -2712,8 +2712,11 @@ async function writeSession(session, lists, expected = session.revision) {
     throw Object.assign(new Error(body.error || "The session changed in another tab."), { conflict: true });
   }
   if (!response.ok) throw new Error(body.error || "Couldn't save the session.");
+  sessionLoads.invalidate(); // reads from before this lose
   return adoptSession(body.session);
 }
+
+const sessionLoads = createLoadGate();
 
 async function startApplySession(keys = null, { at = "", replace = false } = {}) {
   if (state.sessionStarting) return;
@@ -2954,45 +2957,71 @@ async function recordSessionStep(key, kind, { reason = "", message = "", offerUn
   if (!session) return;
   const index = session.keys.indexOf(key);
   const step = stepAfter(session, index);
-  let before = sessionLists(session);
   const change = (lists) => ({ ...withRecord(lists, key, kind, reason), ended: step.ended });
-  let saved = true;
-  try {
-    await writeSession(session, change(before));
-  } catch (error) {
-    // the other tab moved on first
-    if (error.conflict) {
-      before = sessionLists(state.applySession);
-      try { await writeSession(state.applySession, change(before)); } catch { saved = false; }
-    } else saved = false;
+  const outcome = await saveStep({ session, key, kind, change, write: writeSession, latest: () => state.applySession });
+  if (outcome.ended || outcome.kept || outcome.error?.conflict) {
+    const text = outcome.ended ? "The session was ended in another tab, so this step wasn't saved." : outcome.kept ? `That job was already marked ${outcome.kept} in another tab, so this tab now shows that session.` : "The session changed in another tab, so this tab now shows that version.";
+    if (job && !outcome.kept) offerUndoSnackbar(`${text} The job is still applied.`, [key], () => undoUnsavedStep({ key, before: null, job, status }));
+    else { assertiveRegion.textContent = text; showSnackbar(text); }
+    if (outcome.ended) navigate("/queue/session/summary"); else renderApplySession({ focus: true });
+    return;
   }
-  if (!saved) {
-    Object.assign(session, change(before), { endedAt: step.ended ? Date.now() : null });
+  if (!outcome.saved) {
+    Object.assign(session, change(outcome.before), { endedAt: step.ended ? Date.now() : null });
     if (step.ended) stopSessionClock();
   }
   showSessionJob(step.index);
-  const text = saved ? message : `${message} Couldn't save the session, so a reload may lose this step.`.trim();
-  if (offerUndo && saved) offerUndoSnackbar(text, [sessionScope(session), key], () => undoSessionStep({ key, before, revision: session.revision, job, status }), { latest: sessionScope(session) });
+  const text = outcome.saved ? message : `${message} Couldn't save the session, so a reload may lose this step.`.trim();
+  const undo = offerUndo ? stepUndo(outcome, Boolean(job)) : "";
+  const { revision } = session; // read now, a refresh moves it
+  if (undo === "session") offerUndoSnackbar(text, [sessionScope(session), key], () => undoSessionStep({ key, before: outcome.before, revision, job, status }), { latest: sessionScope(session) });
+  else if (undo === "job") offerUndoSnackbar(text, [sessionScope(session), key], () => undoUnsavedStep({ key, before: outcome.before, revision, job, status }), { latest: sessionScope(session) });
   else if (text) showSnackbar(text);
+}
+
+// the job saved, the session didnt
+async function undoUnsavedStep({ key, before, revision, job, status }) {
+  const session = state.applySession;
+  const outcome = await undoUnsaved({
+    revertJob: async () => { job.status = (await patchJob(job, status, null, { expected: "applied" })).status; },
+    saveSession: async () => {
+      if (!session || !before) return;
+      try {
+        await restoreUnsaved({ session, before, revision, key, write: writeSession });
+      } finally {
+        if (!session.endedAt) startSessionClock();
+      }
+    },
+  });
+  if (!outcome.undone) {
+    showSnackbar(outcome.error?.conflict ? `Couldn't undo. That job moved to ${statusLabel(outcome.error.conflict)} since.` : `${outcome.error?.message || "Couldn't undo."} It stays applied.`);
+    return;
+  }
+  jobsWriteLanded();
+  if (session && before) showSessionJob(Math.max(0, session.keys.indexOf(key)));
+  else renderApplySession();
+  showSnackbar(outcome.sessionError?.conflict ? "Job status undone. The session changed in another tab, so this tab now shows that version." : outcome.sessionError ? "Job status undone, but the session still couldn't be saved." : "Undone.");
 }
 
 async function undoSessionStep({ key, before, revision, job = null, status = "" }) {
   const session = state.applySession;
   if (!session) { showSnackbar("Couldn't undo. That session is gone."); return; }
-  if (job) {
-    try {
-      const result = await patchJob(job, status, null, { expected: "applied" });
-      job.status = result.status;
-    } catch (error) {
-      showSnackbar(error.conflict ? `Couldn't undo. That job moved to ${statusLabel(error.conflict)} since.` : `${error.message} It stays applied.`);
-      return;
-    }
-  }
-  try {
-    await writeSession(session, before, revision);
-  } catch (error) {
-    showSnackbar(error.conflict ? "Couldn't undo. The session changed in another tab." : `${error.message} The step stays.`);
+  const outcome = await undoStep({
+    saveSession: () => writeSession(session, before, revision),
+    revertJob: job ? async () => { job.status = (await patchJob(job, status, null, { expected: "applied" })).status; } : null,
+  });
+  if (!outcome.undone) {
+    showSnackbar(outcome.error?.conflict ? "Couldn't undo. The session changed in another tab, so nothing was changed." : `${outcome.error?.message || "Couldn't save the session."} The step stays.`);
     renderApplySession();
+    return;
+  }
+  if (outcome.jobError) {
+    const moved = outcome.jobError.conflict ? `it moved to ${statusLabel(outcome.jobError.conflict)} since` : outcome.jobError.message;
+    const text = `The session step is undone, but the job is still applied: ${moved}. Reloaded the latest.`;
+    assertiveRegion.textContent = text;
+    showSnackbar(text);
+    reloadJobs();
+    showSessionJob(Math.max(0, session.keys.indexOf(key)));
     return;
   }
   showSessionJob(Math.max(0, session.keys.indexOf(key)));
@@ -3046,25 +3075,36 @@ async function endApplySession({ offerUndo = true } = {}) {
   if (session.endedAt) { navigate("/queue/session/summary"); return; }
   const key = session.keys[Math.min(session.index, session.keys.length - 1)];
   const before = sessionLists(session);
-  let saved = true;
-  try { await writeSession(session, { ...before, ended: true }); } catch { saved = false; }
-  if (!saved) { session.endedAt = Date.now(); stopSessionClock(); }
+  try {
+    await writeSession(session, { ...before, ended: true }, session.revision);
+  } catch (error) {
+    // still open, so stay here
+    const text = error.conflict ? "The session changed in another tab, so this tab now shows that version." : `${error.message} The session is still open.`;
+    assertiveRegion.textContent = text;
+    showSnackbar(text);
+    if (error.conflict || state.jobs.some((job) => job.dedupe_key === key)) renderApplySession();
+    return;
+  }
   navigate("/queue/session/summary");
-  if (offerUndo && saved) offerUndoSnackbar("Session ended.", [sessionScope(session)], () => undoSessionStep({ key, before, revision: session.revision }), { latest: sessionScope(session) });
+  const { revision } = session;
+  if (offerUndo) offerUndoSnackbar("Session ended.", [sessionScope(session)], () => undoSessionStep({ key, before, revision }), { latest: sessionScope(session) });
 }
 
 // another tab may have moved on
 async function refreshApplySession() {
   const session = state.applySession;
   if (!session || !window.location.pathname.startsWith("/queue/session/")) return;
+  const read = sessionLoads.start();
   try {
-    const response = await fetch("/api/v1/queue/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    const response = await fetch(`/api/v1/queue/session/${session.id}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
     if (!response.ok) return;
     const row = (await response.json()).session;
-    if (row?.id !== session.id || row.revision === session.revision || state.applySession !== session) return;
+    if (!sessionLoads.current(read) || state.applySession !== session || staleRead(session, row)) return;
     adoptSession(row);
     renderApplySession();
-  } catch {}
+  } catch {} finally {
+    sessionLoads.finish(read);
+  }
 }
 
 function updateNav(root) {
