@@ -2991,6 +2991,13 @@ dialog[open]::backdrop {
   font-size: 13px;
 }
 
+.rule-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s-1);
+}
+
 .rule-toggle {
   display: inline-flex;
   min-height: 40px;

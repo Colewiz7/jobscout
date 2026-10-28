@@ -11,6 +11,7 @@ import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, n
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
+import { moveId, RULE_KINDS, ruleValueHelp } from "./inbox-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -116,7 +117,7 @@ const state = {
   companiesData: null, companyLoadedName: null, companiesLoading: false,
   companiesError: "", companiesShowLoader: false, companyNoteTimer: null,
   companiesReload: false, companiesFocusPending: false, companyQuery: "", companyShow: "all",
-  rules: null, rulesLoading: false, rulesError: "",
+  rules: null, rulesLoading: false, rulesError: "", rulesOrderRevision: 0,
   companyLogos: {}, companyIconKeys: new Set(), pastInterviewsOpen: false,
 };
 
@@ -1400,12 +1401,13 @@ function companyDetailMarkup(company) {
 function companyFocusPath() {
   const active = document.activeElement;
   if (!active || active === document.body || !routeView.contains(active)) return null;
-  const selection = active.matches("input, textarea") ? [active.selectionStart, active.selectionEnd] : null;
+  // checkboxes have no selection
+  const selection = active.matches("textarea, input:not([type=checkbox])") ? [active.selectionStart, active.selectionEnd] : null;
   if (active.id) return { selector: `#${CSS.escape(active.id)}`, selection };
-  const holder = active.closest("[data-company-key], [data-link-id], [data-contact-id]");
-  const attr = holder && ["data-company-key", "data-link-id", "data-contact-id"].find((name) => holder.hasAttribute(name));
+  const holder = active.closest("[data-company-key], [data-link-id], [data-contact-id], [data-rule-id]");
+  const attr = holder && ["data-company-key", "data-link-id", "data-contact-id", "data-rule-id"].find((name) => holder.hasAttribute(name));
   if (!attr) return null;
-  const role = active.matches("[data-menu-trigger]") ? " [data-menu-trigger]" : active.matches("a") ? " a" : "";
+  const role = active.matches("[data-menu-trigger]") ? " [data-menu-trigger]" : active.matches("a") ? " a" : active.matches("[data-rule-toggle]") ? " [data-rule-toggle]" : "";
   return { selector: `[${attr}="${CSS.escape(holder.getAttribute(attr))}"]${role}`, selection };
 }
 
@@ -1435,16 +1437,22 @@ function ruleDescription(rule) {
   return `Add ${rule.value} ranking points to companies containing “${rule.pattern}”`;
 }
 
+function ruleCardMarkup(rule) {
+  return `<article class="rule-card" data-rule-id="${rule.id}"><div><h3>${escapeHtml(rule.name)}</h3><p>${escapeHtml(ruleDescription(rule))}</p></div><div class="rule-actions"><label class="rule-toggle"><input type="checkbox" data-rule-toggle="${rule.id}" ${rule.enabled ? "checked" : ""}><span>${rule.enabled ? '<span aria-hidden="true">✓</span>' : ""}${rule.enabled ? "Enabled" : "Paused"}</span></label>${moreButtonMarkup(rule.name)}</div></article>`;
+}
+
 function profileMarkup() {
   if (state.rulesError) return `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load rules.</h1><p>${escapeHtml(state.rulesError)}</p><button class="tonal-button interactive" type="button" data-retry-rules>Retry</button></div></section>`;
   const rules = state.rules || [];
-  return `<section class="profile-page" aria-labelledby="profile-title"><header class="profile-heading"><div><h1 id="profile-title" tabindex="-1">Profile</h1><p>Keep reusable facts and quiet automation in one place.</p></div>${state.quickFillEnabled ? '<button class="tonal-button interactive" type="button" data-quick-fill-toggle>Open Quick-fill</button>' : ""}</header><section class="profile-section" aria-labelledby="rules-title"><div class="section-heading"><div><h2 id="rules-title">Inbox rules</h2><p>Rules use literal, case-insensitive matches. Disabling one does not rewrite past actions.</p></div></div><form class="rule-form" id="rule-form"><label><span>Name</span><input name="name" maxlength="120" required placeholder="Archive senior roles"></label><label><span>Action</span><select name="kind"><option value="archive_title">Archive title</option><option value="tag_title">Tag title</option><option value="boost_company">Boost company</option></select></label><label><span>Contains</span><input name="pattern" maxlength="120" required placeholder="Senior"></label><label><span>Tag or boost</span><input name="value" maxlength="40" placeholder="Systems or 25"><small>Leave empty for archive rules.</small></label><button class="filled-button interactive" type="submit">Add rule</button></form>${rules.length ? `<div class="rule-list">${rules.map((rule) => `<article class="rule-card"><div><h3>${escapeHtml(rule.name)}</h3><p>${escapeHtml(ruleDescription(rule))}</p></div><label class="rule-toggle"><input type="checkbox" data-rule-toggle="${rule.id}" ${rule.enabled ? "checked" : ""}><span><span aria-hidden="true">${rule.enabled ? "✓" : "—"}</span>${rule.enabled ? "Enabled" : "Paused"}</span></label></article>`).join("")}</div>` : '<div class="profile-empty"><h3>No rules yet.</h3><p>Add one above to archive, tag or boost matching jobs as they arrive.</p></div>'}</section>`;
+  return `<section class="profile-page" aria-labelledby="profile-title"><header class="profile-heading"><div><h1 id="profile-title" tabindex="-1">Profile</h1><p>Keep reusable facts and quiet automation in one place.</p></div>${state.quickFillEnabled ? '<button class="tonal-button interactive" type="button" data-quick-fill-toggle>Open Quick-fill</button>' : ""}</header><section class="profile-section" aria-labelledby="rules-title"><div class="section-heading"><div><h2 id="rules-title" tabindex="-1">Inbox rules</h2><p>Rules run top to bottom, and the first archive rule that matches a job claims it. Matches are literal and ignore case. Pausing, editing or deleting a rule does not undo what it already did.</p></div></div><form class="rule-form" id="rule-form"><label><span>Name</span><input name="name" maxlength="120" required placeholder="Archive senior roles"></label><label><span>Action</span><select name="kind"><option value="archive_title">Archive title</option><option value="tag_title">Tag title</option><option value="boost_company">Boost company</option></select></label><label><span>Contains</span><input name="pattern" maxlength="120" required placeholder="Senior"></label><label><span>Tag or boost</span><input name="value" maxlength="40" placeholder="Systems or 25"><small>Leave empty for archive rules.</small></label><button class="filled-button interactive" type="submit">Add rule</button></form>${rules.length ? `<div class="rule-list">${rules.map(ruleCardMarkup).join("")}</div>` : '<div class="profile-empty"><h3>No rules yet.</h3><p>Add one above to archive, tag or boost matching jobs as they arrive.</p></div>'}</section>`;
 }
 
 function renderProfile({ focus = false } = {}) {
   document.title = "Profile — JobSeer";
+  const kept = focus ? null : companyFocusPath();
   routeView.innerHTML = profileMarkup();
   if (focus) document.querySelector("#profile-title")?.focus({ preventScroll: true });
+  else restoreCompanyFocus(kept);
 }
 
 async function loadRules() {
@@ -1453,7 +1461,9 @@ async function loadRules() {
   try {
     const response = await fetch("/api/v1/rules", { credentials: "same-origin", headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Rules did not respond.");
-    state.rules = (await response.json()).rules || [];
+    const body = await response.json();
+    state.rules = body.rules || [];
+    state.rulesOrderRevision = body.order_revision ?? 0;
   } catch (error) {
     state.rulesError = error instanceof Error ? error.message : "Rules did not respond.";
   } finally {
@@ -1508,6 +1518,123 @@ async function undoRuleAction(id) {
     if (job) Object.assign(job, { status: "new", archived_by_rule: null, rule_action_id: null });
     renderInbox({ focus: true }); showSnackbar("Rule archive undone.");
   } catch (error) { showSnackbar(error instanceof Error ? error.message : "The rule action could not be undone."); }
+}
+
+// --- rules ---
+
+function ruleFocus(id) {
+  return recordFocus(`.rule-card[data-rule-id="${id}"]`, "#rules-title");
+}
+
+function placeRule(rule) {
+  const list = state.rules || [];
+  const index = list.findIndex((item) => item.id === rule.id);
+  if (index >= 0) list[index] = rule;
+  if (routeRoot() === "profile") renderProfile();
+}
+
+function editRule(rule) {
+  openEditor({
+    title: `Edit ${rule.name}`, intro: "Changes apply from now on. Jobs it already archived stay archived.",
+    focusBack: ruleFocus(rule.id),
+    fields: [
+      { name: "name", label: "Name", value: rule.name, required: true, maxlength: 120 },
+      { name: "kind", label: "Action", value: rule.kind, options: RULE_KINDS },
+      { name: "pattern", label: "Contains", value: rule.pattern, required: true, maxlength: 120 },
+      { name: "value", label: "Tag or points", value: rule.value, optional: true, maxlength: 40, help: ruleValueHelp(rule.kind) },
+    ],
+    save: (changes) => saveRuleEdit(rule.id, changes, { message: "Rule updated.", undone: "Rule edit undone." }),
+  });
+}
+
+// undo sends the old rule back
+async function saveRuleEdit(id, payload, { message = "", undone = "", offer = true, aliasFrom = null } = {}) {
+  const { status, body, error } = await companyWrite(`/api/v1/rules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, "Couldn't save the rule. Retry shortly.");
+  if (status === 404) return "This rule was deleted in another tab.";
+  // show what the other tab saved
+  if (status === 409 && body.rule) { placeRule(body.rule); return "It changed in another tab, so it now shows that version."; }
+  if (error) return error;
+  placeRule(body.rule);
+  jobsWriteLanded();
+  if (aliasFrom !== null) revisionAliases.set(`rule:${id}@${aliasFrom}`, body.rule.revision);
+  if (offer) {
+    // a kind change clears the value
+    const restore = pickFields(body.previous, ["name", "kind", "pattern", "value"]);
+    const after = body.rule.revision;
+    offerUndoSnackbar(message, [`rule:${id}`], async () => {
+      restore.expected_revision = currentRevision(`rule:${id}`, after);
+      const failed = await saveRuleEdit(id, restore, { offer: false, aliasFrom: body.previous.revision });
+      showSnackbar(failed ? `Couldn't undo. ${failed}` : undone);
+    }, { latest: `rule:${id}` });
+  }
+  return "";
+}
+
+async function saveRuleOrder(order, before, rule, { offer = true } = {}) {
+  const byId = new Map((state.rules || []).map((item) => [item.id, item]));
+  const position = order.indexOf(rule.id) + 1;
+  state.rules = order.map((id) => byId.get(id)).filter(Boolean);
+  renderProfile();
+  ruleFocus(rule.id)();
+  announce(`${rule.name} moved to position ${position} of ${order.length}.`);
+  // a stale tab gets a 409
+  const { status, body, error } = await companyWrite("/api/v1/rules/order", { method: "PUT", body: JSON.stringify({ ids: order, expected_revision: state.rulesOrderRevision }) }, "Couldn't reorder the rules.");
+  if (error) {
+    const text = status === 409 ? "The rules changed in another tab, so they've reloaded." : `${error} Change undone.`;
+    state.rules = before.map((id) => byId.get(id)).filter(Boolean);
+    if (status === 409) { state.rules = null; loadRules(); } else { renderProfile(); ruleFocus(rule.id)(); }
+    assertiveRegion.textContent = text;
+    showSnackbar(text);
+    return false;
+  }
+  state.rulesOrderRevision = body.order_revision;
+  jobsWriteLanded();
+  if (offer) offerUndoSnackbar(`Moved ${rule.name} to position ${position}.`, ["rules-order"], async () => {
+    if (await saveRuleOrder(before, order, rule, { offer: false })) showSnackbar("Move undone.");
+  }, { latest: "rules-order" });
+  return true;
+}
+
+function moveRule(c, to) {
+  const before = (state.rules || []).map((item) => item.id);
+  const order = moveId(before, c.rule.id, to);
+  if (order.join() !== before.join()) saveRuleOrder(order, before, c.rule);
+}
+
+async function deleteRule(rule) {
+  const list = state.rules || [];
+  const index = list.findIndex((item) => item.id === rule.id);
+  if (index < 0) return;
+  // carrel: next card, else previous
+  const focus = focusAfterRemoval(list.map((item) => String(item.id)), [String(rule.id)], ".rule-card", "data-rule-id", "#rule-form input[name='name']");
+  list.splice(index, 1);
+  renderProfile();
+  focus();
+  const { status, error } = await companyWrite(`/api/v1/rules/${rule.id}`, { method: "DELETE" }, "Couldn't delete the rule.");
+  // another tab got there first
+  if (status === 404) { showSnackbar("Already deleted in another tab."); return; }
+  if (error) {
+    list.splice(index, 0, rule);
+    renderProfile();
+    ruleFocus(rule.id)();
+    assertiveRegion.textContent = `${error} Change undone.`;
+    showSnackbar(`${error} Change undone.`);
+    return;
+  }
+  jobsWriteLanded();
+  offerUndoSnackbar(`${rule.name} deleted.`, [`rule:${rule.id}`, "rules-order"], () => restoreRule(rule));
+}
+
+async function restoreRule(rule) {
+  const { status, error } = await companyWrite(`/api/v1/rules/${rule.id}/restore`, { method: "POST", body: "{}" }, "Couldn't restore the rule.");
+  if (status === 404) { showSnackbar("Already restored in another tab."); return; }
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  // its old place comes back
+  state.rules = null;
+  await loadRules();
+  if (document.activeElement === document.body || !routeView.contains(document.activeElement)) ruleFocus(rule.id)();
+  jobsWriteLanded();
+  showSnackbar(`${rule.name} restored.`);
 }
 
 async function loadCompanies(name = companyNameFromRoute()) {
@@ -3079,6 +3206,7 @@ function editFieldMarkup(field) {
     field.required ? "required" : "", field.maxlength ? `maxlength="${field.maxlength}"` : "",
     field.inputmode ? `inputmode="${field.inputmode}"` : "", `autocomplete="${field.autocomplete || "off"}"`,
     field.inputmode === "url" ? 'spellcheck="false" autocapitalize="off"' : "",
+    field.min ? `min="${field.min}"` : "", field.max ? `max="${field.max}"` : "",
     field.help ? `aria-describedby="${id}-help"` : "",
   ].filter(Boolean).join(" ");
   const control = field.options
@@ -3089,10 +3217,10 @@ function editFieldMarkup(field) {
   return `<label class="capture-field" for="${id}"><span>${escapeHtml(field.label)}${field.optional ? " <small>(optional)</small>" : ""}</span>${control}${field.help ? `<small class="edit-help" id="${id}-help">${escapeHtml(field.help)}</small>` : ""}</label>`;
 }
 
-function openEditor({ title, intro = "", fields, save, key = "", trigger = null, focusBack = null, focus = "" }) {
+function openEditor({ title, intro = "", fields, save, key = "", trigger = null, focusBack = null, focus = "", submit = "Save", always = false }) {
   if (editDialog.open || confirmDialog.open) return;
   editor = {
-    key, fields, save, focusBack, saving: false,
+    key, fields, save, focusBack, always, saving: false,
     trigger: trigger instanceof HTMLElement ? trigger : document.activeElement,
     original: Object.fromEntries(fields.map((field) => [field.name, field.value ?? ""])),
   };
@@ -3102,6 +3230,7 @@ function openEditor({ title, intro = "", fields, save, key = "", trigger = null,
   introNode.hidden = !intro;
   editDialog.querySelector(".dialog-heading [data-edit-cancel]").setAttribute("aria-label", `Close ${title}`);
   editDialog.querySelector("#edit-fields").innerHTML = fields.map(editFieldMarkup).join("");
+  editDialog.querySelector("#edit-submit").textContent = submit;
   showEditError("");
   editDialog.showModal();
   editForm.elements[focus || fields[0].name]?.focus();
@@ -3121,7 +3250,8 @@ function editorChanges() {
 async function submitEditor() {
   if (!editor || editor.saving) return;
   const changes = editorChanges();
-  if (!Object.keys(changes).length) { closeEditor(); return; }
+  // a confirm can save as is
+  if (!Object.keys(changes).length && !editor.always) { closeEditor(); return; }
   const button = editDialog.querySelector("#edit-submit");
   editor.saving = true;
   button.setAttribute("aria-disabled", "true");
@@ -4511,6 +4641,16 @@ const profileMenuItems = [
   { label: "Delete", danger: true, divider: true, run: (c) => deleteProfileItem(c) },
 ];
 
+const ruleMenuItems = [
+  { label: "Edit…", run: (c) => editRule(c.rule) },
+  { label: (c) => c.rule.enabled ? "Pause" : "Enable", run: (c) => toggleRule(c.rule.id, !c.rule.enabled) },
+  { label: "Move up", divider: true, when: (c) => c.count > 1, disabled: (c) => c.index === 0, run: (c) => moveRule(c, c.index - 1) },
+  { label: "Move down", when: (c) => c.count > 1, disabled: (c) => c.index === c.count - 1, run: (c) => moveRule(c, c.index + 1) },
+  { label: "Move to top", when: (c) => c.count > 1, disabled: (c) => c.index === 0, run: (c) => moveRule(c, 0) },
+  { label: "Move to bottom", when: (c) => c.count > 1, disabled: (c) => c.index === c.count - 1, run: (c) => moveRule(c, c.count - 1) },
+  { label: "Delete", danger: true, divider: true, run: (c) => deleteRule(c.rule) },
+];
+
 const companyMenuItems = [
   { label: "Open", when: (c) => !c.detail, run: (c) => navigate(`/companies/${encodeURIComponent(c.company.name)}`) },
   { label: "Rename…", run: (c) => renameCompany(c.company) },
@@ -4520,6 +4660,16 @@ const companyMenuItems = [
 ];
 
 const objectMenus = [
+  {
+    selector: ".rule-card[data-rule-id]", keyAttr: "data-rule-id", fallback: "#rules-title",
+    label: (c) => c.rule.name,
+    context(el) {
+      const list = state.rules || [];
+      const index = list.findIndex((item) => String(item.id) === el.dataset.ruleId);
+      return index < 0 ? null : { rule: list[index], index, count: list.length };
+    },
+    items: ruleMenuItems,
+  },
   {
     selector: ".profile-item[data-profile-ref]", keyAttr: "data-profile-ref", fallback: ".quick-fill-header h2",
     label: (c) => c.name, context: profileContext, items: profileMenuItems,
@@ -5085,6 +5235,10 @@ document.addEventListener("change", (event) => {
   else if (event.target.id === "company-show") { state.companyShow = companyFilter(event.target.value); syncCompaniesUrl(); renderCompanyResults(); }
   else if (event.target.id === "linkedin-csv") { const file = event.target.files?.[0]; event.target.value = ""; importLinkedInCsv(file); }
   else if (event.target.matches("[data-rule-toggle]")) toggleRule(Number(event.target.dataset.ruleToggle), event.target.checked);
+  else if (event.target.matches("#edit-dialog select[name='kind']")) {
+    const help = document.querySelector("#edit-value-help");
+    if (help) help.textContent = ruleValueHelp(event.target.value);
+  }
 });
 
 document.addEventListener("load", (event) => {
