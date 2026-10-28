@@ -13,6 +13,7 @@ from . import __version__
 DEFAULT_URL = "http://127.0.0.1:8080"
 DEFAULT_USER = "cole"
 TRUE = {"1", "true", "yes", "on"}
+FALSE = {"0", "false", "no", "off"}
 TOKEN_CMD_TIMEOUT = 5.0
 MAX_TOKEN_FILE = 8192
 HIDDEN = "[redacted]"
@@ -62,6 +63,14 @@ def run_token_cmd(command: str, timeout: float = TOKEN_CMD_TIMEOUT) -> str:
     return token
 
 
+# typos must not enable writes
+def read_flag(value, default: bool) -> bool:
+    value = (value or "").strip().lower()
+    if value in TRUE:
+        return True
+    return False if value in FALSE else default
+
+
 # errors must not leak secret
 def read_token_file(path: str) -> str:
     problem = None
@@ -101,7 +110,7 @@ class Config:
     token: str | None = field(default=None, compare=False)
 
     @classmethod
-    def from_env(cls, env=None, runner=run_token_cmd) -> "Config":
+    def from_env(cls, env=None, runner=run_token_cmd, readonly_default: bool = False) -> "Config":
         env = os.environ if env is None else env
         url = (env.get("JOBSEER_URL") or DEFAULT_URL).strip().rstrip("/")
         token = (env.get("JOBSEER_TOKEN") or "").strip() or None
@@ -114,7 +123,7 @@ class Config:
             token = runner(command)
         return cls(
             url=url,
-            readonly=(env.get("JOBSEER_READONLY") or "").strip().lower() in TRUE,
+            readonly=read_flag(env.get("JOBSEER_READONLY"), readonly_default),
             cache_ttl=float(env.get("JOBSEER_CACHE_TTL") or cls.cache_ttl),
             authentik_user=env.get("JOBSEER_AUTHENTIK_USER") or None,
             authentik_app=env.get("JOBSEER_AUTHENTIK_APP") or cls.authentik_app,

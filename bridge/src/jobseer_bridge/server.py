@@ -11,3 +11,36 @@ def build(config: Config, client=None, confirms=None):
     server = FastMCP("jobseer", instructions=INSTRUCTIONS, log_level="WARNING")
     bridge.register(server)
     return server, bridge
+
+
+def build_remote(config: Config, settings, client=None, confirms=None, keys=None):
+    from mcp.server.auth.settings import AuthSettings
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.responses import PlainTextResponse
+
+    from .auth import JwtVerifier, KeySet
+
+    verifier = JwtVerifier(issuer=settings.issuer, audience=settings.audience, subject=settings.subject, scope=settings.scope, keys=keys or KeySet(settings.jwks_url))
+    bridge = Bridge(config, client, confirms)
+    server = FastMCP(
+        "jobseer",
+        instructions=INSTRUCTIONS,
+        log_level="WARNING",
+        host=settings.host,
+        port=settings.port,
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        max_request_body_size=settings.max_body,
+        token_verifier=verifier,
+        auth=AuthSettings(issuer_url=settings.issuer, resource_server_url=settings.public_url, required_scopes=[settings.scope], validate_token_resource=False),
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=list(settings.allowed_hosts), allowed_origins=list(settings.allowed_origins)),
+    )
+
+    @server.custom_route("/healthz", methods=["GET"])
+    async def healthz(request):
+        return PlainTextResponse("ok")
+
+    bridge.register(server)
+    return server, bridge
