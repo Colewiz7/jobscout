@@ -11,6 +11,8 @@ DEFAULT_PORT = 8000
 DEFAULT_SCOPE = "jobseer:mcp"
 DEFAULT_BODY = 262144
 PATH = "/mcp"
+DEFAULT_RATE = 60
+DEFAULT_WINDOW = 60
 
 REQUIRED = {
     "JOBSEER_AUTH_ISSUER": "issuer",
@@ -88,6 +90,15 @@ def check_address(name: str, value: str, path: str | None = None) -> None:
         raise ValueError("%s must end in %s" % (name, path))
 
 
+def parse_tools(value: str | None):
+    text = (value or "").strip().lower()
+    if text in {"", "read"}:
+        return "read"
+    if text == "all":
+        return "all"
+    return frozenset(words(value))
+
+
 def whole(env, name: str, default: int, low: int, high: int) -> int:
     raw = (env.get(name) or "").strip()
     try:
@@ -112,6 +123,9 @@ class RemoteSettings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     max_body: int = DEFAULT_BODY
+    tools: object = "read"
+    rate_limit: int = DEFAULT_RATE
+    rate_window: int = DEFAULT_WINDOW
 
     @classmethod
     def from_env(cls, env=None) -> "RemoteSettings":
@@ -134,4 +148,7 @@ class RemoteSettings:
             host=host,
             port=whole(env, "JOBSEER_BIND_PORT", DEFAULT_PORT, 1, 65535),
             max_body=whole(env, "JOBSEER_MAX_BODY", DEFAULT_BODY, 1024, 16777216),
+            tools=parse_tools(env.get("JOBSEER_TOOLS")),
+            rate_limit=whole(env, "JOBSEER_RATE_LIMIT", DEFAULT_RATE, 0, 100000),
+            rate_window=whole(env, "JOBSEER_RATE_WINDOW", DEFAULT_WINDOW, 1, 86400),
         )

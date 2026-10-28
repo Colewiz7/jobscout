@@ -1,5 +1,6 @@
 from .bridge import Bridge
 from .config import Config
+from .ratelimit import RateLimiter
 
 INSTRUCTIONS = "JobSeer inbox and tracker actions. Every result names the target server it ran against."
 
@@ -22,7 +23,8 @@ def build_remote(config: Config, settings, client=None, confirms=None, keys=None
     from .auth import JwtVerifier, KeySet
 
     verifier = JwtVerifier(issuer=settings.issuer, audience=settings.audience, subject=settings.subject, scope=settings.scope, keys=keys or KeySet(settings.jwks_url))
-    bridge = Bridge(config, client, confirms)
+    limit = RateLimiter(settings.rate_limit, settings.rate_window) if settings.rate_limit else None
+    bridge = Bridge(config, client, confirms, selection=settings.tools, limiter=limit, remote=True)
     server = FastMCP(
         "jobseer",
         instructions=INSTRUCTIONS,

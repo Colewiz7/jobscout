@@ -99,8 +99,8 @@ def test_read_only_is_the_default_so_writes_are_not_listed(running, key):
     assert "job_set_status" not in names and "jobs_hide" not in names
 
 
-def test_writes_appear_only_when_enabled(make_running, key):
-    enabled = make_running(readonly=False)
+def test_writes_need_both_read_write_mode_and_the_tool_list(make_running, key):
+    enabled = make_running(readonly=False, JOBSEER_TOOLS="all")
 
     async def work(session):
         return {tool.name for tool in (await session.list_tools()).tools}

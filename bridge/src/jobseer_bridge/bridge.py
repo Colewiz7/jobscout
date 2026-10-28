@@ -6,6 +6,8 @@ import httpx
 from .client import ApiError, AuthError, BridgeError, Client, Conflict
 from .config import Config
 from .confirm import Confirms
+from .identity import current_identity
+from .ratelimit import RateLimiter
 from .registry import annotations, collect
 from .tools_apply import ApplyTools
 from .tools_confirm import ConfirmTools
@@ -21,16 +23,39 @@ def pack(payload) -> str:
 
 
 class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools):
-    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None):
+    def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False):
         self.config = config
         self.confirms = confirms or Confirms()
         self.client = client or Client(config)
+        self.selection = selection
+        self.limiter = limiter
+        self.remote = remote
+        if isinstance(selection, frozenset):
+            unknown = selection - {spec.name for spec, _ in collect(self)}
+            if unknown:
+                raise ValueError("JOBSEER_TOOLS names unknown tools: %s" % ", ".join(sorted(unknown)))
+
+    # fail toward least privilege
+    def allows(self, spec) -> bool:
+        if self.config.readonly and spec.kind != "read":
+            return False
+        if self.selection == "read":
+            return spec.kind == "read"
+        return self.selection == "all" or spec.name in self.selection
 
     def tools(self) -> list:
-        found = collect(self)
-        if self.config.readonly:
-            found = [(spec, fn) for spec, fn in found if spec.kind == "read"]
+        found = [(spec, fn) for spec, fn in collect(self) if self.allows(spec)]
         return sorted(found, key=lambda pair: pair[0].name)
+
+    def admit(self) -> None:
+        if not self.remote:
+            return
+        who = current_identity()
+        if who is None:
+            raise BridgeError("not signed in")
+        wait = self.limiter.hit(who[0]) if self.limiter else 0
+        if wait:
+            raise BridgeError("rate limit reached; try again in %d seconds" % wait)
 
     def label(self, data) -> dict:
         return {"target": self.config.origin, "data": data}
@@ -38,6 +63,7 @@ class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, Profi
     def guard(self, fn):
         @functools.wraps(fn)
         def run(*args, **kwargs):
+            self.admit()
             # raising outside keeps the raw error unreachable
             failure = None
             try:
