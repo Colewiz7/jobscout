@@ -623,10 +623,15 @@ function eligibilityMarkup(job) {
   const heading = active.length ? "Do not apply" : result.overridden ? "Override recorded" : "Check eligibility";
   const intro = active.length
     ? "Profile conflicts with an explicit requirement in this posting."
-    : result.overridden ? "The original blocker stays in the activity record." : "Confirm these details before applying.";
+    : result.overridden ? "The original blocker stays on record, and revoking brings it back." : "Confirm these details before applying.";
   const evidence = (active.length ? active : result.overridden ? result.blockers : findings).map((item) => `
     <li><span aria-hidden="true">${item.overridden ? "✓" : "!"}</span><div><strong>${escapeHtml(item.label)}</strong><p>${escapeHtml(item.evidence)}</p><small>${escapeHtml(item.comparison)} · ${escapeHtml(item.provenance)}</small></div></li>`).join("");
-  return `<section class="eligibility-banner${active.length ? " is-blocked" : ""}" aria-labelledby="eligibility-heading"><div><p class="eyebrow">Eligibility</p><h2 id="eligibility-heading"><span aria-hidden="true">${active.length ? "!" : "✓"}</span>${heading}</h2><p>${intro}</p></div><ul>${evidence}</ul>${active.length ? '<button class="outlined-button interactive" type="button" data-override-eligibility>Override verdict</button>' : ""}</section>`;
+  const notes = active.length ? [] : [...new Set((result.overrides || []).map((item) => item.note).filter(Boolean))];
+  const noteMarkup = notes.map((note) => `<p class="override-note"><span>Your note</span>${escapeHtml(note)}</p>`).join("");
+  const action = active.length
+    ? '<button class="outlined-button interactive" type="button" data-override-eligibility>Override verdict</button>'
+    : (result.overrides || []).length ? '<button class="text-button interactive" type="button" data-revoke-override>Revoke override</button>' : "";
+  return `<section class="eligibility-banner${active.length ? " is-blocked" : ""}" aria-labelledby="eligibility-heading"><div><p class="eyebrow">Eligibility</p><h2 id="eligibility-heading" tabindex="-1"><span aria-hidden="true">${active.length ? "!" : "✓"}</span>${heading}</h2><p>${intro}</p></div><ul>${evidence}</ul>${noteMarkup}${action ? `<div class="eligibility-actions">${action}</div>` : ""}</section>`;
 }
 
 function jobHasActiveBlocker(job) {
@@ -937,23 +942,56 @@ async function fetchEligibility(key) {
   }
 }
 
-async function overrideEligibility() {
-  const key = state.selectedKey;
-  if (!key) return;
-  try {
-    const response = await fetch(`/api/v1/jobs/${encodeURIComponent(key)}/eligibility/override`, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ note: "Overridden from the reading pane" }),
-    });
-    noticeHidden(response);
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The override could not be recorded.");
-    state.eligibility.set(key, { loading: false, value: (await response.json()).eligibility, error: "" });
-    renderInbox({ focus: true });
-    showSnackbar("Eligibility override recorded.");
-  } catch (error) {
-    showSnackbar(error instanceof Error ? error.message : "The override could not be recorded.");
-  }
+// in order, not document order
+function eligibilityFocus() {
+  const target = ["[data-revoke-override]", "[data-override-eligibility]", "#eligibility-heading", "#job-title"].map((selector) => document.querySelector(selector)).find(Boolean);
+  target?.focus({ preventScroll: true });
+}
+
+function applyEligibility(key, value) {
+  state.eligibility.set(key, { loading: false, value, error: "" });
+  if (routeRoot() === "inbox" && state.selectedKey === key) renderSelectedJob();
+  else renderJobSurface();
+}
+
+function overrideEligibility(key = state.selectedKey, trigger = null) {
+  const active = (state.eligibility.get(key)?.value?.blockers || []).filter((item) => !item.overridden);
+  if (!key || !active.length) return;
+  const named = new Intl.ListFormat("en-US", { type: "conjunction" }).format(active.map((item) => item.label));
+  openEditor({
+    title: "Override the eligibility verdict?",
+    intro: `${named} will stop blocking this job, so you can queue and apply. The blocker stays on record, and you can revoke the override later.`,
+    trigger, focusBack: eligibilityFocus, submit: "Override", always: true,
+    fields: [{ name: "note", label: "Why it's fine to apply", value: "", optional: true, rows: 3, maxlength: 1000, help: "Kept with the override, like what a recruiter told you." }],
+    save: ({ note = "" }) => saveOverride(key, note),
+  });
+}
+
+async function saveOverride(key, note) {
+  const { body, error } = await companyWrite(`/api/v1/jobs/${encodeURIComponent(key)}/eligibility/override`, { method: "POST", body: JSON.stringify({ note }) }, "The override could not be recorded.");
+  if (error) return error;
+  applyEligibility(key, body.eligibility);
+  offerUndoSnackbar("Eligibility override recorded.", [`override:${key}`], () => changeOverride(key, body.override_ids, false, { undone: "Override undone." }));
+  return "";
+}
+
+// undo goes by override id
+async function changeOverride(key, ids, restore, { undone = "", offer = false } = {}) {
+  const url = `/api/v1/jobs/${encodeURIComponent(key)}/eligibility/override${restore ? "/restore" : ""}`;
+  const init = restore ? { method: "POST", body: JSON.stringify({ ids }) } : { method: "DELETE", ...(ids ? { body: JSON.stringify({ ids }) } : {}) };
+  const inBanner = Boolean(document.activeElement?.closest(".eligibility-banner"));
+  const { status, body, error } = await companyWrite(url, init, "Couldn't change the override. Retry shortly.");
+  // show what the other tab saved
+  if (status === 409 && body.eligibility) { applyEligibility(key, body.eligibility); showSnackbar("The override changed in another tab, so it now shows that version."); return; }
+  if (error) { assertiveRegion.textContent = error; showSnackbar(offer ? error : `Couldn't undo. ${error}`); return; }
+  applyEligibility(key, body.eligibility);
+  if (inBanner || document.activeElement === document.body) eligibilityFocus();
+  if (offer) offerUndoSnackbar("Override revoked. The verdict blocks this job again.", [`override:${key}`], () => changeOverride(key, body.ids, true, { undone: "Override restored." }));
+  else showSnackbar(undone);
+}
+
+function revokeOverride(key = state.selectedKey) {
+  if (key) changeOverride(key, null, false, { offer: true });
 }
 
 function renderInbox({ focus = false } = {}) {
@@ -4777,6 +4815,8 @@ const objectMenus = [
       { label: "Apply now", shortcut: "a", when: (c) => !c.bulk && applicationUrl(c.job), disabled: (c) => jobHasActiveBlocker(c.job), run: (c) => applyToJob(c.job) },
       { label: "Open original posting", when: (c) => !c.bulk && c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
       { label: "Edit posting…", when: (c) => !c.bulk, run: (c) => editPosting(c.key, { focusBack: recordFocus(`#job-list-layer .job-row[data-job-key="${CSS.escape(c.key)}"]`, ".inbox-list h1") }) },
+      { label: "Override eligibility…", when: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => overrideEligibility(c.key) },
+      { label: "Revoke eligibility override", when: (c) => !c.bulk && (state.eligibility.get(c.key)?.value?.overrides || []).length > 0 && !jobHasActiveBlocker(c.job), run: (c) => revokeOverride(c.key) },
       { label: "Save", shortcut: "s", divider: true, when: (c) => c.bulk || c.job.status !== "saved", run: (c) => performDecision("saved", "Saved", c.bulk ? null : [c.key]) },
       { label: "Queue", shortcut: "q", when: (c) => c.bulk || c.job.status !== "queued", disabled: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => c.bulk ? queueSelection() : performDecision("queued", "Queued", [c.key]) },
       { label: "Dismiss", shortcut: "x", when: (c) => c.bulk || c.job.status !== "archived", run: (c) => performDecision("archived", "Dismissed", c.bulk ? null : [c.key]) },
@@ -5051,7 +5091,9 @@ document.addEventListener("click", (event) => {
   if (row) { handleRowSelection(row, event); return; }
   const companyRole = event.target.closest(".company-role[data-job-key]");
   if (companyRole) { selectJob(companyRole.dataset.jobKey); return; }
-  if (event.target.closest("[data-override-eligibility]")) { overrideEligibility(); return; }
+  const overrideButton = event.target.closest("[data-override-eligibility]");
+  if (overrideButton) { overrideEligibility(state.selectedKey, overrideButton); return; }
+  if (event.target.closest("[data-revoke-override]")) { revokeOverride(); return; }
   const markApplied = event.target.closest("[data-mark-applied]");
   if (markApplied) { setTrackerStatus(markApplied.dataset.markApplied, "applied"); return; }
   const moveToQueue = event.target.closest("[data-move-to-queue]");

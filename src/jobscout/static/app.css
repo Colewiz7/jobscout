@@ -1587,6 +1587,24 @@ dialog[open]::backdrop {
   opacity: .8;
 }
 
+.override-note {
+  display: grid;
+  gap: var(--s-1);
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.override-note span {
+  color: var(--on-surface-variant);
+  font-size: 12px;
+}
+
+.eligibility-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .eligibility-banner ul,
 .at-glance ul,
 .missing-skills ul,
