@@ -1016,6 +1016,84 @@ def test_session_starts_without_checking_every_job_then_checks_current(dashboard
         client.close()
 
 
+def _queue(client, csrf, *keys):
+    for key in keys:
+        client.patch("/api/v1/jobs/%s" % key.replace(":", "%3A"), headers={"X-CSRF-Token": csrf}, json={"status": "queued"})
+
+
+def test_a_session_survives_a_reload_and_undoes_by_revision(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        assert client.get("/api/v1/queue/session").json()["session"] is None
+        _queue(client, csrf, "demo:1", "demo:2")
+        started = client.post("/api/v1/queue/session", headers={"X-CSRF-Token": csrf}).json()["session"]
+        assert sorted(started["keys"]) == ["demo:1", "demo:2"]
+        assert started["revision"] == 0 and started["ended_at"] is None
+        path = "/api/v1/queue/session/%d" % started["id"]
+        skipped = client.patch(path, headers={"X-CSRF-Token": csrf}, json={"expected_revision": 0, "skipped": [{"dedupe_key": "demo:1", "reason": "Skipped in session"}]})
+        assert skipped.status_code == 200
+        assert skipped.json()["session"]["revision"] == 1
+        ended = client.patch(path, headers={"X-CSRF-Token": csrf}, json={"expected_revision": 1, "applied": ["demo:2"], "ended": True}).json()["session"]
+        assert ended["ended_at"] is not None and ended["applied"] == ["demo:2"]
+
+        reloaded = client.get("/api/v1/queue/session").json()["session"]
+        assert reloaded["skipped"] == [{"dedupe_key": "demo:1", "reason": "Skipped in session"}]
+        assert reloaded["revision"] == 2
+
+        # a stale tab gets the newer session back
+        stale = client.patch(path, headers={"X-CSRF-Token": csrf}, json={"expected_revision": 1, "ended": False})
+        assert stale.status_code == 409
+        assert stale.json()["session"]["revision"] == 2
+        resumed = client.patch(path, headers={"X-CSRF-Token": csrf}, json={"expected_revision": 2, "ended": False, "skipped": []}).json()["session"]
+        assert resumed["ended_at"] is None and resumed["skipped"] == []
+    finally:
+        client.close()
+
+
+def test_session_writes_check_auth_csrf_input_and_unknown_sessions(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        _queue(client, csrf, "demo:1")
+        started = client.post("/api/v1/queue/session", headers={"X-CSRF-Token": csrf}).json()["session"]
+        path = "/api/v1/queue/session/%d" % started["id"]
+        body = {"expected_revision": 0, "ended": True}
+        assert httpx.get(f"{base}/api/v1/queue/session", timeout=2).status_code == 401
+        assert httpx.patch(f"{base}{path}", json=body, timeout=2).status_code == 401
+        assert client.patch(path, json=body).status_code == 403
+        bad = [
+            {"ended": True},
+            {"expected_revision": "0", "ended": True},
+            {"expected_revision": 0},
+            {"expected_revision": 0, "ended": "yes"},
+            {"expected_revision": 0, "applied": "demo:1"},
+            {"expected_revision": 0, "applied": ["demo:1", "demo:1"]},
+            {"expected_revision": 0, "applied": ["demo:9"]},
+            {"expected_revision": 0, "skipped": [{"dedupe_key": "demo:9"}]},
+            {"expected_revision": 0, "skipped": ["demo:1"]},
+            {"expected_revision": 0, "index": 2},
+        ]
+        for payload in bad:
+            assert client.patch(path, headers={"X-CSRF-Token": csrf}, json=payload).status_code == 400, payload
+        assert client.patch("/api/v1/queue/session/999", headers={"X-CSRF-Token": csrf}, json=body).status_code == 404
+        assert client.patch("/api/v1/queue/session/nope", headers={"X-CSRF-Token": csrf}, json=body).status_code == 404
+        assert client.get("/api/v1/queue/session").json()["session"]["revision"] == 0
+    finally:
+        client.close()
+
+
+def test_an_opened_job_can_be_rechecked_after_a_reload(dashboard):
+    base, _ = dashboard
+    client, csrf = authenticated_client(base)
+    try:
+        client.patch("/api/v1/jobs/demo%3A1", headers={"X-CSRF-Token": csrf}, json={"status": "applying"})
+        checked = client.post("/api/v1/queue/check", headers={"X-CSRF-Token": csrf}, json={"dedupe_key": "demo:1"})
+        assert checked.status_code == 200
+    finally:
+        client.close()
+
+
 def test_session_check_archives_closed_current_job(dashboard):
     base, store = dashboard
     client, csrf = authenticated_client(base)

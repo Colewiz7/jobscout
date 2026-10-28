@@ -36,6 +36,7 @@ def conn():
         cur.execute("drop table if exists rule_order")
         cur.execute("drop table if exists saved_view_order")
         cur.execute("drop table if exists hide_undo_tokens")
+        cur.execute("drop table if exists apply_sessions")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
         cur.execute("drop table if exists eligibility_overrides")
@@ -111,6 +112,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 27, "name": "activity_and_overview_dismissals"},
             {"version": 28, "name": "saved_view_edits"},
             {"version": 29, "name": "hide_undo_tokens"},
+            {"version": 30, "name": "apply_sessions"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -699,6 +701,28 @@ def test_a_hide_undo_token_is_single_use_and_expires(conn):
         database.undo_hide(conn, "never issued")
     assert unknown.value.unknown
     assert _visible(conn) == [first.dedupe_key]
+
+
+def test_an_apply_session_saves_conditionally_and_pauses_while_ended(conn):
+    assert database.apply_session(conn) is None
+    started = database.start_apply_session(conn, ["a", "b"])
+    assert database.apply_session(conn)["id"] == started["id"]
+    skipped = database.update_apply_session(conn, started["id"], {"skipped": [{"dedupe_key": "a", "reason": "Skipped in session"}]}, 0)
+    assert skipped["revision"] == 1 and skipped["skipped"][0]["dedupe_key"] == "a"
+    with pytest.raises(database.RecordConflict) as stale:
+        database.update_apply_session(conn, started["id"], {"ended": True}, 0)
+    assert stale.value.record["revision"] == 1
+    with pytest.raises(ValueError):
+        database.update_apply_session(conn, started["id"], {"applied": ["z"]}, 1)
+    ended = database.update_apply_session(conn, started["id"], {"applied": ["b"], "ended": True}, 1)
+    assert ended["ended_at"] is not None and ended["applied"] == ["b"]
+    with conn.cursor() as cur:
+        cur.execute("update apply_sessions set ended_at = ended_at - interval '1 hour', started_at = started_at - interval '1 hour'")
+    conn.commit()
+    resumed = database.update_apply_session(conn, started["id"], {"ended": False}, 2)
+    # the hour it sat ended isnt counted
+    assert resumed["ended_at"] is None and resumed["elapsed_seconds"] < 60
+    assert database.update_apply_session(conn, 999, {"ended": True}, 0) is None
 
 
 def test_queue_order_skips_hidden_jobs(conn):

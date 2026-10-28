@@ -626,6 +626,21 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        30,
+        "apply_sessions",
+        """
+        create table if not exists apply_sessions (
+            id         bigserial primary key,
+            keys       text[] not null,
+            applied    text[] not null default '{}',
+            skipped    jsonb not null default '[]',
+            started_at timestamptz not null default now(),
+            ended_at   timestamptz,
+            revision   integer not null default 0
+        );
+        """,
+    ),
 )
 
 

@@ -143,6 +143,37 @@ def _expected_revision(payload: dict) -> int | None:
     return expected
 
 
+def _session_changes(payload: dict) -> tuple[dict, int]:
+    expected = _expected_revision(payload)
+    if expected is None:
+        raise ValueError("expected_revision is required")
+    unknown = sorted(set(payload) - {"applied", "skipped", "ended"})
+    if unknown:
+        raise ValueError("unknown session fields: %s" % ", ".join(unknown))
+    changes = {}
+    if "applied" in payload:
+        applied = payload["applied"]
+        if not isinstance(applied, list) or len(applied) > 500 or not all(isinstance(key, str) and key for key in applied) or len(set(applied)) != len(applied):
+            raise ValueError("applied must be a list of job keys")
+        changes["applied"] = applied
+    if "skipped" in payload:
+        skipped = payload["skipped"]
+        if not isinstance(skipped, list) or len(skipped) > 500:
+            raise ValueError("skipped must be a list")
+        changes["skipped"] = []
+        for item in skipped:
+            if not isinstance(item, dict) or not isinstance(item.get("dedupe_key"), str) or not isinstance(item.get("reason", ""), str):
+                raise ValueError("each skipped job needs a dedupe_key and a reason")
+            changes["skipped"].append({"dedupe_key": item["dedupe_key"], "reason": item.get("reason", "")[:200]})
+    if "ended" in payload:
+        if not isinstance(payload["ended"], bool):
+            raise ValueError("ended must be true or false")
+        changes["ended"] = payload["ended"]
+    if not changes:
+        raise ValueError("nothing to change")
+    return changes, expected
+
+
 # only the hash is stored
 def _hide_undo_token() -> tuple[str, str]:
     token = secrets.token_urlsafe(32)
@@ -790,7 +821,8 @@ class PostgresStore:
 
     def check_session_job(self, key: str) -> dict:
         job = next((item for item in self.jobs() if item["dedupe_key"] == key), None)
-        if job is None or job["status"] != "queued":
+        # a reload finds it opened
+        if job is None or job["status"] not in {"queued", "applying"}:
             raise ValueError("job is no longer queued")
         result = self.check_liveness(key, force=True)
         if result.status == "closed":
@@ -798,6 +830,21 @@ class PostgresStore:
                 database.require_schema(conn)
                 database.save_application_state(conn, key, "archived", job.get("notes") or "")
         return dataclasses.asdict(result)
+
+    def start_apply_session(self, keys: list[str]) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.start_apply_session(conn, keys)
+
+    def apply_session(self) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.apply_session(conn)
+
+    def update_apply_session(self, session_id: int, changes: dict, expected: int) -> dict | None:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.update_apply_session(conn, session_id, changes, expected)
 
     def mark_applied(self, key: str, document_id) -> dict | None:
         self.description(key)
@@ -1325,6 +1372,7 @@ class DemoStore:
         self._job_tags: list[dict] = []
         self._history: list[dict] = []
         self._dismissed_overviews: set[str] = set()
+        self._apply_sessions: list[dict] = []
         self._rule_action_history: set[tuple[int, str]] = set()
         self._next_rule_id = 1
         self._next_rule_action_id = 1
@@ -1750,7 +1798,7 @@ class DemoStore:
         return {"jobs": _session_pick(queued, dedupe_keys), "skipped": []}
 
     def check_session_job(self, key: str) -> dict:
-        row = next((item for item in self.rows if item["dedupe_key"] == key and item["status"] == "queued"), None)
+        row = next((item for item in self.rows if item["dedupe_key"] == key and item["status"] in {"queued", "applying"}), None)
         if row is None:
             raise ValueError("job is no longer queued")
         closed = bool(row.get("closed") or not row.get("url"))
@@ -1760,6 +1808,40 @@ class DemoStore:
         if closed:
             row["status"] = "archived"
         return {"status": row["liveness_status"], "evidence": row["liveness_evidence"]}
+
+    def _public_session(self, session: dict) -> dict:
+        end = session["ended_at"] or dt.datetime.now(dt.timezone.utc)
+        return {**session, "keys": list(session["keys"]), "applied": list(session["applied"]),
+                "skipped": [dict(item) for item in session["skipped"]],
+                "elapsed_seconds": max(0, int((end - session["started_at"]).total_seconds()))}
+
+    def start_apply_session(self, keys: list[str]) -> dict:
+        session = {"id": len(self._apply_sessions) + 1, "keys": list(keys), "applied": [], "skipped": [],
+                   "started_at": dt.datetime.now(dt.timezone.utc), "ended_at": None, "revision": 0}
+        self._apply_sessions.append(session)
+        return self._public_session(session)
+
+    def apply_session(self) -> dict | None:
+        return self._public_session(self._apply_sessions[-1]) if self._apply_sessions else None
+
+    def update_apply_session(self, session_id: int, changes: dict, expected: int) -> dict | None:
+        session = next((item for item in self._apply_sessions if item["id"] == session_id), None)
+        if session is None:
+            return None
+        if session["revision"] != expected:
+            raise database.RecordConflict(self._public_session(session))
+        database.check_session_changes(session["keys"], changes)
+        now = dt.datetime.now(dt.timezone.utc)
+        if changes.get("ended") is True and session["ended_at"] is None:
+            session["ended_at"] = now
+        elif changes.get("ended") is False and session["ended_at"] is not None:
+            session["started_at"] += now - session["ended_at"]
+            session["ended_at"] = None
+        for name in ("applied", "skipped"):
+            if name in changes:
+                session[name] = changes[name]
+        session["revision"] += 1
+        return self._public_session(session)
 
     def mark_applied(self, key: str, document_id) -> dict | None:
         document = next(
@@ -2892,6 +2974,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     self._image(bytes(icon["logo_data"]), icon["media_type"])
                 return
+            if parsed.path == "/api/v1/queue/session":
+                try:
+                    self._json({
+                        "session": self.app.store.apply_session(),
+                        "documents": self.app.store.documents() if self.app.quick_fill_enabled else [],
+                    })
+                except Exception:
+                    log.exception("could not load apply session")
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load the session. Retry shortly.")
+                return
             if parsed.path == "/api/v1/tracker":
                 try:
                     self._json(self.app.store.tracker())
@@ -3176,9 +3268,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _patch_apply_session(self, raw_id: str) -> None:
+        if not self._require_write_security():
+            return
+        if not raw_id.isdigit() or len(raw_id) > 18:
+            self._error(HTTPStatus.NOT_FOUND, "session not found")
+            return
+        try:
+            changes, expected = _session_changes(self._read_json())
+            session = self.app.store.update_apply_session(int(raw_id), changes, expected)
+        except database.RecordConflict as conflict:
+            self._json({"error": "The session changed in another tab.", "session": conflict.record}, HTTPStatus.CONFLICT)
+            return
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except Exception:
+            log.exception("could not save apply session")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't save the session. Retry shortly.")
+            return
+        if session is None:
+            self._error(HTTPStatus.NOT_FOUND, "session not found")
+            return
+        self._json({"session": session})
+
     def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         if self._record_route(parsed.path, "PATCH") or self._company_route(parsed.path, "PATCH"):
+            return
+        session_prefix = "/api/v1/queue/session/"
+        if parsed.path.startswith(session_prefix):
+            self._patch_apply_session(parsed.path[len(session_prefix):])
             return
         prefix = "/api/v1/jobs/"
         posting_suffix = "/posting"
@@ -3580,6 +3700,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 session = self.app.store.start_session(keys)
                 session["documents"] = self.app.store.documents() if self.app.quick_fill_enabled else []
+                started = [job["dedupe_key"] for job in session["jobs"]]
+                session["session"] = self.app.store.start_apply_session(started) if started else None
             except Exception:
                 log.exception("could not start apply session")
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't check the queue. Retry shortly.")

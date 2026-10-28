@@ -2136,6 +2136,68 @@ def mark_application_applied(
     return snapshot
 
 
+_SESSION_COLUMNS = """
+    id, keys, applied, skipped, started_at, ended_at, revision,
+    extract(epoch from coalesce(ended_at, now()) - started_at)::integer as elapsed_seconds
+"""
+
+
+def start_apply_session(conn: psycopg.Connection, keys: list[str]) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(f"insert into apply_sessions (keys) values (%s) returning {_SESSION_COLUMNS}", (keys,))
+        session = cur.fetchone()
+    conn.commit()
+    return session
+
+
+def apply_session(conn: psycopg.Connection) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(f"select {_SESSION_COLUMNS} from apply_sessions order by id desc limit 1")
+        return cur.fetchone()
+
+
+def check_session_changes(keys: list[str], changes: dict) -> None:
+    allowed = set(keys)
+    if not set(changes.get("applied", [])) <= allowed:
+        raise ValueError("applied jobs must be in the session")
+    if not {item["dedupe_key"] for item in changes.get("skipped", [])} <= allowed:
+        raise ValueError("skipped jobs must be in the session")
+
+
+def update_apply_session(conn: psycopg.Connection, session_id: int, changes: dict, expected: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(f"select {_SESSION_COLUMNS} from apply_sessions where id = %s for update", (session_id,))
+        current = cur.fetchone()
+        if current is None:
+            return None
+        # another tab moved the session
+        if current["revision"] != expected:
+            conn.rollback()
+            raise RecordConflict(current)
+        check_session_changes(current["keys"], changes)
+        ended = changes.get("ended")
+        cur.execute(
+            f"""
+            update apply_sessions
+               set applied = coalesce(%s, applied), skipped = coalesce(%s, skipped),
+                   started_at = case when %s::boolean is false and ended_at is not null
+                       then started_at + (now() - ended_at) else started_at end,
+                   ended_at = case
+                       when %s::boolean is null then ended_at
+                       when %s::boolean then coalesce(ended_at, now())
+                       else null
+                   end,
+                   revision = revision + 1
+             where id = %s
+            returning {_SESSION_COLUMNS}
+            """,
+            (changes.get("applied"), Json(changes["skipped"]) if "skipped" in changes else None, ended, ended, ended, session_id),
+        )
+        session = cur.fetchone()
+    conn.commit()
+    return session
+
+
 def contact_counts(conn: psycopg.Connection) -> dict[str, int]:
     with conn.cursor() as cur:
         cur.execute(
