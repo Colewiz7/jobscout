@@ -39,12 +39,12 @@ class ConfirmTools:
             shown = preview()
             return {
                 "needs_confirmation": True,
-                "confirm_id": self.confirms.issue(name, args),
+                "confirm_id": self.confirms.issue(name, args, owner=self.caller()),
                 "expires_in": int(self.confirms.ttl),
                 "preview": shown,
                 "next": "call %s again with the same arguments plus confirm_id" % name,
             }
-        self.confirms.redeem(confirm_id, name, args)
+        self.confirms.redeem(confirm_id, name, args, owner=self.caller())
         return None
 
     def _brief(self, keys: list[str]) -> dict:

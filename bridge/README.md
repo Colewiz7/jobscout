@@ -87,6 +87,13 @@ whether auth was accepted and the session user. It exits 0 on success and never 
 - App passwords expire. When `check` starts reporting 401, create a new one, update the vault
   item and run `check` again. Nothing else needs to change if you use `JOBSEER_TOKEN_CMD`.
 
+## Remote mode
+
+`jobseer-bridge serve` is the network form of the server (full setup below). Confirm ids are held in
+the process memory and bound to the caller's token subject and client, so another caller's id is
+refused and does not use the original up. Because of that, run exactly one replica; a second one
+would not know the ids the first issued. A restart drops pending previews.
+
 ## Behaviour
 
 - One keep-alive connection. `GET /jobs` is cached for a few seconds and dropped on any write.

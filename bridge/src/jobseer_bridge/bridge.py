@@ -47,6 +47,9 @@ class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, Profi
         found = [(spec, fn) for spec, fn in collect(self) if self.allows(spec)]
         return sorted(found, key=lambda pair: pair[0].name)
 
+    def caller(self):
+        return current_identity() if self.remote else None
+
     def admit(self) -> None:
         if not self.remote:
             return

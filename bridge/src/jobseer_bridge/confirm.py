@@ -18,22 +18,24 @@ class Confirms:
     def __init__(self, ttl: float = TTL, clock=time.monotonic):
         self.ttl = ttl
         self.clock = clock
-        self._pending: dict[str, tuple[float, str, object]] = {}
+        self._pending: dict[str, tuple[float, str, object, object]] = {}
 
-    def issue(self, tool: str, args: dict, context=None) -> str:
+    def issue(self, tool: str, args: dict, context=None, owner=None) -> str:
         now = self.clock()
         self._pending = {key: held for key, held in self._pending.items() if held[0] > now}
         if len(self._pending) >= MAX_PENDING:
             self._pending.pop(min(self._pending, key=lambda key: self._pending[key][0]))
         confirm_id = secrets.token_urlsafe(6)
-        self._pending[confirm_id] = (now + self.ttl, fingerprint(tool, args), context)
+        self._pending[confirm_id] = (now + self.ttl, fingerprint(tool, args), context, owner)
         return confirm_id
 
     # stops replay and swapped args
-    def redeem(self, confirm_id: str, tool: str, args: dict):
-        held = self._pending.pop(confirm_id, None)
-        if held is None:
+    def redeem(self, confirm_id: str, tool: str, args: dict, owner=None):
+        held = self._pending.get(confirm_id)
+        # stops denial by other callers
+        if held is None or held[3] != owner:
             raise BridgeError("unknown or already used confirm_id; ask for a new preview")
+        del self._pending[confirm_id]
         if held[0] <= self.clock():
             raise BridgeError("confirm_id expired; ask for a new preview")
         if held[1] != fingerprint(tool, args):
