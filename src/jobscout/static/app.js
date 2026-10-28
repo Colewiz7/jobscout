@@ -5,6 +5,7 @@ import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
+import { fuzzyScore, menuCommands, rankCommands } from "./command-palette.js";
 import { recordedAs, routeIndex, sessionFromServer, sessionLists, sessionPatch, stepAfter, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
@@ -91,6 +92,9 @@ const commands = [
   { id: "tracker", label: "Go to Tracker", detail: "Follow up and learn", route: "/tracker", shortcut: "G T" },
   { id: "companies", label: "Go to Companies", detail: "Open company history", route: "/companies", shortcut: "G C" },
   { id: "profile", label: "Go to Profile", detail: "Manage reusable application data", route: "/profile", shortcut: "G P" },
+  { id: "archived", label: "Go to Archived", detail: "Restore dismissed jobs", route: "/inbox?status=archived", icon: "inbox" },
+  { id: "add-job", label: "Add job", detail: "Add a posting by its link", action: "capture", icon: "inbox" },
+  { id: "new-view", label: "New saved view", detail: "Save the current Inbox filters", action: "new-view", icon: "filter" },
   { id: "shortcuts", label: "Show keyboard shortcuts", detail: "Review the power-user map", action: "shortcuts", shortcut: "?" },
 ];
 
@@ -127,6 +131,7 @@ const state = {
 };
 
 let commandSelection = 0;
+let paletteEntries = [];
 let commandMatches = commands;
 let dialogTrigger = null;
 let editor = null;
@@ -274,21 +279,6 @@ function navigate(url, { replace = false } = {}) {
   history[replace ? "replaceState" : "pushState"]({}, "", `${destination.pathname}${destination.search}${destination.hash}`);
   renderRoute({ focus: true });
   if (routeRoot() !== "inbox") routeView.scrollTop = 0;
-}
-
-function fuzzyScore(candidate, query) {
-  const text = candidate.toLowerCase();
-  const needle = query.trim().toLowerCase();
-  if (!needle) return 1;
-  let score = 0;
-  let position = -1;
-  for (const character of needle) {
-    const next = text.indexOf(character, position + 1);
-    if (next === -1) return -1;
-    score += next === position + 1 ? 3 : 1;
-    position = next;
-  }
-  return score - position / 100;
 }
 
 // the inbox tab that holds it
@@ -4960,10 +4950,9 @@ async function popOutQuickFill() {
 }
 
 function renderCommands() {
-  const query = commandInput.value;
-  commandMatches = commands.map((command) => ({ command, score: fuzzyScore(`${command.label} ${command.detail}`, query) })).filter((entry) => entry.score >= 0).sort((left, right) => right.score - left.score).map((entry) => entry.command);
+  commandMatches = rankCommands(paletteEntries, commandInput.value);
   commandSelection = Math.min(commandSelection, Math.max(0, commandMatches.length - 1));
-  commandResults.innerHTML = commandMatches.length ? commandMatches.map((command, index) => `<button class="command-item interactive" type="button" role="option" aria-selected="${index === commandSelection}" data-command="${command.id}">${icons[command.id] || icons.shortcuts}<span><strong>${escapeHtml(command.label)}</strong><small>${escapeHtml(command.detail)}</small></span><kbd>${escapeHtml(command.shortcut)}</kbd></button>`).join("") : '<p class="command-empty">No matching commands</p>';
+  commandResults.innerHTML = commandMatches.length ? commandMatches.map((command, index) => `<button class="command-item interactive" type="button" role="option" aria-selected="${index === commandSelection}" data-command="${escapeHtml(command.id)}">${icons[command.icon || command.id] || icons.shortcuts}<span><strong>${escapeHtml(command.label)}</strong><small>${escapeHtml(command.detail)}</small></span>${command.shortcut ? `<kbd>${escapeHtml(command.shortcut)}</kbd>` : ""}</button>`).join("") : '<p class="command-empty">No matching commands</p>';
   commandResults.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
 }
 
@@ -4974,7 +4963,22 @@ function openCommand(trigger) {
   if (commandDialog.open) return;
   if (shortcutDialog.open) shortcutDialog.close();
   if (filterDialog.open) filterDialog.close();
-  rememberDialogTrigger(trigger); commandInput.value = ""; commandSelection = 0; renderCommands(); commandDialog.showModal(); commandInput.focus();
+  rememberDialogTrigger(trigger);
+  // closures bind the subject now
+  paletteEntries = [...subjectCommands(dialogTrigger), ...commands];
+  commandInput.value = ""; commandSelection = 0; renderCommands(); commandDialog.showModal(); commandInput.focus();
+}
+
+// the focused object, else the open job
+function subjectCommands(trigger) {
+  let found = trigger instanceof Element ? objectMenuAt(trigger) : null;
+  const job = routeRoot() === "inbox" && state.jobs.find((item) => item.dedupe_key === state.selectedKey);
+  if (!found && job) {
+    const el = document.querySelector(`#job-list-layer .job-row[data-job-key="${CSS.escape(job.dedupe_key)}"]`);
+    found = { type: objectMenus.find((type) => type.selector.startsWith(".job-row")), context: { el, key: job.dedupe_key, job, bulk: false } };
+  }
+  if (!found) return [];
+  return menuCommands(menuItemsFor(found.type, found.context, { palette: true }), { prefix: "subject", detail: found.type.label(found.context), format: formatShortcut });
 }
 
 function openShortcuts(trigger) {
@@ -4998,11 +5002,32 @@ function openFilters(trigger) {
 }
 
 function runCommand(id) {
-  const command = commands.find((item) => item.id === id);
+  const command = paletteEntries.find((item) => item.id === id);
   if (!command) return;
+  // after focus returns to the trigger
+  commandDialog.addEventListener("close", () => {
+    if (command.run) command.run();
+    else if (command.route) navigate(command.route);
+    else if (command.action === "shortcuts") openShortcuts(document.querySelector("[data-open-shortcuts]"));
+    else if (command.action === "capture") openCapture();
+    else if (command.action === "new-view") newSavedView();
+  }, { once: true });
   commandDialog.close();
-  if (command.route) navigate(command.route);
-  if (command.action === "shortcuts") openShortcuts(document.querySelector("[data-open-shortcuts]"));
+}
+
+function newSavedView() {
+  if (routeRoot() !== "inbox") navigate(inboxUrl(""));
+  openFilters(document.querySelector("[data-open-filters]"));
+  savedViewName.focus();
+}
+
+async function copyJobField(name, value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    showSnackbar(`Copied the ${name}.`);
+  } catch {
+    showSnackbar("Couldn't copy. Check clipboard permission and retry.");
+  }
 }
 
 function openCapture(url = "", title = "") {
@@ -5890,6 +5915,12 @@ function runUndo(taken) {
 // --- object menus ---
 // keeps later actions out of handlers
 
+const copyFieldItems = [
+  { label: "Copy title", palette: true, run: (c) => copyJobField("title", c.job.title) },
+  { label: "Copy company", palette: true, run: (c) => copyJobField("company", c.job.company) },
+  { label: "Copy posting link", palette: true, when: (c) => c.job.url, run: (c) => copyJobField("posting link", c.job.url) },
+];
+
 const trackerItems = [
   { label: "Move up", when: (c) => !c.table, disabled: (c) => c.index === 0, run: (c) => moveOnBoard(c, c.index - 1) },
   { label: "Move down", when: (c) => !c.table, disabled: (c) => c.index === c.column.length - 1, run: (c) => moveOnBoard(c, c.index + 1) },
@@ -5899,6 +5930,7 @@ const trackerItems = [
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
   { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`${c.table ? ".tracker-table tr" : ".board-card"}[data-tracker-key="${CSS.escape(c.key)}"]`, "#tracker-title") }) },
   { label: "Add follow-up…", run: (c) => addFollowUp(c.key) },
+  ...copyFieldItems,
   { label: "Add tag…", run: (c) => addTag([c.key]) },
   { label: "Remove tag…", when: (c) => (c.job.manual_tags || []).length > 0, run: (c) => removeTag([c.key]) },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
@@ -5995,6 +6027,7 @@ const objectMenus = [
       { label: "Open", when: (c) => !c.bulk, run: (c) => selectJob(c.key, { focusDetail: true }) },
       { label: "Apply now", shortcut: "a", when: (c) => !c.bulk && applicationUrl(c.job), disabled: (c) => jobHasActiveBlocker(c.job), run: (c) => applyToJob(c.job) },
       { label: "Open original posting", when: (c) => !c.bulk && c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Open company", when: (c) => !c.bulk, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
       { label: "Edit posting…", when: (c) => !c.bulk, run: (c) => editPosting(c.key, { focusBack: recordFocus(`#job-list-layer .job-row[data-job-key="${CSS.escape(c.key)}"]`, ".inbox-list h1") }) },
       { label: "Add follow-up…", when: (c) => !c.bulk, run: (c) => addFollowUp(c.key) },
       { label: "Override eligibility…", when: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => overrideEligibility(c.key) },
@@ -6007,6 +6040,7 @@ const objectMenus = [
       { label: "Add tag…", divider: true, run: (c) => addTag(c.bulk ? [...state.selectedKeys] : [c.key]) },
       { label: "Remove tag…", when: (c) => removableTags(c.bulk ? [...state.selectedKeys].map(trackedJob).filter(Boolean) : [c.job]).length > 0, run: (c) => removeTag(c.bulk ? [...state.selectedKeys] : [c.key]) },
       { label: "Copy", divider: true, run: (c) => copyInboxJobs(c.bulk ? filteredJobs().filter((job) => state.selectedKeys.has(job.dedupe_key)) : [c.job]) },
+      ...copyFieldItems.map((item) => ({ ...item, when: (c) => !c.bulk && (!item.when || item.when(c)) })),
       { label: (c) => state.selectedKeys.has(c.key) ? "Deselect" : "Select", run: (c) => { if (state.selectedKeys.has(c.key)) state.selectedKeys.delete(c.key); else state.selectedKeys.add(c.key); syncVisibleJobSelection(); } },
       { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideInboxJobs(c.bulk ? [...state.selectedKeys] : [c.key], c.el) },
     ],
@@ -6025,7 +6059,9 @@ const objectMenus = [
       { label: "Move to top", disabled: (c) => c.index === 0, run: (c) => reorderQueue(c.key, 0) },
       { label: "Move to bottom", disabled: (c) => c.index === c.count - 1, run: (c) => reorderQueue(c.key, c.count - 1) },
       { label: "Open original posting", when: (c) => c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
+      { label: "Open company", run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
       { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`.queue-card[data-queue-key="${CSS.escape(c.key)}"]`, "#queue-title") }) },
+      ...copyFieldItems,
       { label: "Save for later", divider: true, run: (c) => removeFromQueue(c.key) },
       { label: "Hide permanently…", danger: true, divider: true, run: (c) => hideJobs([c.key], {
         trigger: document.querySelector(`.queue-card[data-queue-key="${CSS.escape(c.key)}"] button[data-menu-trigger]`),
@@ -6123,6 +6159,27 @@ const objectMenus = [
   },
 ];
 
+// palette rows stay out of menus
+function menuItemsFor(type, context, { palette = false } = {}) {
+  return type.items.filter((item) => (palette || !item.palette) && (!item.when || item.when(context))).map((item) => ({
+    label: typeof item.label === "function" ? item.label(context) : item.label,
+    shortcut: item.shortcut, divider: typeof item.divider === "function" ? item.divider(context) : item.divider, danger: item.danger,
+    hint: typeof item.hint === "function" ? item.hint(context) : item.hint,
+    checked: item.checked?.(context), disabled: Boolean(item.disabled?.(context)),
+    run: () => item.run(context),
+  }));
+}
+
+function objectMenuAt(target) {
+  for (const type of objectMenus) {
+    const el = target.closest(type.selector);
+    if (!el) continue;
+    const context = type.context(el);
+    return context ? { type, el, context } : null;
+  }
+  return null;
+}
+
 function resolveObjectMenu(target) {
   if (!(target instanceof Element)) return null;
   for (const type of objectMenus) {
@@ -6130,13 +6187,7 @@ function resolveObjectMenu(target) {
     if (!el) continue;
     const context = type.context(el);
     if (!context) return null;
-    const items = type.items.filter((item) => !item.when || item.when(context)).map((item) => ({
-      label: typeof item.label === "function" ? item.label(context) : item.label,
-      shortcut: item.shortcut, divider: typeof item.divider === "function" ? item.divider(context) : item.divider, danger: item.danger,
-      hint: typeof item.hint === "function" ? item.hint(context) : item.hint,
-      checked: item.checked?.(context), disabled: Boolean(item.disabled?.(context)),
-      run: () => item.run(context),
-    }));
+    const items = menuItemsFor(type, context);
     const value = el.getAttribute(type.keyAttr);
     const focusTarget = (node) => node.matches(".job-row") ? node : node.querySelector("button[data-menu-trigger]");
     const inside = el.contains(document.activeElement) && document.activeElement !== document.body ? document.activeElement : null;
