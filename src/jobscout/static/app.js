@@ -11,7 +11,7 @@ import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, n
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
-import { cleanTag, hasTag, moveId, removableTags, RULE_KINDS, ruleValueHelp, tagOptions, withManualTag } from "./inbox-edit.js";
+import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, RULE_KINDS, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "./inbox-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, loadLatest, splitEligible, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -121,6 +121,7 @@ const state = {
   companiesReload: false, companiesFocusPending: false, companyQuery: "", companyShow: "all",
   rules: null, rulesLoading: false, rulesError: "", rulesOrderRevision: 0,
   companyLogos: {}, companyIconKeys: new Set(), pastInterviewsOpen: false,
+  upcomingFollowupsOpen: false, doneFollowupsOpen: false,
 };
 
 let commandSelection = 0;
@@ -1207,14 +1208,33 @@ function trackerInsights(applications) {
   </div>`;
 }
 
+function reminderDue(reminder, now = new Date()) {
+  const effective = new Date(reminder.snoozed_until || reminder.due_at);
+  return !Number.isNaN(effective.valueOf()) && effective <= now;
+}
+
+function reminderRowMarkup(reminder) {
+  const done = reminder.status === "done";
+  const when = done ? reminder.completed_at : reminder.snoozed_until || reminder.due_at;
+  const label = `${reminder.company} follow-up`;
+  const actions = done
+    ? `<button class="text-button interactive" type="button" data-reminder-action="reopen" data-reminder-id="${reminder.id}">Reopen</button>`
+    : `<button class="text-button interactive" type="button" data-reminder-snooze="${reminder.id}" aria-haspopup="menu" aria-expanded="false">Snooze</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button>`;
+  return `<article class="reminder-row" data-reminder-id="${reminder.id}"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span>${reminder.note ? `<span class="reminder-note">${escapeHtml(reminder.note)}</span>` : ""}</div><time datetime="${escapeHtml(when)}" title="${escapeHtml(formatAbsolute(when))}">${done ? `Done ${escapeHtml(formatDate(when).replace(/^(Today|Yesterday)$/, (word) => word.toLowerCase()))}` : escapeHtml(reminderDue(reminder) ? formatDate(when) : upcomingDay(when))}</time><div>${actions}${moreButtonMarkup(label)}</div></article>`;
+}
+
 function reminderMarkup() {
   const now = new Date();
-  const due = (state.trackerData?.reminders || []).filter((reminder) => {
-    const effective = new Date(reminder.snoozed_until || reminder.due_at);
-    return !Number.isNaN(effective.valueOf()) && effective <= now;
-  });
-  if (!due.length) return "";
-  return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title">Follow-ups due</h2><p>${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.</p></div></div><div class="reminder-list">${due.map((reminder) => `<article class="reminder-row" data-reminder-id="${reminder.id}"><div><strong>${escapeHtml(reminder.company)}</strong><span>${escapeHtml(reminder.title)}</span></div><time datetime="${escapeHtml(reminder.snoozed_until || reminder.due_at)}">${escapeHtml(formatDate(reminder.snoozed_until || reminder.due_at))}</time><div><button class="text-button interactive" type="button" data-reminder-action="snooze" data-reminder-id="${reminder.id}">Snooze 3d</button><button class="tonal-button interactive" type="button" data-reminder-action="done" data-reminder-id="${reminder.id}">Done</button>${moreButtonMarkup(`${reminder.company} follow-up`)}</div></article>`).join("")}</div></section>`;
+  const open = state.trackerData?.reminders || [];
+  const due = open.filter((reminder) => reminderDue(reminder, now));
+  const upcoming = open.filter((reminder) => !reminderDue(reminder, now));
+  const done = state.trackerData?.done_reminders || [];
+  if (!open.length && !done.length) return "";
+  const format = new Intl.NumberFormat();
+  const intro = due.length ? `${due.length} ${due.length === 1 ? "application needs" : "applications need"} a next step.` : "Nothing due right now.";
+  const upcomingMarkup = upcoming.length ? `<details class="reminder-more" data-reminder-group="upcoming" ${state.upcomingFollowupsOpen ? "open" : ""}><summary>Coming up (${format.format(upcoming.length)})</summary><div class="reminder-list">${upcoming.map(reminderRowMarkup).join("")}</div></details>` : "";
+  const doneMarkup = done.length ? `<details class="reminder-more" data-reminder-group="done" ${state.doneFollowupsOpen ? "open" : ""}><summary>Done in the last 2 weeks (${format.format(done.length)})</summary><div class="reminder-list">${done.map(reminderRowMarkup).join("")}</div></details>` : "";
+  return `<section class="tracker-section" aria-labelledby="followups-title"><div class="section-heading"><div><h2 id="followups-title" tabindex="-1">${due.length ? "Follow-ups due" : "Follow-ups"}</h2><p>${intro}</p></div></div>${due.length ? `<div class="reminder-list">${due.map(reminderRowMarkup).join("")}</div>` : ""}${upcomingMarkup}${doneMarkup}</section>`;
 }
 
 function interviewMarkup(item) {
@@ -1767,17 +1787,134 @@ async function importLinkedInCsv(file) {
   }
 }
 
-async function updateReminder(id, action) {
-  try {
-    const response = await fetch(`/api/v1/reminders/${id}`, {
-      method: "PUT", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The reminder could not be updated.");
-    await loadTrackerData({ background: true });
-    showSnackbar(action === "done" ? "Follow-up completed." : "Follow-up snoozed for 3 days.");
-  } catch (error) { showSnackbar(error instanceof Error ? error.message : "The reminder could not be updated."); }
+// --- follow-ups ---
+
+function findReminder(id) {
+  const data = state.trackerData;
+  return [...(data?.reminders || []), ...(data?.done_reminders || [])].find((item) => item.id === id) || null;
+}
+
+function reminderFocus(id) {
+  return recordFocus(`.reminder-row[data-reminder-id="${id}"]`, "#followups-title, #tracker-title");
+}
+
+// closed groups hide their rows
+function shownReminderIds() {
+  return [...document.querySelectorAll(".reminder-row[data-reminder-id]")].filter((row) => !row.closest("details:not([open])")).map((row) => row.dataset.reminderId);
+}
+
+// keeps names the server leaves out
+function placeReminder(saved) {
+  const data = state.trackerData;
+  if (!data) return;
+  const old = findReminder(saved.id);
+  const merged = { company: old?.company || trackedJob(saved.dedupe_key)?.company || "", title: old?.title || trackedJob(saved.dedupe_key)?.title || "", ...saved };
+  data.reminders = (data.reminders || []).filter((item) => item.id !== saved.id);
+  data.done_reminders = (data.done_reminders || []).filter((item) => item.id !== saved.id);
+  if (merged.status === "done") data.done_reminders.unshift(merged);
+  else data.reminders = [...data.reminders, merged].sort((left, right) => new Date(left.snoozed_until || left.due_at) - new Date(right.snoozed_until || right.due_at) || left.id - right.id);
+  if (routeRoot() === "tracker") renderTracker();
+}
+
+function reminderMessage(action, reminder) {
+  if (action === "done") return "Follow-up done.";
+  if (action === "reopen") return "Follow-up reopened.";
+  if (action === "unsnooze") return "Snooze cleared.";
+  return `Snoozed until ${formatAbsolute(reminder.snoozed_until)}.`;
+}
+
+async function updateReminder(id, payload, { offer = true, aliasFrom = null } = {}) {
+  const reminder = findReminder(id);
+  const scope = `reminder:${id}`;
+  const body = reminder ? { ...payload, expected_revision: payload.expected_revision ?? currentRevision(scope, reminder.revision) } : payload;
+  const inside = document.activeElement?.closest?.(".reminder-row")?.dataset.reminderId === String(id);
+  const shown = shownReminderIds();
+  const { status, body: result, error } = await companyWrite(`/api/v1/reminders/${id}`, { method: "PUT", body: JSON.stringify(body) }, "The follow-up could not be updated.");
+  // show what the other tab saved
+  if (status === 409 && result.reminder) { placeReminder(result.reminder); showSnackbar("This follow-up changed in another tab, so it now shows that version."); return "changed"; }
+  if (error) { assertiveRegion.textContent = error; showSnackbar(offer ? error : `Couldn't undo. ${error}`); return error; }
+  placeReminder(result.reminder);
+  trackerWriteLanded();
+  if (aliasFrom !== null) revisionAliases.set(`${scope}@${aliasFrom}`, result.reminder.revision);
+  // the row may change lists
+  if (inside || document.activeElement === document.body) {
+    if (shownReminderIds().includes(String(id))) reminderFocus(id)();
+    else focusAfterRemoval(shown, [String(id)], ".reminder-row", "data-reminder-id", "#followups-title")();
+  }
+  if (!offer) return "";
+  const after = result.reminder.revision;
+  const undo = reminderUndo(payload.action, result.previous);
+  offerUndoSnackbar(reminderMessage(payload.action, result.reminder), [scope], async () => {
+    const failed = await updateReminder(id, { ...undo, expected_revision: currentRevision(scope, after) }, { offer: false, aliasFrom: result.previous.revision });
+    if (!failed) showSnackbar("Follow-up change undone.");
+  }, { latest: scope });
+  return "";
+}
+
+function snoozeItems(reminder) {
+  const day = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return [
+    ...snoozeChoices().map((choice) => ({ label: choice.key === "three-days" ? "Snooze 3 days" : `Snooze until ${choice.label.toLowerCase()}`, hint: day.format(choice.until), run: () => updateReminder(reminder.id, { action: "snooze", until: choice.until.toISOString() }) })),
+    { label: "Pick a date…", run: () => pickSnoozeDate(reminder) },
+  ];
+}
+
+function pickSnoozeDate(reminder) {
+  const tomorrow = snoozeChoices()[0].until;
+  openEditor({
+    title: "Snooze until", intro: `${reminder.company} comes back at 9 am that day.`,
+    focusBack: reminderFocus(reminder.id), submit: "Snooze", always: true,
+    fields: [{ name: "day", label: "Date", type: "date", value: dateInputValue(tomorrow), min: dateInputValue(tomorrow), required: true }],
+    save(changes) {
+      const picked = pickedDay(changes.day ?? dateInputValue(tomorrow));
+      if (picked.error) return Promise.resolve(picked.error);
+      return updateReminder(reminder.id, { action: "snooze", until: picked.until.toISOString() }).then((error) => error === "changed" ? "" : error);
+    },
+  });
+}
+
+function addFollowUp(key, trigger = null) {
+  const job = trackedJob(key);
+  if (!job) return;
+  const tomorrow = snoozeChoices()[0].until;
+  openEditor({
+    title: "Add a follow-up", intro: `A reminder for ${job.title} at ${job.company}, apart from the one each application gets.`,
+    trigger, focusBack: recordFocus(`[data-tracker-key="${CSS.escape(key)}"], #job-list-layer .job-row[data-job-key="${CSS.escape(key)}"]`, "#tracker-title, .inbox-list h1"),
+    submit: "Add follow-up", always: true,
+    fields: [
+      { name: "day", label: "Date", type: "date", value: dateInputValue(snoozeChoices()[1].until), min: dateInputValue(tomorrow), required: true },
+      { name: "note", label: "Note", value: "", optional: true, maxlength: 500, help: "What to follow up on, like sending a portfolio link." },
+    ],
+    async save(changes) {
+      const picked = pickedDay(changes.day ?? dateInputValue(snoozeChoices()[1].until));
+      if (picked.error) return picked.error;
+      const { body, error } = await companyWrite("/api/v1/reminders", { method: "POST", body: JSON.stringify({ dedupe_key: key, due_at: picked.until.toISOString(), note: changes.note || "" }) }, "Couldn't add the follow-up. Retry shortly.");
+      if (error) return error;
+      if (state.trackerData) {
+        state.upcomingFollowupsOpen = true;
+        placeReminder(body.reminder);
+        // carrel: added items take focus
+        if (routeRoot() === "tracker") setTimeout(() => reminderFocus(body.reminder.id)(), 0);
+      }
+      trackerWriteLanded();
+      offerUndoSnackbar(`Follow-up added for ${formatAbsolute(body.reminder.due_at)}.`, [`reminder:${body.reminder.id}`], () => removeFollowUp(body.reminder));
+      return "";
+    },
+  });
+}
+
+async function removeFollowUp(reminder) {
+  const { status, error } = await companyWrite(`/api/v1/reminders/${reminder.id}`, { method: "DELETE" }, "Couldn't remove the follow-up.");
+  if (status === 404) { showSnackbar("Already gone in another tab."); return; }
+  if (error) { showSnackbar(`Couldn't undo. ${error}`); return; }
+  const data = state.trackerData;
+  if (data) {
+    data.reminders = (data.reminders || []).filter((item) => item.id !== reminder.id);
+    data.done_reminders = (data.done_reminders || []).filter((item) => item.id !== reminder.id);
+    if (routeRoot() === "tracker") renderTracker();
+  }
+  trackerWriteLanded();
+  showSnackbar("Follow-up removed.");
 }
 
 async function saveTrackerNextStep(key, value, input) {
@@ -4735,6 +4872,7 @@ const trackerItems = [
   { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.job.company)}`) },
   { label: "Edit next step", when: (c) => c.table, run: (c) => c.el.querySelector("[data-next-step]")?.focus() },
   { label: "Edit posting…", run: (c) => editPosting(c.key, { focusBack: recordFocus(`${c.table ? ".tracker-table tr" : ".board-card"}[data-tracker-key="${CSS.escape(c.key)}"]`, "#tracker-title") }) },
+  { label: "Add follow-up…", run: (c) => addFollowUp(c.key) },
   { label: "Add tag…", run: (c) => addTag([c.key]) },
   { label: "Remove tag…", when: (c) => (c.job.manual_tags || []).length > 0, run: (c) => removeTag([c.key]) },
   ...statusOptions.map((status, index) => ({ label: statusLabel(status), divider: index === 0, checked: (c) => c.job.status === status, run: (c) => setTrackerStatus(c.key, status) })),
@@ -4815,6 +4953,7 @@ const objectMenus = [
       { label: "Apply now", shortcut: "a", when: (c) => !c.bulk && applicationUrl(c.job), disabled: (c) => jobHasActiveBlocker(c.job), run: (c) => applyToJob(c.job) },
       { label: "Open original posting", when: (c) => !c.bulk && c.job.url, run: (c) => window.open(c.job.url, "_blank", "noopener") },
       { label: "Edit posting…", when: (c) => !c.bulk, run: (c) => editPosting(c.key, { focusBack: recordFocus(`#job-list-layer .job-row[data-job-key="${CSS.escape(c.key)}"]`, ".inbox-list h1") }) },
+      { label: "Add follow-up…", when: (c) => !c.bulk, run: (c) => addFollowUp(c.key) },
       { label: "Override eligibility…", when: (c) => !c.bulk && jobHasActiveBlocker(c.job), run: (c) => overrideEligibility(c.key) },
       { label: "Revoke eligibility override", when: (c) => !c.bulk && (state.eligibility.get(c.key)?.value?.overrides || []).length > 0 && !jobHasActiveBlocker(c.job), run: (c) => revokeOverride(c.key) },
       { label: "Save", shortcut: "s", divider: true, when: (c) => c.bulk || c.job.status !== "saved", run: (c) => performDecision("saved", "Saved", c.bulk ? null : [c.key]) },
@@ -4860,15 +4999,22 @@ const objectMenus = [
     label: (c) => `${c.job.title}, ${c.job.company}`, context: (el) => trackerContext(el, true), items: trackerItems,
   },
   {
-    selector: ".reminder-row[data-reminder-id]", keyAttr: "data-reminder-id", fallback: "#tracker-title",
+    selector: ".reminder-row[data-reminder-id]", keyAttr: "data-reminder-id", fallback: "#followups-title, #tracker-title",
     label: (c) => `${c.reminder.company} follow-up`,
     context(el) {
-      const reminder = state.trackerData?.reminders?.find((item) => String(item.id) === el.dataset.reminderId);
-      return reminder && { reminder };
+      const reminder = findReminder(Number(el.dataset.reminderId));
+      return reminder && { reminder, done: reminder.status === "done" };
     },
     items: [
-      { label: "Snooze 3 days", run: (c) => updateReminder(c.reminder.id, "snooze") },
-      { label: "Done", run: (c) => updateReminder(c.reminder.id, "done") },
+      { label: "Done", when: (c) => !c.done, run: (c) => updateReminder(c.reminder.id, { action: "done" }) },
+      { label: "Reopen", when: (c) => c.done, run: (c) => updateReminder(c.reminder.id, { action: "reopen" }) },
+      ...[0, 1, 2].map((index) => ({
+        label: () => ["Snooze until tomorrow", "Snooze 3 days", "Snooze until next week"][index], divider: index === 0,
+        hint: () => new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(snoozeChoices()[index].until),
+        when: (c) => !c.done, run: (c) => updateReminder(c.reminder.id, { action: "snooze", until: snoozeChoices()[index].until.toISOString() }),
+      })),
+      { label: "Pick a snooze date…", when: (c) => !c.done, run: (c) => pickSnoozeDate(c.reminder) },
+      { label: "Clear snooze", when: (c) => c.reminder.status === "snoozed", run: (c) => updateReminder(c.reminder.id, { action: "unsnooze" }) },
       { label: "Open company", divider: true, run: (c) => navigate(`/companies/${encodeURIComponent(c.reminder.company)}`) },
     ],
   },
@@ -5043,7 +5189,13 @@ document.addEventListener("click", (event) => {
   if (trackerSort) { state.trackerSort = trackerSort.dataset.trackerSort; syncTrackerUrl(); renderTracker(); return; }
   if (event.target.closest("[data-export-tracker]")) { exportTrackerCsv(); return; }
   const reminderAction = event.target.closest("[data-reminder-action]");
-  if (reminderAction) { updateReminder(Number(reminderAction.dataset.reminderId), reminderAction.dataset.reminderAction); return; }
+  if (reminderAction) { updateReminder(Number(reminderAction.dataset.reminderId), { action: reminderAction.dataset.reminderAction }); return; }
+  const snoozeButton = event.target.closest("[data-reminder-snooze]");
+  if (snoozeButton) {
+    const reminder = findReminder(Number(snoozeButton.dataset.reminderSnooze));
+    if (reminder) toggleMenu(snoozeButton, snoozeItems(reminder), { label: `Snooze ${reminder.company} follow-up` });
+    return;
+  }
   if (event.target.closest("[data-retry-tracker]")) { state.trackerData = null; state.trackerError = ""; loadTrackerData(); return; }
   if (event.target.closest("[data-retry-companies]")) { state.companiesData = null; state.companiesError = ""; loadCompanies(); return; }
   const addCompanyButton = event.target.closest("[data-add-company]");
@@ -5456,7 +5608,11 @@ for (const dialog of [commandDialog, shortcutDialog, filterDialog, captureDialog
 }
 
 // toggle doesnt bubble
-routeView.addEventListener("toggle", (event) => { if (event.target.matches?.(".interview-past")) state.pastInterviewsOpen = event.target.open; }, true);
+routeView.addEventListener("toggle", (event) => {
+  if (event.target.matches?.(".interview-past")) state.pastInterviewsOpen = event.target.open;
+  if (event.target.matches?.('[data-reminder-group="upcoming"]')) state.upcomingFollowupsOpen = event.target.open;
+  if (event.target.matches?.('[data-reminder-group="done"]')) state.doneFollowupsOpen = event.target.open;
+}, true);
 
 bindQuickFillSurface(quickFillSheet);
 bindObjectMenus(resolveObjectMenu);

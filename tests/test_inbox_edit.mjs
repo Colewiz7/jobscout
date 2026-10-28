@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, ruleValueHelp, snoozeChoices, tagOptions, withManualTag } from "../src/jobscout/static/inbox-edit.js";
+import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "../src/jobscout/static/inbox-edit.js";
 
 const job = (tags, manual = [], rules = tags.filter((tag) => !manual.includes(tag))) => ({ tags, manual_tags: manual, rule_tags: rules });
 
@@ -71,4 +71,14 @@ test("a picked day must be a real future day within a year", () => {
   assert.equal(pickedDay("", now).error, "Pick a date.");
   assert.equal(pickedDay("2027-12-01", now).error, "Pick a day within a year.");
   assert.equal(dateInputValue(new Date(2026, 0, 5)), "2026-01-05");
+});
+
+test("upcoming days read forward from today", () => {
+  const now = new Date(2026, 9, 28, 22);
+  assert.equal(upcomingDay(new Date(2026, 9, 28, 23), now, "en-US"), "Today");
+  assert.equal(upcomingDay(new Date(2026, 9, 29, 1), now, "en-US"), "Tomorrow");
+  assert.equal(upcomingDay(new Date(2026, 9, 31, 9), now, "en-US"), "Saturday");
+  assert.equal(upcomingDay(new Date(2026, 10, 4, 9), now, "en-US"), "Nov 4");
+  assert.equal(upcomingDay(new Date(2027, 0, 4, 9), now, "en-US"), "Jan 4, 2027");
+  assert.equal(upcomingDay("nope", now), "");
 });

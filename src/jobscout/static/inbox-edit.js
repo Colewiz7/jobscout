@@ -94,3 +94,14 @@ export function pickedDay(value, now = new Date()) {
   if (date - now > 365 * 864e5) return { error: "Pick a day within a year." };
   return { until: date };
 }
+
+// formatDate only looks back
+export function upcomingDay(value, now = new Date(), locale = undefined) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "";
+  const days = Math.round((new Date(date.getFullYear(), date.getMonth(), date.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 864e5);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  if (days < 7) return new Intl.DateTimeFormat(locale, { weekday: "long" }).format(date);
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) }).format(date);
+}
