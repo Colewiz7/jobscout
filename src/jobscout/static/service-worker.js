@@ -22,6 +22,7 @@ const SHELL = [
   "/static/record-edit.js",
   "/static/company-edit.js",
   "/static/inbox-edit.js",
+  "/static/apply-session.js",
   "/static/fonts/rubik-latin.woff2",
   "/static/fonts/newsreader-latin.woff2",
   "/static/icons/jobseer-fan-192.png",

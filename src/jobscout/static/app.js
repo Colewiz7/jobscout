@@ -5,6 +5,7 @@ import { inboxCopyText } from "./copy-text.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
+import { recordedAs, routeIndex, sessionFromServer, sessionLists, sessionPatch, stepAfter, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
 import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, newId, opKeys, PROFILE_KINDS, referenceWarning, renameOverrides, restoredMessage, withOrder } from "./profile-edit.js";
@@ -113,7 +114,7 @@ const state = {
   quickFillContextKey: "", quickFillContextPendingKey: "", quickFillContextLoadVersion: 0,
   quickFillSavedContext: null,
   sessionStarting: false, statusSaving: new Set(),
-  applySession: null, sessionTimer: null,
+  applySession: null, sessionTimer: null, sessionLoad: "",
   trackerData: null, trackerLoading: false, trackerError: "", trackerShowLoader: false,
   trackerView: "table", trackerStatus: "all", trackerSort: "last_activity",
   trackerQuery: "",
@@ -2677,10 +2678,43 @@ function startSessionClock() {
   }, 1000);
 }
 
-async function startApplySession(keys = null) {
+function stopSessionClock() {
+  clearInterval(state.sessionTimer);
+  state.sessionTimer = null;
+}
+
+// same session keeps its checks
+function adoptSession(row, documents = null) {
+  const current = state.applySession?.id === row.id ? state.applySession : null;
+  const session = Object.assign(current || { documents: [], index: 0, awaitingReturn: "", openedAt: 0, checkedKeys: new Set(), checkingKey: "", checkError: "" }, sessionFromServer(row));
+  if (documents) session.documents = documents;
+  state.applySession = session;
+  if (session.endedAt) stopSessionClock(); else startSessionClock();
+  return session;
+}
+
+function sessionScope(session) { return `session:${session.id}`; }
+
+// lists are whole, so a retry heals
+async function writeSession(session, lists, expected = session.revision) {
+  const response = await secureWrite(`/api/v1/queue/session/${session.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ expected_revision: expected, ...sessionPatch(lists) }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 409 && body.session) {
+    adoptSession(body.session);
+    throw Object.assign(new Error(body.error || "The session changed in another tab."), { conflict: true });
+  }
+  if (!response.ok) throw new Error(body.error || "Couldn't save the session.");
+  return adoptSession(body.session);
+}
+
+async function startApplySession(keys = null, { at = "", replace = false } = {}) {
   if (state.sessionStarting) return;
   state.sessionStarting = true;
-  renderQueue();
+  if (!at) renderQueue();
   try {
     const response = await fetch("/api/v1/queue/session", {
       method: "POST", credentials: "same-origin",
@@ -2694,33 +2728,48 @@ async function startApplySession(keys = null) {
       const existing = state.jobs.find((job) => job.dedupe_key === incoming.dedupe_key);
       if (existing) Object.assign(existing, incoming);
     }
-    for (const skipped of payload.skipped || []) {
-      const job = state.jobs.find((candidate) => candidate.dedupe_key === skipped.dedupe_key);
-      if (job) Object.assign(job, { status: "archived", liveness_status: "closed", liveness_evidence: skipped.reason });
-    }
-    state.applySession = {
-      keys: (payload.jobs || []).map((job) => job.dedupe_key),
-      documents: payload.documents || [], applied: [], skipped: payload.skipped || [],
-      index: 0, startedAt: Date.now(), endedAt: null, awaitingReturn: "",
-      checkedKeys: new Set(), checkingKey: "", checkError: "",
-    };
-    if (!state.applySession.keys.length) {
+    if (!payload.session) {
       state.applySession = null;
       renderQueue();
       showSnackbar("No queued jobs are ready. Add a role from Inbox first.");
+      return;
     }
-    else {
-      if (keys) state.rowSelection.queue.keys.clear();
-      startSessionClock();
-      state.selectedKey = state.applySession.keys[0];
-      navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`);
-    }
+    if (keys && !at) state.rowSelection.queue.keys.clear();
+    const session = adoptSession(payload.session, payload.documents || []);
+    session.index = routeIndex(session, at);
+    state.selectedKey = session.keys[session.index];
+    navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`, { replace });
   } catch (error) {
     showSnackbar(error instanceof Error ? error.message : "The session could not start.");
-    renderQueue();
+    if (at) { state.sessionLoad = "missing"; renderApplySession(); } else renderQueue();
   } finally {
     state.sessionStarting = false;
   }
+}
+
+// a reload resumes the saved session
+async function loadApplySession() {
+  if (state.sessionLoad === "loading") return;
+  state.sessionLoad = "loading";
+  let fallback = "";
+  try {
+    const response = await fetch("/api/v1/queue/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't load the session.");
+    const { session, documents } = await response.json();
+    const key = sessionPathKey();
+    const summary = window.location.pathname.endsWith("/summary");
+    if (session && (summary || (!session.ended_at && session.keys.includes(key)))) {
+      const restored = adoptSession(session, documents);
+      restored.index = summary ? restored.keys.length : routeIndex(restored, key);
+      if (state.jobs.find((job) => job.dedupe_key === key)?.status === "applying") restored.awaitingReturn = "prompt";
+      state.sessionLoad = "";
+    } else if (key && queueJobs().some((job) => job.dedupe_key === key)) fallback = key;
+    else state.sessionLoad = "missing";
+  } catch (error) {
+    state.sessionLoad = error instanceof Error ? error.message : "Couldn't load the session.";
+  }
+  if (fallback) { state.sessionLoad = ""; await startApplySession(queueJobs().map((job) => job.dedupe_key), { at: fallback, replace: true }); return; }
+  if (window.location.pathname.startsWith("/queue/session")) renderApplySession({ focus: true });
 }
 
 function sessionRequirements(job) {
@@ -2742,6 +2791,7 @@ function sessionLocationFact(location) {
 
 function sessionPromptMarkup(job) {
   const session = state.applySession;
+  if (recordedAs(session, job.dedupe_key) === "applied") return '<p class="session-check-state">Marked applied in this session.</p>';
   if (!session.checkedKeys.has(job.dedupe_key)) {
     return session.checkError
       ? `<div class="session-check-state" role="alert"><p>${escapeHtml(session.checkError)}</p><button class="tonal-button interactive" type="button" data-session-retry-check>Retry check</button></div>`
@@ -2763,7 +2813,7 @@ function applySessionMarkup(job) {
     : `<aside class="session-review" id="session-posting-review" aria-label="Posting review"><h2>Posting review</h2>${overviewMarkup(job)}${atGlanceMarkup(job)}${descriptionMarkup(job, { compact: true })}</aside>`;
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>${job.public_apply_url ? "Apply opens the verified public posting." : "No public apply link verified. Find this role on the employer’s public careers site."}</p>` : "";
   const uncertain = job.liveness_status === "unknown" ? `<p class="company-warning"><span aria-hidden="true">?</span>Couldn’t confirm this posting is open: ${escapeHtml(job.liveness_evidence || "the provider did not respond")}. Check before submitting.</p>` : "";
-  return `<section class="apply-session${state.quickFillEnabled ? "" : " apply-session--review"}" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-skip>Skip</button><button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${sessionLocationFact(job.location)}${factItem("Pay", queuePayValue(job))}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements preview</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job, { compact: true }) : ""}</main>${quickFill}</div></section>`;
+  return `<section class="apply-session${state.quickFillEnabled ? "" : " apply-session--review"}" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-previous ${session.index === 0 ? "disabled" : ""}>Previous</button>${recordedAs(session, job.dedupe_key) ? '<button class="text-button interactive" type="button" data-session-next>Next</button>' : '<button class="text-button interactive" type="button" data-session-skip>Skip</button>'}<button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${sessionLocationFact(job.location)}${factItem("Pay", queuePayValue(job))}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements preview</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job, { compact: true }) : ""}</main>${quickFill}</div></section>`;
 }
 
 function sessionSummaryMarkup() {
@@ -2783,32 +2833,31 @@ function renderApplySession({ focus = false } = {}) {
   }
   const session = state.applySession;
   if (!session) {
-    const key = sessionPathKey();
-    const queued = queueJobs();
-    if (key && queued.some((job) => job.dedupe_key === key)) {
-      state.applySession = { keys: queued.map((job) => job.dedupe_key), documents: [],
-        applied: [], skipped: [], index: queued.findIndex((job) => job.dedupe_key === key),
-        startedAt: Date.now(), endedAt: null, awaitingReturn: "",
-        checkedKeys: new Set(), checkingKey: "", checkError: "" };
-      startSessionClock();
-      renderApplySession({ focus });
+    if (!state.sessionLoad) loadApplySession();
+    if (state.sessionLoad === "loading" || state.sessionStarting) {
+      routeView.innerHTML = '<section class="page-shell"><div class="queue-skeleton skeleton" aria-label="Loading application session"></div></section>';
+      return;
+    }
+    if (state.sessionLoad !== "missing") {
+      routeView.innerHTML = `<section class="page-shell"><div class="empty-state error-state"><h1 id="page-title" tabindex="-1">Couldn't load the session.</h1><p>${escapeHtml(state.sessionLoad)}</p><button class="tonal-button interactive" type="button" data-session-reload>Retry</button></div></section>`;
       return;
     }
     routeView.innerHTML = '<section class="page-shell"><div class="empty-state"><h1 id="page-title" tabindex="-1">That session has ended.</h1><p>Start a new focused pass from your current queue.</p><a class="tonal-button interactive" href="/queue" data-route>Return to queue</a></div></section>';
+    if (focus) document.querySelector("#page-title")?.focus({ preventScroll: true });
     return;
   }
-  if (window.location.pathname.endsWith("/summary") || session.index >= session.keys.length) {
+  if (window.location.pathname.endsWith("/summary") || session.index >= session.keys.length || session.endedAt) {
     routeView.innerHTML = sessionSummaryMarkup();
     if (focus) document.querySelector("#session-summary-title")?.focus({ preventScroll: true });
     return;
   }
   const routeKey = sessionPathKey();
-  const routeIndex = session.keys.indexOf(routeKey);
-  if (routeIndex >= 0) session.index = routeIndex;
+  if (session.keys.includes(routeKey)) session.index = routeIndex(session, routeKey);
   const key = session.keys[session.index];
   const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
-  if (!job) { endApplySession(); return; }
+  if (!job) { endApplySession({ offerUndo: false }); return; }
   state.selectedKey = key;
+  if (recordedAs(session, key) === "applied") session.checkedKeys.add(key);
   routeView.innerHTML = applySessionMarkup(job);
   showCachedOverview(key);
   const surface = document.querySelector("#session-quick-fill");
@@ -2842,10 +2891,8 @@ async function verifySessionJob(key) {
     if (job) Object.assign(job, { liveness_status: result.status, liveness_evidence: result.evidence });
     if (result.status === "closed") {
       if (job) job.status = "archived";
-      session.skipped.push({ dedupe_key: key, reason: "Posting closed" });
-      showSnackbar("Posting closed; moved to the next role.");
       session.checkingKey = "";
-      advanceApplySession("closed");
+      recordSessionStep(key, "skipped", { reason: "Posting closed", message: "Posting closed; moved to the next role.", offerUndo: false });
       return;
     }
     session.checkedKeys.add(key);
@@ -2888,26 +2935,88 @@ function showSubmissionPrompt() {
   renderApplySession({ focus: true });
 }
 
-function advanceApplySession(kind) {
+function showSessionJob(index) {
+  const session = state.applySession;
+  if (!session) return;
+  Object.assign(session, { index, awaitingReturn: "", checkingKey: "", checkError: "" });
+  if (index >= session.keys.length) { navigate("/queue/session/summary"); return; }
+  state.selectedKey = session.keys[index];
+  navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`);
+}
+
+// one undo entry per step
+async function recordSessionStep(key, kind, { reason = "", message = "", offerUndo = true, job = null, status = "" } = {}) {
+  const session = state.applySession;
+  if (!session) return;
+  const index = session.keys.indexOf(key);
+  const step = stepAfter(session, index);
+  let before = sessionLists(session);
+  const change = (lists) => ({ ...withRecord(lists, key, kind, reason), ended: step.ended });
+  let saved = true;
+  try {
+    await writeSession(session, change(before));
+  } catch (error) {
+    // the other tab moved on first
+    if (error.conflict) {
+      before = sessionLists(state.applySession);
+      try { await writeSession(state.applySession, change(before)); } catch { saved = false; }
+    } else saved = false;
+  }
+  if (!saved) {
+    Object.assign(session, change(before), { endedAt: step.ended ? Date.now() : null });
+    if (step.ended) stopSessionClock();
+  }
+  showSessionJob(step.index);
+  const text = saved ? message : `${message} Couldn't save the session, so a reload may lose this step.`.trim();
+  if (offerUndo && saved) offerUndoSnackbar(text, [sessionScope(session), key], () => undoSessionStep({ key, before, revision: session.revision, job, status }), { latest: sessionScope(session) });
+  else if (text) showSnackbar(text);
+}
+
+async function undoSessionStep({ key, before, revision, job = null, status = "" }) {
+  const session = state.applySession;
+  if (!session) { showSnackbar("Couldn't undo. That session is gone."); return; }
+  if (job) {
+    try {
+      const result = await patchJob(job, status, null, { expected: "applied" });
+      job.status = result.status;
+    } catch (error) {
+      showSnackbar(error.conflict ? `Couldn't undo. That job moved to ${statusLabel(error.conflict)} since.` : `${error.message} It stays applied.`);
+      return;
+    }
+  }
+  try {
+    await writeSession(session, before, revision);
+  } catch (error) {
+    showSnackbar(error.conflict ? "Couldn't undo. The session changed in another tab." : `${error.message} The step stays.`);
+    renderApplySession();
+    return;
+  }
+  showSessionJob(Math.max(0, session.keys.indexOf(key)));
+  showSnackbar("Undone.");
+}
+
+function advanceApplySession() {
   const session = state.applySession;
   if (!session) return;
   const key = session.keys[session.index];
-  if (kind === "skipped") session.skipped.push({ dedupe_key: key, reason: "Skipped in session" });
-  session.awaitingReturn = "";
-  session.checkingKey = "";
-  session.checkError = "";
-  session.index += 1;
-  if (session.index >= session.keys.length) endApplySession();
-  else {
-    state.selectedKey = session.keys[session.index];
-    navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`);
-  }
+  recordSessionStep(key, "skipped", { reason: "Skipped in session", message: "Skipped." });
+}
+
+function stepApplySession(delta) {
+  const session = state.applySession;
+  if (!session) return;
+  const index = session.index + delta;
+  if (index < 0) return;
+  if (index >= session.keys.length) endApplySession();
+  else showSessionJob(index);
 }
 
 async function markSessionApplied() {
   const session = state.applySession;
   if (!session) return;
   const key = session.keys[session.index];
+  const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
+  const previous = job?.status || "applying";
   const documentId = document.querySelector("#session-resume")?.value || null;
   try {
     const response = await secureWrite(`/api/v1/applications/${encodeURIComponent(key)}/applied`, {
@@ -2918,22 +3027,40 @@ async function markSessionApplied() {
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The application could not be saved.");
     jobsWriteLanded();
     const snapshot = (await response.json()).snapshot;
-    const job = state.jobs.find((candidate) => candidate.dedupe_key === key);
     if (job) Object.assign(job, { status: "applied", applied_at: snapshot.captured_at, resume_document_id: snapshot.resume_document_id, resume_name: snapshot.resume_name, queue_position: null });
-    session.applied.push(key);
-    advanceApplySession("applied");
   } catch (error) {
     showSnackbar(error instanceof Error ? error.message : "The application could not be saved.");
+    return;
   }
+  // a repeat mark has nothing to revert
+  recordSessionStep(key, "applied", { message: "Marked applied.", ...(previous === "applied" ? {} : { job, status: previous }) });
 }
 
-function endApplySession() {
+async function endApplySession({ offerUndo = true } = {}) {
   const session = state.applySession;
   if (!session) return;
-  session.endedAt = Date.now();
-  clearInterval(state.sessionTimer);
-  state.sessionTimer = null;
+  if (session.endedAt) { navigate("/queue/session/summary"); return; }
+  const key = session.keys[Math.min(session.index, session.keys.length - 1)];
+  const before = sessionLists(session);
+  let saved = true;
+  try { await writeSession(session, { ...before, ended: true }); } catch { saved = false; }
+  if (!saved) { session.endedAt = Date.now(); stopSessionClock(); }
   navigate("/queue/session/summary");
+  if (offerUndo && saved) offerUndoSnackbar("Session ended.", [sessionScope(session)], () => undoSessionStep({ key, before, revision: session.revision }), { latest: sessionScope(session) });
+}
+
+// another tab may have moved on
+async function refreshApplySession() {
+  const session = state.applySession;
+  if (!session || !window.location.pathname.startsWith("/queue/session/")) return;
+  try {
+    const response = await fetch("/api/v1/queue/session", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!response.ok) return;
+    const row = (await response.json()).session;
+    if (row?.id !== session.id || row.revision === session.revision || state.applySession !== session) return;
+    adoptSession(row);
+    renderApplySession();
+  } catch {}
 }
 
 function updateNav(root) {
@@ -6183,7 +6310,10 @@ document.addEventListener("click", (event) => {
   }
   if (event.target.closest("[data-session-applied]")) { markSessionApplied(); return; }
   if (event.target.closest("[data-session-not-yet]")) { if (state.applySession) state.applySession.awaitingReturn = ""; renderApplySession({ focus: true }); return; }
-  if (event.target.closest("[data-session-skip]")) { advanceApplySession("skipped"); return; }
+  if (event.target.closest("[data-session-skip]")) { advanceApplySession(); return; }
+  if (event.target.closest("[data-session-previous]")) { stepApplySession(-1); return; }
+  if (event.target.closest("[data-session-next]")) { stepApplySession(1); return; }
+  if (event.target.closest("[data-session-reload]")) { state.sessionLoad = ""; renderApplySession({ focus: true }); return; }
   if (event.target.closest("[data-session-end]")) { endApplySession(); return; }
   const row = event.target.closest(".job-row[data-job-key]");
   if (row) { handleRowSelection(row, event); return; }
@@ -6624,7 +6754,7 @@ document.addEventListener("visibilitychange", () => {
   holdSnackbar("hidden", document.hidden);
   if (!document.hidden) showSubmissionPrompt();
 });
-window.addEventListener("focus", showSubmissionPrompt);
+window.addEventListener("focus", () => { showSubmissionPrompt(); refreshApplySession(); });
 window.addEventListener("focus", () => holdSnackbar("blur", false));
 window.addEventListener("blur", () => holdSnackbar("blur", true));
 async function resumeFromIdle() {
