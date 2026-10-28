@@ -5167,3 +5167,17 @@ body.quick-fill-popout {
     opacity: 1;
   }
 }
+
+/* the company link keeps the accent */
+.role-link,
+.tracker-table td > .role-link {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+.role-link:hover,
+.role-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
