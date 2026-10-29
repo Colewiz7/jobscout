@@ -58,13 +58,17 @@ class ReadTools:
         session = self.client.get("/api/v1/queue/session")
         return {"queue": [slim(row) for row in queued], "session": session["session"], "documents": session["documents"]}
 
-    @tool("read", "Show tracked applications, follow-ups and interviews. The status filter applies to applications only; interviews and follow-ups are always returned unfiltered.")
+    @tool("read", "Load one apply session by id, including ended ones.")
+    def apply_session_get(self, session_id: int) -> dict:
+        return self.client.get("/api/v1/queue/session/%d" % session_id)["session"]
+
+    @tool("read", "Show tracked applications, follow-ups and interviews. The status filter applies to applications only; interviews, follow-ups and the activity history (entry ids for activity_dismiss) are always returned unfiltered.")
     def tracker_get(self, status: str | None = None) -> dict:
         data = self.client.get("/api/v1/tracker")
         apps = data.get("applications", [])
         if status:
             apps = [row for row in apps if row.get("status") == status]
-        return {"applications": apps, "reminders": data.get("reminders", []), "interviews": data.get("interviews", [])}
+        return {"applications": apps, "reminders": data.get("reminders", []), "done_reminders": data.get("done_reminders", []), "interviews": data.get("interviews", []), "history": data.get("history", [])}
 
     @tool("read", "List companies with counts. Pass name to narrow the list.")
     def companies_list(self, name: str | None = None) -> dict:

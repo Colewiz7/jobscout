@@ -49,7 +49,7 @@ def test_queue_get_lists_queued_jobs(call):
 
 def test_tracker_get_returns_sections(call):
     data = call("tracker_get").data
-    assert set(data) == {"applications", "reminders", "interviews"}
+    assert set(data) == {"applications", "reminders", "done_reminders", "interviews", "history"}
 
 
 def test_companies_list_and_get(call):

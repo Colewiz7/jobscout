@@ -118,3 +118,12 @@ def test_served_calls_hit_the_rate_limit(stub, dashboard, client, key):
         running.stop()
     assert not first.isError and not second.isError
     assert third.isError and "rate limit" in third.content[0].text
+
+
+def test_all_selection_exposes_every_registered_tool():
+    from jobseer_bridge.registry import collect
+
+    bridge = Bridge(Config(), client=object(), selection="all")
+    every = {spec.name for spec, _ in collect(bridge)}
+    assert names("all") == every
+    assert len(every) == 42
