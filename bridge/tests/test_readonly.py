@@ -7,8 +7,8 @@ from jobseer_bridge.server import build
 
 from conftest import Reply, drive
 
-READS = {"status", "inbox_list", "job_get", "queue_get", "tracker_get", "companies_list", "company_get", "rules_list", "views_list", "profile_get", "interviews_ics", "apply_session_get"}
-NEW_WRITES = {"jobs_tag_undo", "job_edit_undo", "rule_action_undo", "activity_dismiss", "profile_copy_mark", "job_description_paste"}
+READS = {"status", "inbox_list", "job_get", "queue_get", "tracker_get", "companies_list", "company_get", "rules_list", "views_list", "profile_get", "interviews_ics", "apply_session_get", "overview_get"}
+NEW_WRITES = {"jobs_tag_undo", "job_edit_undo", "rule_action_undo", "activity_dismiss", "profile_copy_mark", "job_description_paste", "overview_request", "overview_dismiss", "overview_regenerate", "overview_regenerate_undo"}
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_full_tool_set_is_the_documented_size(listing):
     names = {tool.name for tool in listing()}
     assert READS <= names
     assert NEW_WRITES <= names
-    assert len(names) == 42
+    assert len(names) == 47
 
 
 def test_every_response_names_the_target(call, config):

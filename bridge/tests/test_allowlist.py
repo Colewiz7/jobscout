@@ -126,4 +126,4 @@ def test_all_selection_exposes_every_registered_tool():
     bridge = Bridge(Config(), client=object(), selection="all")
     every = {spec.name for spec, _ in collect(bridge)}
     assert names("all") == every
-    assert len(every) == 42
+    assert len(every) == 47

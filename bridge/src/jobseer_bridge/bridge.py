@@ -11,6 +11,7 @@ from .ratelimit import RateLimiter
 from .registry import annotations, collect
 from .tools_apply import ApplyTools
 from .tools_confirm import ConfirmTools
+from .tools_overview import OverviewTools
 from .tools_profile import ProfileTools
 from .tools_read import ReadTools
 from .tools_records import RecordTools
@@ -23,7 +24,7 @@ def pack(payload) -> str:
     return json.dumps(payload, separators=(",", ":"), default=str)
 
 
-class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools, UndoTools):
+class Bridge(ReadTools, WriteTools, ApplyTools, RecordTools, ConfirmTools, ProfileTools, UndoTools, OverviewTools):
     def __init__(self, config: Config, client: Client | None = None, confirms: Confirms | None = None, *, selection="all", limiter: RateLimiter | None = None, remote: bool = False, audit=None, resolver=None):
         self.config = config
         self.confirms = confirms or Confirms()
