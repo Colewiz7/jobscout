@@ -192,20 +192,38 @@ writable volume if you use the audit log.
 
 ## Tools
 
-read (11, always on): `status`, `inbox_list`, `job_get`, `queue_get`, `tracker_get`,
-`companies_list`, `company_get`, `rules_list`, `views_list`, `profile_get`, `interviews_ics`
+51 tools. Every mutating dashboard route has one; the coverage test fails if one is missing.
 
-write (16): `job_set_status`, `jobs_tag` (confirm above 10 jobs), `job_edit`, `queue_reorder`,
-`board_reorder`, `apply_session`, `interview_save`, `reminder_save`, `contact_save`, `company_save`,
-`rule_save`, `view_save`, `profile_context_set`, plus the undo tools `jobs_hide_undo`,
-`restore_record`, `company_merge_undo`
+read (13, always on): `status`, `inbox_list`, `job_get`, `queue_get`, `tracker_get` (also returns the
+activity history), `companies_list`, `company_get`, `rules_list`, `views_list`, `profile_get`,
+`interviews_ics`, `apply_session_get`, `overview_get` (saved overview only, never generates)
 
-confirm (8, two steps): `jobs_hide`, `delete_record`, `company_merge`, `company_hide`,
-`profile_update` (shows a diff, fails if the profile moved after the preview), `connections_import`,
-`job_capture`, `eligibility_override`
+write (24): `job_set_status`, `jobs_tag` (confirm above 10 jobs), `job_edit`,
+`queue_reorder`, `board_reorder`, `apply_session`, `interview_save`,
+`reminder_save`, `contact_save`, `company_save`, `rule_save`, `view_save`, `profile_context_set`,
+`profile_copy_mark`, `activity_dismiss`, `overview_request`,
+`overview_regenerate`, plus the undo tools `jobs_hide_undo`, `jobs_tag_undo`, `job_edit_undo`,
+`rule_action_undo`, `restore_record`, `company_merge_undo`, `overview_regenerate_undo`
 
-Skipped on purpose: activity feed, summary worker routes, tag and posting-edit undo, copy bookkeeping.
-The list lives in `src/jobseer_bridge/skipped.py`.
+confirm (14, two steps): `jobs_hide`, `delete_record`, `company_merge`, `company_hide`,
+`profile_update` (shows a diff, fails if the profile moved after the preview), `profile_field_set`,
+`profile_story_save`, `profile_template_save`, `profile_document_save` (same diff and revision check,
+one item at a time), `connections_import`, `job_capture`, `eligibility_override`, `job_description_paste`,
+`overview_dismiss`
+
+Where the app offers undo, the write result carries what the undo tool needs: `undo_token`
+(`jobs_hide_undo`), tag `ids` (`jobs_tag_undo`), `edit_id` (`job_edit_undo`), `rule_action_id` on the
+job (`rule_action_undo`), `merge_id` (`company_merge_undo`) and the overview `revision`.
+
+Version checks: writes send the version the route accepts (`expected_*`, `revision`). The undo tools
+that take a server-issued id (`jobs_tag_undo`, `job_edit_undo`, `rule_action_undo`) send none, because
+the id is the guard and the server refuses a second use. `overview_regenerate_undo` needs the
+`expected_revision` you last saw. `job_description_paste` stores a hash of the saved text at preview, re-reads it at confirm and
+returns a conflict if it changed. `activity_dismiss`, `profile_copy_mark` and the overview dismiss
+and regenerate routes accept no version; the server answers a repeat with a conflict where it can.
+
+The overview tools need the server's AI overview feature and say so when it is off. The quick-fill
+profile tools need quick-fill on.
 
 ## Test
 
@@ -214,5 +232,4 @@ The list lives in `src/jobseer_bridge/skipped.py`.
     make test
 
 Tests start the dashboard in-process with the demo store, so no database or network is needed.
-`tests/test_route_coverage.py` fails when a mutating dashboard route has no tool and is not in
-`skipped.py`. Set `JOBSCOUT_TEST_DSN` to also run `tests/test_pg_smoke.py` against Postgres.
+`tests/test_route_coverage.py` fails when a mutating dashboard route has no tool. Set `JOBSCOUT_TEST_DSN` to also run `tests/test_pg_smoke.py` against Postgres.
