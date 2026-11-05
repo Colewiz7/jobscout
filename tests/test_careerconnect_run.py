@@ -144,3 +144,26 @@ def test_the_run_gives_the_bucket_the_short_read_timeout(conn, run, monkeypatch)
     monkeypatch.setenv("CAREERCONNECT_R2_TIMEOUT_SECONDS", "3.5")
     run(FakeBucket({}))
     assert run.timeouts == [3.5]
+
+
+def test_a_second_run_exits_clean_while_the_lock_is_held(conn, run):
+    holder = database.connect(DSN)
+    try:
+        assert database.try_scout_lock(holder)
+        bucket = FakeBucket({INBOX + "alert.eml": FIXTURE})
+        assert run(bucket) == 0
+        assert _rows(conn) == 0
+        assert INBOX + "alert.eml" in bucket.objects
+    finally:
+        holder.close()
+    assert run(bucket) == 0
+    assert _rows(conn) == 17
+
+
+def test_the_lock_frees_when_the_run_ends(conn, run):
+    assert run(FakeBucket({})) == 0
+    other = database.connect(DSN)
+    try:
+        assert database.try_scout_lock(other)
+    finally:
+        other.close()

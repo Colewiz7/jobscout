@@ -92,6 +92,22 @@ def ensure_schema(conn: psycopg.Connection) -> None:
     migrations.run(conn)
 
 
+# Distinct from the migration lock; one scout run at a time.
+SCOUT_RUN_LOCK_ID = 0x4A4F42534352554E
+
+
+def try_scout_lock(conn: psycopg.Connection) -> bool:
+    """Take the session-level scout run lock without waiting.
+
+    The lock lives as long as this connection, so a crashed run frees it.
+    """
+    with conn.cursor() as cur:
+        cur.execute("select pg_try_advisory_lock(%s) as held", (SCOUT_RUN_LOCK_ID,))
+        held = cur.fetchone()["held"]
+    conn.commit()
+    return bool(held)
+
+
 def require_schema(conn: psycopg.Connection) -> None:
     """Verify that the deployment migration hook has brought the schema current."""
     from . import migrations

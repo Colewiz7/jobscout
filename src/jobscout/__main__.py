@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 
+import psycopg
 import yaml
 
 from . import db as database
@@ -30,6 +31,26 @@ EXIT_MAIL = 6
 
 
 def cmd_run(args) -> int:
+    dsn = os.environ.get("DATABASE_URL")
+    guard = None
+    if dsn:
+        try:
+            guard = database.connect(dsn)
+            if not database.try_scout_lock(guard):
+                log.info("another scout run holds the lock; exiting without work")
+                guard.close()
+                return 0
+        except psycopg.Error as error:
+            # the run itself reports a dead database
+            log.warning("could not take the run lock: %s", error)
+    try:
+        return _run_guarded(args)
+    finally:
+        if guard is not None and not guard.closed:
+            guard.close()
+
+
+def _run_guarded(args) -> int:
     settings = careerconnect.Settings.from_env()
     drains: list[careerconnect.DrainResult] = []
     code = _run(args, settings, drains)
