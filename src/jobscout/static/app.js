@@ -1444,10 +1444,10 @@ function syncTrackerUrl({ replace = false } = {}) {
 }
 
 function trackerApplications() {
-  const query = state.trackerQuery.trim().toLowerCase();
+  const parsed = parseQuery(state.trackerQuery);
   const applications = [...(state.trackerData?.applications || [])].filter((job) =>
     (state.trackerStatus === "all" || job.status === state.trackerStatus)
-    && (!query || `${job.company} ${job.title} ${job.next_step || ""}`.toLowerCase().includes(query))
+    && (isEmptyQuery(parsed) || scoreRow(parsed, job) !== null)
   );
   applications.sort(trackerCompare(state.trackerSort));
   return applications;

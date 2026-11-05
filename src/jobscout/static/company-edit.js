@@ -1,3 +1,5 @@
+import { isEmptyQuery, parseQuery, scoreFields } from "./search.js";
+
 export const COMPANY_FILTERS = [
   ["all", "All companies"],
   ["applied", "With applications"],
@@ -5,6 +7,9 @@ export const COMPANY_FILTERS = [
   ["manual", "Added by hand"],
   ["hidden", "Hidden"],
 ];
+
+// company: covers merged names too
+const NAME_SCOPES = { company: ["company", "aliases"] };
 
 const filterTests = {
   all: (company) => !company.hidden,
@@ -20,10 +25,10 @@ export function companyFilter(value) {
 
 // merged names still find it
 export function filterCompanies(companies, { query = "", show = "all" } = {}) {
-  const needle = query.trim().toLocaleLowerCase();
+  const parsed = parseQuery(query);
   const test = filterTests[companyFilter(show)];
   return companies.filter((company) => test(company)
-    && (!needle || [company.name, ...(company.aliases || [])].some((name) => name.toLocaleLowerCase().includes(needle))));
+    && (isEmptyQuery(parsed) || scoreFields(parsed, { company: company.name, aliases: (company.aliases || []).join(" ") }, NAME_SCOPES) !== null));
 }
 
 export function mergeTargets(companies, source) {

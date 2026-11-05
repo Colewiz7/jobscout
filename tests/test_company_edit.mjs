@@ -33,6 +33,24 @@ test("search matches names and merged names", () => {
   assert.deepEqual(filterCompanies(companies, { query: "hoo", show: "hidden" }).map((item) => item.name), ["Hooli"]);
 });
 
+test("search folds accents and ands words in any order", () => {
+  const list = [company("Société Générale", { aliases: ["SocGen"] }), company("General Motors"), company("Motorola")];
+  const names = (query) => filterCompanies(list, { query }).map((item) => item.name);
+  assert.deepEqual(names("societe"), ["Société Générale"]);
+  assert.deepEqual(names("motors general"), ["General Motors"]);
+  assert.deepEqual(names("gen -motors"), ["Société Générale"]);
+  assert.deepEqual(names("socgen"), ["Société Générale"]);
+  assert.deepEqual(names("mtr"), []);
+});
+
+test("company scope and its negation cover merged names", () => {
+  const names = (query) => filterCompanies(companies, { query }).map((item) => item.name);
+  assert.deepEqual(names("company:globex"), ["Acme"]);
+  assert.deepEqual(names("-company:globex"), ["Initech"]);
+  assert.deepEqual(names("company:acme -company:globex"), []);
+  assert.deepEqual(names("title:globex"), []);
+});
+
 test("unknown filters fall back to all", () => {
   assert.equal(companyFilter("everything"), "all");
   assert.equal(companyFilter("__proto__"), "all");
