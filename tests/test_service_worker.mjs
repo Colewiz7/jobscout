@@ -158,3 +158,22 @@ test("a failed cache put leaves no partial entries", async () => {
   await assert.rejects(sw.install());
   assert.equal([...sw.stores.values()].reduce((n, s) => n + s.size, 0), 0);
 });
+
+function shellPaths() {
+  const block = SOURCE.match(/const SHELL = \[([\s\S]*?)\];/)[1];
+  return [...block.matchAll(/"(\/static\/[^"]+)"/g)].map((match) => match[1]);
+}
+
+test("every shell entry is a real file", () => {
+  const paths = shellPaths();
+  assert.ok(paths.length > 20);
+  for (const path of paths) assert.ok(fs.existsSync(new URL(`../src/jobscout${path}`, import.meta.url)), path);
+});
+
+test("every module the app imports is precached", () => {
+  const app = fs.readFileSync(new URL("../src/jobscout/static/app.js", import.meta.url), "utf8");
+  const modules = [...app.matchAll(/from "\.\/([\w-]+\.js)"/g)].map((match) => match[1]);
+  assert.ok(modules.includes("search.js"));
+  const shell = shellPaths();
+  for (const name of modules) assert.ok(shell.includes(`/static/${name}`), name);
+});
