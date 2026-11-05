@@ -1,4 +1,9 @@
 // mirrors the server's clean_tag
+// an emptied list leaves no job to show
+export function paneJob(jobs, visibleCount, key) {
+  return visibleCount ? jobs.find((job) => job.dedupe_key === key) : undefined;
+}
+
 export function cleanTag(value) {
   return String(value ?? "").split(/\s+/).filter(Boolean).join(" ");
 }

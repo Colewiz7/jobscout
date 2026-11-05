@@ -1252,6 +1252,21 @@ body > .visually-hidden {
   overflow-wrap: anywhere;
 }
 
+/* quiet tint, text keeps its color */
+.job-row mark {
+  padding: 0 1px;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--primary) 30%, transparent);
+  color: inherit;
+}
+
+@media (forced-colors: active) {
+  .job-row mark {
+    background: Mark;
+    color: MarkText;
+  }
+}
+
 .unread-dot {
   position: absolute;
   top: 50%;

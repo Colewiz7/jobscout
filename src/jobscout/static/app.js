@@ -6,7 +6,8 @@ import { countLabel } from "./counts.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
-import { fuzzyScore, menuCommands, rankCommands } from "./command-palette.js";
+import { menuCommands, rankCommands } from "./command-palette.js";
+import { createSearchTimer, highlightRanges, isEmptyQuery, parseQuery, scoreRow } from "./search.js";
 import { recordedAs, restoreUnsaved, routeIndex, saveStep, sessionFromServer, sessionLists, sessionPatch, staleRead, stepAfter, stepUndo, undoStep, undoUnsaved, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
@@ -14,7 +15,7 @@ import { adoptIds, applyOp, eligibilityWarning, fieldKey, itemId, limitReason, m
 import { conflictMessage, createSaveQueue } from "./save-queue.js";
 import { changedFields, fromLocalInput, pickFields, splitInterviews, toLocalInput } from "./record-edit.js";
 import { COMPANY_FILTERS, companyFilter, filterCompanies, linkHref, linkLabel, mergeCopy, mergeTargets } from "./company-edit.js";
-import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, RULE_KINDS, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "./inbox-edit.js";
+import { cleanTag, dateInputValue, hasTag, moveId, paneJob, pickedDay, reminderUndo, removableTags, RULE_KINDS, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "./inbox-edit.js";
 import { companyDismissTargets, companyLabel, eligibilityVerdict, fitActions, loadLatest, moveGroup, pruneKeys, rangeSelection, restoreSlots, selectAllVisible, splitEligible, stepKey, toggleKey, visibleSelection } from "./selection.js";
 
 const routeView = document.querySelector("#route-view");
@@ -335,26 +336,50 @@ function statusCounts() {
   return counts;
 }
 
-function filteredJobs() {
-  const query = state.query.trim();
-  const matches = state.jobs.map((job) => ({
-    job,
-    fuzzy: fuzzyScore([job.title, job.company, job.location, job.terms, job.sources].filter(Boolean).join(" "), query),
-  })).filter(({ job, fuzzy }) => fuzzy >= 0
-    && (state.status === "all" || job.status === state.status)
+let parsedCache = { text: null, parsed: null };
+
+const searchTimer = createSearchTimer({ run: () => refreshInboxResults(), canRun: () => routeRoot() === "inbox" });
+
+function parsedQuery() {
+  if (parsedCache.text !== state.query) parsedCache = { text: state.query, parsed: parseQuery(state.query) };
+  return parsedCache.parsed;
+}
+
+function isSearching() {
+  return !isEmptyQuery(parsedQuery());
+}
+
+function passesFilters(job) {
+  return (state.status === "all" || job.status === state.status)
     && (!state.source || sourceList(job).includes(state.source))
     && (!state.remote || isRemote(job))
-    && (!state.tag || hasTag(job, state.tag)));
+    && (!state.tag || hasTag(job, state.tag));
+}
+
+function filteredJobs() {
+  const parsed = parsedQuery();
+  const searching = !isEmptyQuery(parsed);
+  const matches = [];
+  for (const job of state.jobs) {
+    const rank = searching ? scoreRow(parsed, job) : 0;
+    if (rank !== null && passesFilters(job)) matches.push({ job, rank });
+  }
   matches.sort((left, right) => {
-    if (query && right.fuzzy !== left.fuzzy) return right.fuzzy - left.fuzzy;
+    if (searching && right.rank !== left.rank) return right.rank - left.rank;
     if (state.sort === "company") return `${left.job.company} ${left.job.title}`.localeCompare(`${right.job.company} ${right.job.title}`);
     if (state.sort === "newest") return new Date(right.job.first_seen || 0) - new Date(left.job.first_seen || 0);
     return rankingScore(right.job) - rankingScore(left.job)
       || (Number(left.job.age_days) || 0) - (Number(right.job.age_days) || 0);
   });
   const jobs = matches.map(({ job }) => job);
+  if (searching) return jobs; // new rows must not outrank matches
   const fresh = jobs.filter(isNewSinceVisit);
   return fresh.length ? [...fresh, ...jobs.filter((job) => !isNewSinceVisit(job))] : jobs;
+}
+
+function searchMatchCount() {
+  const parsed = parsedQuery();
+  return state.jobs.filter((job) => scoreRow(parsed, job) !== null).length;
 }
 
 function rankingScore(job) {
@@ -364,7 +389,7 @@ function rankingScore(job) {
 function buildEntries(jobs) {
   const entries = [];
   let offset = 0;
-  const freshCount = jobs.filter(isNewSinceVisit).length;
+  const freshCount = isSearching() ? 0 : jobs.filter(isNewSinceVisit).length;
   if (freshCount) {
     entries.push({ type: "divider", offset, height: DIVIDER_HEIGHT, count: freshCount });
     offset += DIVIDER_HEIGHT;
@@ -421,6 +446,18 @@ function companyLogoMarkup(company, className = "job-logo") {
   return `<span class="${className}"${source ? tile : ""} aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${source ? `<img src="${source}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
 }
 
+function highlightMarkup(text, field) {
+  const value = String(text ?? "");
+  const ranges = isSearching() ? highlightRanges(parsedQuery(), value, field) : [];
+  let html = "";
+  let at = 0;
+  for (const [start, end] of ranges) {
+    html += `${escapeHtml(value.slice(at, start))}<mark>${escapeHtml(value.slice(start, end))}</mark>`;
+    at = end;
+  }
+  return html + escapeHtml(value.slice(at));
+}
+
 function jobRowMarkup(entry) {
   const job = entry.job;
   const sources = sourceList(job);
@@ -439,7 +476,7 @@ function jobRowMarkup(entry) {
   return `<button class="job-row interactive" type="button" role="option" data-offset="${entry.offset}" data-job-key="${escapeHtml(job.dedupe_key)}" data-job-index="${entry.jobIndex}" aria-selected="${bulkSelected}"${selected ? ' aria-current="true"' : ""} tabindex="${selected ? "0" : "-1"}">
     ${companyLogoMarkup(job.company)}
     ${fresh ? '<span class="unread-dot" aria-label="Unread"></span>' : ""}
-    <span class="job-row-copy"><span class="job-row-title" title="${escapeHtml(job.title)}">${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${escapeHtml(job.title)}</span><span class="job-row-meta" title="${escapeHtml([job.company, job.location].filter(Boolean).join(", "))}"><span>${escapeHtml(job.company)}</span>${location}</span></span>
+    <span class="job-row-copy"><span class="job-row-title" title="${escapeHtml(job.title)}">${job.ghost_job ? '<span class="row-warning" aria-label="Repeated posting pattern" title="Repeated posting pattern">!</span>' : ""}${highlightMarkup(job.title, "title")}</span><span class="job-row-meta" title="${escapeHtml([job.company, job.location].filter(Boolean).join(", "))}"><span>${highlightMarkup(job.company, "company")}</span>${location}</span></span>
     <span class="job-row-end">${chips.slice(0, 2).map((chip) => `<span class="row-chip">${escapeHtml(chip)}</span>`).join("")}${job.first_seen ? `<time datetime="${escapeHtml(job.first_seen)}" title="${escapeHtml(formatAbsolute(job.first_seen))}">${escapeHtml(formatDate(job.first_seen))}</time>` : ""}</span>
     <span class="row-more" data-menu-trigger aria-hidden="true">${icons.more}</span>
     ${bulkSelected ? '<span class="selection-check" aria-hidden="true">✓</span>' : ""}
@@ -477,10 +514,27 @@ function renderVirtualRows() {
   }
 }
 
+function otherFiltersActive() {
+  return Boolean(state.source || state.remote || state.tag || state.status !== "all");
+}
+
+function searchStatusText(count) {
+  const query = state.query.trim();
+  if (!query || !isSearching()) return "";
+  return count ? `${new Intl.NumberFormat().format(count)} ${count === 1 ? "role" : "roles"}` : `No roles match “${query}”`;
+}
+
 function emptyListMarkup() {
   const archive = state.status === "archived" && !state.query && !state.source && !state.remote && !state.tag;
   if (archive) return '<div class="list-empty"><h2>Nothing archived.</h2><p>Roles you dismiss wait here in case you change your mind.</p></div>';
   const filtered = Boolean(state.query || state.source || state.remote || state.tag || state.status !== "new");
+  const query = state.query.trim();
+  if (query && isSearching()) {
+    const filters = otherFiltersActive();
+    const hidden = filters ? searchMatchCount() : 0;
+    const note = hidden ? `${new Intl.NumberFormat().format(hidden)} match without them.` : "Try fewer words, or part of a company name.";
+    return `<div class="list-empty"><h2>No roles match “${escapeHtml(query)}”${filters ? " with these filters" : ""}.</h2><p>${note}</p><button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button></div>`;
+  }
   return `<div class="list-empty"><h2>${filtered ? "No roles match this view." : "Your inbox is clear."}</h2><p>${filtered ? "Change or clear the active filters." : "New roles will appear here when the scout finds them."}</p>${filtered ? '<button class="tonal-button interactive" type="button" data-clear-all-filters>Clear filters</button>' : ""}</div>`;
 }
 
@@ -821,15 +875,19 @@ function copyMenuItems() {
   ];
 }
 
-function inboxMarkup() {
-  const jobs = filteredJobs();
+function settleSelection(jobs) {
   buildEntries(jobs);
   state.selectedKeys = visibleSelection(state.selectedKeys, jobs); // else bulk acts on hidden jobs
   if (!state.selectedKey || !state.jobs.some((job) => job.dedupe_key === state.selectedKey)) state.selectedKey = jobs[0]?.dedupe_key || "";
-  const selectedJob = jobs.length ? state.jobs.find((job) => job.dedupe_key === state.selectedKey) : undefined; // empty list, nothing to read
+  return paneJob(state.jobs, jobs.length, state.selectedKey);
+}
+
+function inboxMarkup() {
+  const jobs = filteredJobs();
+  const selectedJob = settleSelection(jobs);
   const chips = activeFilterChips();
   return `<section class="inbox-page${state.focus ? " is-focus" : ""}${jobs.length && selectedKeyFromPath() ? " has-route-selection" : ""}">
-    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup()}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
+    <aside class="inbox-list" aria-label="Job inbox"><div class="list-header"><div class="list-title-row"><h1 tabindex="-1">Inbox</h1><span>${new Intl.NumberFormat().format(jobs.length)}</span></div>${savedViewsMarkup()}<label class="job-search" for="job-search">${icons.search}<input id="job-search" type="search" autocomplete="off" placeholder="Search jobs" value="${escapeHtml(state.query)}" aria-label="Search jobs" aria-keyshortcuts="/"></label><p class="visually-hidden" id="job-search-status" role="status" aria-live="polite">${escapeHtml(searchStatusText(jobs.length))}</p><div class="list-tools"><div class="status-tabs" role="tablist" aria-label="Job status">${visibleStatusTabs()}</div><button class="icon-button interactive" type="button" data-open-filters aria-label="Filter jobs" title="Filter jobs">${icons.filter}</button>${copyMenuMarkup()}<label class="sort-field"><span class="visually-hidden">Sort jobs</span><select id="job-sort" aria-label="Sort jobs"><option value="score" ${state.sort === "score" ? "selected" : ""}>Best match</option><option value="newest" ${state.sort === "newest" ? "selected" : ""}>Newest</option><option value="company" ${state.sort === "company" ? "selected" : ""}>Company</option></select></label></div>${chips ? `<div class="active-filters">${chips}</div>` : ""}</div>
       <div class="job-viewport" id="job-viewport" ${jobs.length ? 'role="listbox" aria-multiselectable="true" aria-label="Jobs"' : ""} ${state.copySelectionMode ? 'tabindex="-1"' : ""}>${jobs.length ? '<div class="job-list-layer" id="job-list-layer"></div>' : emptyListMarkup()}</div>${bulkBarMarkup()}</aside>
     <section class="reading-pane" id="inbox-reading-pane" aria-label="Role detail">${detailMarkup(selectedJob)}</section>
   </section>`;
@@ -1155,7 +1213,56 @@ function revokeOverride(key = state.selectedKey) {
   if (key) changeOverride(key, null, false, { offer: true });
 }
 
+function bindViewportScroll(viewport) {
+  if (viewport.dataset.scrollBound) return;
+  viewport.dataset.scrollBound = "true";
+  viewport.addEventListener("scroll", () => {
+    if (!viewport.isConnected || document.querySelector("#job-viewport") !== viewport) return;
+    state.scrollTop = viewport.scrollTop;
+    renderVirtualRows();
+  }, { passive: true });
+}
+
+// avoid rebuilding the input
+function refreshInboxResults() {
+  if (routeRoot() !== "inbox") return;
+  const viewport = document.querySelector("#job-viewport");
+  if (!viewport || !state.loaded || state.error) { renderInbox(); return; }
+  const jobs = filteredJobs();
+  const wasEmpty = !viewport.querySelector("#job-list-layer");
+  const previousKey = state.selectedKey;
+  settleSelection(jobs);
+  const count = document.querySelector(".list-title-row span");
+  if (count) count.textContent = new Intl.NumberFormat().format(jobs.length);
+  const status = document.querySelector("#job-search-status");
+  if (status) status.textContent = searchStatusText(jobs.length);
+  const chips = activeFilterChips();
+  const strip = document.querySelector(".active-filters");
+  if (strip && chips) strip.innerHTML = chips;
+  else if (strip) strip.remove();
+  else if (chips) document.querySelector(".list-header .list-tools")?.insertAdjacentHTML("afterend", `<div class="active-filters">${chips}</div>`);
+  if (jobs.length) {
+    viewport.setAttribute("role", "listbox");
+    viewport.setAttribute("aria-multiselectable", "true");
+    viewport.setAttribute("aria-label", "Jobs");
+    viewport.innerHTML = '<div class="job-list-layer" id="job-list-layer"></div>';
+    viewport.scrollTop = 0;
+    bindViewportScroll(viewport);
+    renderVirtualRows();
+  } else {
+    for (const name of ["role", "aria-multiselectable", "aria-label"]) viewport.removeAttribute(name);
+    viewport.innerHTML = emptyListMarkup();
+  }
+  if (!jobs.length) document.querySelector(".inbox-page")?.classList.remove("has-route-selection");
+  if (previousKey !== state.selectedKey || wasEmpty !== !jobs.length) {
+    renderSelectedJob();
+    const pane = document.querySelector("#inbox-reading-pane");
+    if (pane) pane.dataset.jobKey = state.selectedKey;
+  } else syncVisibleJobSelection();
+}
+
 function renderInbox({ focus = false } = {}) {
+  searchTimer.cancel();
   if (state.error) routeView.innerHTML = errorMarkup(state.error);
   else if (!state.loaded) routeView.innerHTML = state.skeletonAt ? loadingMarkup() : "";
   else routeView.innerHTML = inboxMarkup();
@@ -1165,11 +1272,7 @@ function renderInbox({ focus = false } = {}) {
   const viewport = document.querySelector("#job-viewport");
   if (viewport && state.entries.length) {
     viewport.scrollTop = Math.min(state.scrollTop, Math.max(0, state.totalHeight - viewport.clientHeight));
-    viewport.addEventListener("scroll", () => {
-      if (!viewport.isConnected || document.querySelector("#job-viewport") !== viewport) return;
-      state.scrollTop = viewport.scrollTop;
-      renderVirtualRows();
-    }, { passive: true });
+    bindViewportScroll(viewport);
     renderVirtualRows();
   }
   if (state.loaded && state.selectedKey) loadDescription(state.selectedKey);
@@ -1212,12 +1315,13 @@ function renderSelectedJob() {
   const noteStart = noteFocused ? note.selectionStart : null;
   const noteEnd = noteFocused ? note.selectionEnd : null;
   const previousScroll = pane.scrollTop;
-  const job = state.jobs.find((item) => item.dedupe_key === state.selectedKey);
+  const job = paneJob(state.jobs, state.entries.length, state.selectedKey);
   pane.innerHTML = detailMarkup(job);
   document.querySelector(".inbox-page")?.classList.toggle("has-route-selection", Boolean(selectedKeyFromPath()));
   pane.dataset.jobKey = state.selectedKey;
   pane.scrollTop = sameJob ? previousScroll : 0;
-  if (noteDraft !== null) pane.querySelector("#job-notes").value = noteDraft;
+  const restored = pane.querySelector("#job-notes");
+  if (noteDraft != null && restored) restored.value = noteDraft; // empty pane has no notes
   if (noteFocused) {
     const replacement = pane.querySelector("#job-notes");
     replacement?.focus({ preventScroll: true });
@@ -3116,6 +3220,7 @@ function updateNav(root) {
 }
 
 function renderRoute({ focus = false } = {}) {
+  searchTimer.cancel();
   const root = routeRoot();
   document.documentElement.dataset.applySession = String(root === "queue" && window.location.pathname.startsWith("/queue/session"));
   updateNav(root);
@@ -6724,10 +6829,21 @@ bindDrag({
   cancelled: (at) => `Move cancelled, back in ${statusLabel(boardStatusOf(at.list))}.`,
 });
 
+function searchInbox(value) {
+  if (routeRoot() !== "inbox") return;
+  state.query = value;
+  state.scrollTop = 0;
+  syncInboxUrl({ replace: true });
+  searchTimer.schedule(value);
+}
+
+document.addEventListener("compositionend", (event) => {
+  if (event.target.id === "job-search") searchInbox(event.target.value);
+});
+
 document.addEventListener("input", (event) => {
   if (event.target.id === "job-search") {
-    state.query = event.target.value; state.scrollTop = 0; syncInboxUrl({ replace: true }); renderInbox();
-    const search = document.querySelector("#job-search"); search?.focus(); search?.setSelectionRange(state.query.length, state.query.length);
+    if (!event.isComposing) searchInbox(event.target.value);
   } else if (event.target.id === "job-notes") {
     const key = state.selectedKey;
     const value = event.target.value;

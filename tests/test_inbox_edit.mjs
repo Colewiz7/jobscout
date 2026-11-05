@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "../src/jobscout/static/inbox-edit.js";
+import { paneJob, cleanTag, dateInputValue, hasTag, moveId, pickedDay, reminderUndo, removableTags, ruleValueHelp, snoozeChoices, tagOptions, upcomingDay, withManualTag } from "../src/jobscout/static/inbox-edit.js";
 
 const job = (tags, manual = [], rules = tags.filter((tag) => !manual.includes(tag))) => ({ tags, manual_tags: manual, rule_tags: rules });
 
 test("tags are trimmed and inner space collapsed like the server", () => {
   assert.equal(cleanTag("  Dream \t  job "), "Dream job");
   assert.equal(cleanTag(null), "");
+});
+
+test("the pane shows nothing once the list is empty", () => {
+  const jobs = [{ dedupe_key: "a" }, { dedupe_key: "b" }];
+  assert.equal(paneJob(jobs, 2, "b"), jobs[1]);
+  assert.equal(paneJob(jobs, 0, "b"), undefined);
+  assert.equal(paneJob(jobs, 1, "missing"), undefined);
 });
 
 test("tag checks ignore case", () => {
