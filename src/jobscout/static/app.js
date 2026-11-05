@@ -8,6 +8,7 @@ import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
 import { menuCommands, rankCommands } from "./command-palette.js";
 import { createSearchTimer, highlightRanges, isEmptyQuery, parseQuery, scoreRow } from "./search.js";
+import { createScanController, focusTarget, scanMarkup } from "./scan-run.js";
 import { recordedAs, restoreUnsaved, routeIndex, saveStep, sessionFromServer, sessionLists, sessionPatch, staleRead, stepAfter, stepUndo, undoStep, undoUnsaved, withRecord } from "./apply-session.js";
 import { bindDrag, flip, flipKeyed, placeNodes } from "./drag.js";
 import { boardUndoOrders, cancelAnnouncement, columnKeys, createLoadGate, createOrderSaver, liftAnnouncement, moveAnnouncement, moveKey, placeKey, positionedKeys, restoreOrder, sortedInsertIndex, trackerCompare } from "./drag-logic.js";
@@ -1782,7 +1783,7 @@ function ruleCardMarkup(rule) {
 function profileMarkup() {
   if (state.rulesError) return `<section class="page-shell"><div class="empty-state error-state"><h1>Couldn't load rules.</h1><p>${escapeHtml(state.rulesError)}</p><button class="tonal-button interactive" type="button" data-retry-rules>Retry</button></div></section>`;
   const rules = state.rules || [];
-  return `<section class="profile-page" aria-labelledby="profile-title"><header class="profile-heading"><div><h1 id="profile-title" tabindex="-1">Profile</h1><p>Keep reusable facts and quiet automation in one place.</p></div>${state.quickFillEnabled ? '<button class="tonal-button interactive" type="button" data-quick-fill-toggle>Open Quick-fill</button>' : ""}</header><section class="profile-section" aria-labelledby="rules-title"><div class="section-heading"><div><h2 id="rules-title" tabindex="-1">Inbox rules</h2><p>Rules run top to bottom, and the first archive rule that matches a job claims it. Matches are literal and ignore case. Pausing, editing or deleting a rule does not undo what it already did.</p></div></div><form class="rule-form" id="rule-form"><label><span>Name</span><input name="name" maxlength="120" required placeholder="Archive senior roles"></label><label><span>Action</span><select name="kind"><option value="archive_title">Archive title</option><option value="tag_title">Tag title</option><option value="boost_company">Boost company</option></select></label><label><span>Contains</span><input name="pattern" maxlength="120" required placeholder="Senior"></label><label><span>Tag or boost</span><input name="value" maxlength="40" placeholder="Systems or 25"><small>Leave empty for archive rules.</small></label><button class="filled-button interactive" type="submit">Add rule</button></form>${rules.length ? `<div class="rule-list">${rules.map(ruleCardMarkup).join("")}</div>` : '<div class="profile-empty"><h3>No rules yet.</h3><p>Add one above to archive, tag or boost matching jobs as they arrive.</p></div>'}</section>`;
+  return `<section class="profile-page" aria-labelledby="profile-title"><header class="profile-heading"><div><h1 id="profile-title" tabindex="-1">Profile</h1><p>Keep reusable facts and quiet automation in one place.</p></div>${state.quickFillEnabled ? '<button class="tonal-button interactive" type="button" data-quick-fill-toggle>Open Quick-fill</button>' : ""}</header>${scanMarkup(scan.view())}<section class="profile-section" aria-labelledby="rules-title"><div class="section-heading"><div><h2 id="rules-title" tabindex="-1">Inbox rules</h2><p>Rules run top to bottom, and the first archive rule that matches a job claims it. Matches are literal and ignore case. Pausing, editing or deleting a rule does not undo what it already did.</p></div></div><form class="rule-form" id="rule-form"><label><span>Name</span><input name="name" maxlength="120" required placeholder="Archive senior roles"></label><label><span>Action</span><select name="kind"><option value="archive_title">Archive title</option><option value="tag_title">Tag title</option><option value="boost_company">Boost company</option></select></label><label><span>Contains</span><input name="pattern" maxlength="120" required placeholder="Senior"></label><label><span>Tag or boost</span><input name="value" maxlength="40" placeholder="Systems or 25"><small>Leave empty for archive rules.</small></label><button class="filled-button interactive" type="submit">Add rule</button></form>${rules.length ? `<div class="rule-list">${rules.map(ruleCardMarkup).join("")}</div>` : '<div class="profile-empty"><h3>No rules yet.</h3><p>Add one above to archive, tag or boost matching jobs as they arrive.</p></div>'}</section>`;
 }
 
 function renderProfile({ focus = false } = {}) {
@@ -1791,7 +1792,72 @@ function renderProfile({ focus = false } = {}) {
   routeView.innerHTML = profileMarkup();
   if (focus) document.querySelector("#profile-title")?.focus({ preventScroll: true });
   else restoreCompanyFocus(kept);
+  openScan();
 }
+
+// --- manual scan ---
+
+const scan = createScanController({
+  fetchEnabled: async () => {
+    const response = await fetch("/api/v1/session", { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+    return response.ok && Boolean((await response.json()).features?.scan_run);
+  },
+  fetchRuns: async (signal) => {
+    const response = await fetch("/api/v1/scan-runs", { signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error("scan status unavailable");
+    return response.json();
+  },
+  startRun: async () => {
+    const response = await fetch("/api/v1/scan-runs", {
+      method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": state.csrf, Accept: "application/json" },
+    });
+    const body = [202, 429].includes(response.status) ? await response.json().catch(() => ({})) : {};
+    return { status: response.status, retryAfter: response.headers.get("Retry-After"), retryAfterBody: body.retry_after, runId: body.run?.id };
+  },
+  onChange: () => paintScan(),
+  announce: (message) => announce(message),
+  isOpen: () => routeRoot() === "profile",
+});
+let scanOpened = false;
+
+function openScan() {
+  if (scanOpened) return;
+  scanOpened = true;
+  scan.open();
+}
+
+function closeScan() {
+  if (!scanOpened) return;
+  scanOpened = false;
+  scan.close();
+}
+
+// swap only this section
+function paintScan() {
+  if (routeRoot() !== "profile") return;
+  const html = scanMarkup(scan.view());
+  const host = document.querySelector("#scan-section");
+  const held = host?.contains(document.activeElement) ? document.activeElement.getAttributeNames().find((name) => name.startsWith("data-scan-")) : null;
+  if (host) {
+    if (html) host.outerHTML = html; else host.remove();
+  } else if (html) document.querySelector(".profile-heading")?.insertAdjacentHTML("afterend", html);
+  const wanted = { confirm: "[data-scan-confirm]", start: "[data-scan-start]" }[scan.consumeFocus()] || (held && `[${held}]`);
+  if (!wanted) return;
+  // a disabled button cannot hold focus
+  const usable = (selector) => { const node = document.querySelector(`#scan-section ${selector}`); return Boolean(node) && !node.disabled; };
+  const target = focusTarget(wanted, usable);
+  if (target) document.querySelector(`#scan-section ${target}`).focus({ preventScroll: true });
+}
+
+routeView.addEventListener("click", (event) => {
+  if (event.target.closest("[data-scan-start]")) scan.askConfirm();
+  else if (event.target.closest("[data-scan-confirm]")) scan.confirm();
+  else if (event.target.closest("[data-scan-cancel]")) scan.cancel();
+  else if (event.target.closest("[data-scan-retry]")) scan.retry();
+});
+routeView.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && event.target.closest(".scan-confirm")) { event.preventDefault(); scan.cancel(); }
+});
 
 async function loadRules() {
   if (state.rulesLoading) return;
@@ -3224,6 +3290,7 @@ function renderRoute({ focus = false } = {}) {
   const root = routeRoot();
   document.documentElement.dataset.applySession = String(root === "queue" && window.location.pathname.startsWith("/queue/session"));
   updateNav(root);
+  if (root !== "profile") closeScan();
   if (root === "inbox") {
     parseInboxUrl();
     renderInbox({ focus });

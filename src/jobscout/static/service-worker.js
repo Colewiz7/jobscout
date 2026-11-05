@@ -26,6 +26,7 @@ const SHELL = [
   "/static/command-palette.js",
   "/static/search.js",
   "/static/counts.js",
+  "/static/scan-run.js",
   "/static/fonts/rubik-latin.woff2",
   "/static/fonts/newsreader-latin.woff2",
   "/static/icons/jobseer-fan-192.png",

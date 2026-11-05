@@ -3234,6 +3234,99 @@ body > .visually-hidden {
   background: var(--surface-container-low);
 }
 
+.scan-section {
+  margin-bottom: var(--s-12);
+}
+
+.scan-card {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+  padding: var(--s-6);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+}
+
+.scan-card p {
+  margin: 0;
+}
+
+.scan-state {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  color: var(--on-surface);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.scan-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--outline);
+}
+
+.scan-state[data-scan-state="running"] .scan-dot {
+  background: var(--primary);
+}
+
+.scan-state[data-scan-state="ok"] .scan-dot {
+  background: var(--success);
+}
+
+.scan-state[data-scan-state="failed"] .scan-dot {
+  background: var(--error);
+}
+
+.scan-note {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.scan-error {
+  color: var(--error);
+}
+
+.scan-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+
+.scan-buttons button {
+  min-height: 44px;
+}
+
+.scan-buttons button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scan-confirm {
+  margin-top: var(--s-2);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-container-high);
+}
+
+.scan-confirm p {
+  color: var(--on-surface);
+  font-size: 14px;
+}
+
+@media (max-width: 480px) {
+  .scan-card {
+    padding: var(--s-4);
+  }
+
+  .scan-buttons button {
+    flex: 1 1 100%;
+  }
+}
+
 .tracker-heading,
 .companies-heading,
 .company-detail-heading,
