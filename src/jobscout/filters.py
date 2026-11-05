@@ -302,20 +302,26 @@ def rank(rows, config: Config) -> list:
             for key, (_, row) in ordered]
 
 
-def keep(posting: Posting, config: Config) -> bool:
+def reject_reason(posting: Posting, config: Config) -> str | None:
     if posting.source == "greenhouse" and (posting.board or "").lower() == "testnisc":
-        return False
+        return "test board"
     if not infra_matches(posting.title, config):
-        return False
+        return "title is not this kind of work"
     if not posting_level_matches(posting, config):
-        return False
+        return "level is not early career"
     if not location_matches(posting.location, config, posting.remote):
-        return False
+        return "location is not in the US"
     # A collapsed cell hid the country, so give the deny list the title too.
     if (
         config.location_deny is not None
         and location_is_collapsed(posting.location)
         and config.location_deny.search(posting.title or "")
     ):
-        return False
-    return terms_match(posting, config)
+        return "location is not in the US"
+    if not terms_match(posting, config):
+        return "term is not one we want"
+    return None
+
+
+def keep(posting: Posting, config: Config) -> bool:
+    return reject_reason(posting, config) is None

@@ -204,3 +204,28 @@ def test_a_collapsed_location_still_checks_the_title(config):
                   location="3 Locations", url="https://x/2")
     assert keep(singapore, config) is False
     assert keep(usa, config) is True
+
+
+def _posting(**changes):
+    base = dict(source="careerconnect", company="Acme", title="DevOps Intern", location="Austin, TX", url="")
+    return Posting(**{**base, **changes})
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({}, None),
+    ({"title": "Sales Intern"}, "title is not this kind of work"),
+    ({"title": "DevOps Engineer"}, "level is not early career"),
+    ({"location": "Toronto, Canada"}, "location is not in the US"),
+])
+def test_reject_reason_names_the_first_failing_rule(changes, reason, config):
+    from jobscout.filters import reject_reason
+
+    assert reject_reason(_posting(**changes), config) == reason
+
+
+def test_keep_agrees_with_reject_reason(config):
+    from jobscout.filters import reject_reason
+
+    for changes in ({}, {"title": "Sales Intern"}, {"location": "Paris, France"}):
+        posting = _posting(**changes)
+        assert keep(posting, config) is (reject_reason(posting, config) is None)
