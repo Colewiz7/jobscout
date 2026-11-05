@@ -192,11 +192,11 @@ writable volume if you use the audit log.
 
 ## Tools
 
-51 tools. Every mutating dashboard route has one; the coverage test fails if one is missing.
+53 tools. Every mutating dashboard route has one; the coverage test fails if one is missing.
 
-read (13, always on): `status`, `inbox_list`, `job_get`, `queue_get`, `tracker_get` (also returns the
+read (14, always on): `status`, `inbox_list`, `job_get`, `queue_get`, `tracker_get` (also returns the
 activity history), `companies_list`, `company_get`, `rules_list`, `views_list`, `profile_get`,
-`interviews_ics`, `apply_session_get`, `overview_get` (saved overview only, never generates)
+`interviews_ics`, `apply_session_get`, `overview_get` (saved overview only, never generates), `scan_status`
 
 write (24): `job_set_status`, `jobs_tag` (confirm above 10 jobs), `job_edit`,
 `queue_reorder`, `board_reorder`, `apply_session`, `interview_save`,
@@ -205,11 +205,11 @@ write (24): `job_set_status`, `jobs_tag` (confirm above 10 jobs), `job_edit`,
 `overview_regenerate`, plus the undo tools `jobs_hide_undo`, `jobs_tag_undo`, `job_edit_undo`,
 `rule_action_undo`, `restore_record`, `company_merge_undo`, `overview_regenerate_undo`
 
-confirm (14, two steps): `jobs_hide`, `delete_record`, `company_merge`, `company_hide`,
+confirm (15, two steps): `jobs_hide`, `delete_record`, `company_merge`, `company_hide`,
 `profile_update` (shows a diff, fails if the profile moved after the preview), `profile_field_set`,
 `profile_story_save`, `profile_template_save`, `profile_document_save` (same diff and revision check,
 one item at a time), `connections_import`, `job_capture`, `eligibility_override`, `job_description_paste`,
-`overview_dismiss`
+`overview_dismiss`, `scan_run_start` (starts a scan of every source, about 20 minutes; refused while one runs)
 
 Where the app offers undo, the write result carries what the undo tool needs: `undo_token`
 (`jobs_hide_undo`), tag `ids` (`jobs_tag_undo`), `edit_id` (`job_edit_undo`), `rule_action_id` on the
@@ -224,6 +224,9 @@ and regenerate routes accept no version; the server answers a repeat with a conf
 
 The overview tools need the server's AI overview feature and say so when it is off. The quick-fill
 profile tools need quick-fill on.
+
+The scan tools (`scan_status`, `scan_run_start`) need manual scans enabled on the server and say so
+when they are off.
 
 ## Test
 
