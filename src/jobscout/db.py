@@ -108,6 +108,155 @@ def try_scout_lock(conn: psycopg.Connection) -> bool:
     return bool(held)
 
 
+MANUAL_CLAIM_LOCK_ID = 0x4A4F42534D414E55
+MANUAL_GUARD_LOCK_ID = 0x4A4F42534D475244
+MANUAL_COOLDOWN_SECONDS = 15 * 60
+MANUAL_STALE_SECONDS = 2 * 3600
+SKIPPED_NOTE = "Another scan held the lock, so this one did not run."
+
+
+def claim_manual_scan(conn: psycopg.Connection, job_name: str) -> dict:
+    """Reserve the one manual run before its Job exists.
+
+    Returns {"id"}, {"busy": age_seconds, "job_name"} or {"wait": seconds}.
+    """
+    with conn.cursor() as cur:
+        cur.execute("select pg_advisory_xact_lock(%s)", (MANUAL_CLAIM_LOCK_ID,))
+        cur.execute(
+            """
+            update scout_runs set finished_at = now(), exit_code = 1, note = 'ended without a report'
+             where trigger = 'manual' and finished_at is null
+               and started_at < now() - make_interval(secs => %s)
+            """,
+            (MANUAL_STALE_SECONDS,),
+        )
+        cur.execute(
+            """
+            select extract(epoch from now() - started_at) as age, job_name from scout_runs
+             where trigger = 'manual' and finished_at is null limit 1
+            """
+        )
+        open_row = cur.fetchone()
+        if open_row:
+            conn.commit()
+            return {"busy": int(open_row["age"]), "job_name": open_row["job_name"]}
+        # only runs that got a Job count
+        cur.execute(
+            """
+            select extract(epoch from started_at + make_interval(secs => %s) - now()) as wait
+              from scout_runs where trigger = 'manual' and job_created_at is not null
+             order by started_at desc, id desc limit 1
+            """,
+            (MANUAL_COOLDOWN_SECONDS,),
+        )
+        last = cur.fetchone()
+        if last and last["wait"] > 0:
+            conn.commit()
+            return {"wait": int(last["wait"]) + 1}
+        cur.execute(
+            "insert into scout_runs (trigger, job_name) values ('manual', %s) returning id",
+            (job_name,),
+        )
+        claimed = cur.fetchone()["id"]
+    conn.commit()
+    return {"id": claimed}
+
+
+def confirm_manual_scan(conn: psycopg.Connection, run_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "update scout_runs set job_created_at = coalesce(job_created_at, now()) where id = %s",
+            (run_id,),
+        )
+    conn.commit()
+
+
+def release_manual_scan(conn: psycopg.Connection, run_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "delete from scout_runs where id = %s and trigger = 'manual' and finished_at is null",
+            (run_id,),
+        )
+    conn.commit()
+
+
+def close_manual_scan(conn: psycopg.Connection, job_name: str, existed: bool) -> int:
+    """Close one reservation whose Job is gone or finished."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update scout_runs
+               set finished_at = now(), exit_code = 1, note = 'ended without a report',
+                   job_created_at = case when %s then coalesce(job_created_at, now()) else job_created_at end
+             where trigger = 'manual' and finished_at is null and job_name = %s
+            """,
+            (existed, job_name),
+        )
+        closed = cur.rowcount
+    conn.commit()
+    return closed
+
+
+def start_scout_run(conn: psycopg.Connection, trigger: str, job_name: str | None) -> int:
+    with conn.cursor() as cur:
+        if trigger == "manual":
+            # the dashboard reserved this run
+            cur.execute(
+                """
+                update scout_runs set job_created_at = coalesce(job_created_at, now())
+                 where id = (
+                    select id from scout_runs
+                     where trigger = 'manual' and finished_at is null
+                       and (%(name)s::text is null or job_name = %(name)s)
+                     order by id limit 1)
+                returning id
+                """,
+                {"name": job_name},
+            )
+            held = cur.fetchone()
+            if held:
+                conn.commit()
+                return held["id"]
+        cur.execute(
+            """
+            insert into scout_runs (trigger, job_name, job_created_at)
+            values (%s, %s, now()) returning id
+            """,
+            (trigger, job_name),
+        )
+        run_id = cur.fetchone()["id"]
+    conn.commit()
+    return run_id
+
+
+def finish_scout_run(
+    conn: psycopg.Connection, run_id: int, exit_code: int, new_rows: int | None, notified: int | None,
+    note: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update scout_runs
+               set finished_at = now(), exit_code = %s, new_rows = %s, notified = %s, note = %s
+             where id = %s
+            """,
+            (exit_code, new_rows, notified, note, run_id),
+        )
+    conn.commit()
+
+
+def recent_scout_runs(conn: psycopg.Connection, limit: int = 5) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, trigger, started_at, finished_at, exit_code, new_rows, notified, note, job_created_at
+              from scout_runs order by started_at desc, id desc limit %s
+            """,
+            (limit,),
+        )
+        return cur.fetchall()
+
+
 def require_schema(conn: psycopg.Connection) -> None:
     """Verify that the deployment migration hook has brought the schema current."""
     from . import migrations

@@ -641,6 +641,29 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        31,
+        "scout_runs",
+        """
+        create table if not exists scout_runs (
+            id          bigserial primary key,
+            trigger     text not null default 'scheduled'
+                        check (trigger in ('scheduled', 'manual')),
+            started_at  timestamptz not null default now(),
+            finished_at timestamptz,
+            exit_code   integer,
+            new_rows    integer,
+            notified    integer,
+            job_name    text,
+            job_created_at timestamptz,
+            note        text
+        );
+        create index if not exists scout_runs_started_idx
+            on scout_runs (started_at desc);
+        create unique index if not exists scout_runs_one_open_manual_idx
+            on scout_runs (trigger) where trigger = 'manual' and finished_at is null;
+        """,
+    ),
 )
 
 

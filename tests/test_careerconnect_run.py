@@ -167,3 +167,106 @@ def test_the_lock_frees_when_the_run_ends(conn, run):
         assert database.try_scout_lock(other)
     finally:
         other.close()
+
+
+def _runs(conn):
+    with conn.cursor() as cur:
+        cur.execute("select * from scout_runs order by id")
+        return cur.fetchall()
+
+
+def test_a_run_is_recorded_with_its_result(conn, run, monkeypatch):
+    monkeypatch.setenv("JOBSCOUT_JOB_NAME", "scout-pod")
+    assert run(FakeBucket({INBOX + "a.eml": FIXTURE})) == 0
+    (row,) = _runs(conn)
+    assert row["trigger"] == "scheduled"
+    assert row["exit_code"] == 0
+    assert row["finished_at"] is not None
+    assert row["new_rows"] == 17
+    assert row["job_name"] == "scout-pod"
+
+
+def test_the_manual_trigger_comes_from_the_environment(conn, run, monkeypatch):
+    monkeypatch.setenv("JOBSCOUT_RUN_TRIGGER", "manual")
+    monkeypatch.setenv("JOBSCOUT_JOB_NAME", "manual-job")
+    assert run(FakeBucket({})) == 0
+    (row,) = _runs(conn)
+    assert (row["trigger"], row["job_name"]) == ("manual", "manual-job")
+
+
+def test_a_failing_exit_code_is_recorded(conn, run):
+    class NoList(FakeBucket):
+        def keys(self, prefix):
+            raise r2.R2Error("listing returned 403")
+
+    assert run(NoList({})) == cli.EXIT_MAIL
+    (row,) = _runs(conn)
+    assert row["exit_code"] == cli.EXIT_MAIL
+    assert row["finished_at"] is not None
+
+
+def test_a_crash_is_recorded_as_a_failure(conn, run, monkeypatch):
+    def crash(*a, **k):
+        raise RuntimeError("source blew up")
+
+    monkeypatch.setattr(cli, "_run", crash)
+    with pytest.raises(RuntimeError):
+        run(FakeBucket({}))
+    (row,) = _runs(conn)
+    assert row["exit_code"] == 1
+    assert row["finished_at"] is not None
+
+
+def test_a_failed_record_write_does_not_fail_the_run(conn, run, monkeypatch, caplog):
+    def broken(*a, **k):
+        raise database.psycopg.OperationalError("table is gone")
+
+    monkeypatch.setattr(database, "start_scout_run", broken)
+    monkeypatch.setattr(database, "finish_scout_run", broken)
+    assert run(FakeBucket({INBOX + "a.eml": FIXTURE})) == 0
+    assert _rows(conn) == 17
+    assert "could not record the run" in caplog.text
+    assert _runs(conn) == []
+
+
+def test_a_manual_scout_finishes_the_row_the_dashboard_reserved(conn, run, monkeypatch):
+    reserved = database.claim_manual_scan(conn, "jobscout-manual-abc")["id"]
+    monkeypatch.setenv("JOBSCOUT_RUN_TRIGGER", "manual")
+    monkeypatch.setenv("JOBSCOUT_JOB_NAME", "jobscout-manual-abc")
+    assert run(FakeBucket({})) == 0
+    (row,) = _runs(conn)
+    assert row["id"] == reserved and row["finished_at"] is not None and row["exit_code"] == 0
+
+
+def test_a_manual_scout_that_loses_the_lock_records_a_skip_not_a_success(conn, run, monkeypatch):
+    reserved = database.claim_manual_scan(conn, "jobscout-manual-abc")["id"]
+    monkeypatch.setenv("JOBSCOUT_RUN_TRIGGER", "manual")
+    monkeypatch.setenv("JOBSCOUT_JOB_NAME", "jobscout-manual-abc")
+    holder = database.connect(DSN)
+    try:
+        assert database.try_scout_lock(holder)
+        assert run(FakeBucket({})) == 0
+    finally:
+        holder.close()
+    (row,) = _runs(conn)
+    assert row["id"] == reserved and row["exit_code"] == 0
+    assert row["note"] == database.SKIPPED_NOTE and row["new_rows"] is None
+
+
+def test_a_scheduled_scout_that_loses_the_lock_records_nothing(conn, run):
+    holder = database.connect(DSN)
+    try:
+        assert database.try_scout_lock(holder)
+        assert run(FakeBucket({})) == 0
+    finally:
+        holder.close()
+    assert _runs(conn) == []
+
+
+def test_a_manual_scout_without_a_job_name_adopts_the_open_reservation(conn, run, monkeypatch):
+    reserved = database.claim_manual_scan(conn, "jobscout-manual-abc")["id"]
+    monkeypatch.setenv("JOBSCOUT_RUN_TRIGGER", "manual")
+    monkeypatch.delenv("JOBSCOUT_JOB_NAME", raising=False)
+    assert run(FakeBucket({})) == 0
+    (row,) = _runs(conn)
+    assert row["id"] == reserved and row["finished_at"] is not None

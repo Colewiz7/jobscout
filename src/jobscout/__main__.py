@@ -38,22 +38,78 @@ def cmd_run(args) -> int:
             guard = database.connect(dsn)
             if not database.try_scout_lock(guard):
                 log.info("another scout run holds the lock; exiting without work")
-                guard.close()
+                _record_skip(guard)
+                _quiet_close(guard)
                 return 0
         except psycopg.Error as error:
             # the run itself reports a dead database
             log.warning("could not take the run lock: %s", error)
+    run_id = _record_start(guard)
+    stats: dict[str, int] = {}
+    code = 1
     try:
-        return _run_guarded(args)
+        code = _run_guarded(args, stats)
+        return code
     finally:
-        if guard is not None and not guard.closed:
-            guard.close()
+        # an exception leaves code at 1
+        _record_finish(guard, run_id, code, stats)
+        _quiet_close(guard)
 
 
-def _run_guarded(args) -> int:
+def _quiet_rollback(guard) -> None:
+    # a dead connection must not raise
+    try:
+        guard.rollback()
+    except Exception as error:
+        log.warning("could not roll back the run record: %s", error)
+
+
+def _quiet_close(guard) -> None:
+    if guard is None:
+        return
+    try:
+        guard.close()
+    except Exception as error:
+        log.warning("could not close the run lock: %s", error)
+
+
+def _record_start(guard) -> int | None:
+    if guard is None:
+        return None
+    trigger = "manual" if os.environ.get("JOBSCOUT_RUN_TRIGGER", "").strip() == "manual" else "scheduled"
+    job_name = os.environ.get("JOBSCOUT_JOB_NAME") or None
+    if trigger == "manual" and job_name is None:
+        log.info("manual run without a job name; taking the oldest open reservation")
+    try:
+        return database.start_scout_run(guard, trigger, job_name)
+    except Exception as error:
+        _quiet_rollback(guard)
+        log.warning("could not record the run start: %s", error)
+        return None
+
+
+def _record_skip(guard) -> None:
+    # a manual scan must not look done
+    if os.environ.get("JOBSCOUT_RUN_TRIGGER", "").strip() != "manual":
+        return
+    run_id = _record_start(guard)
+    _record_finish(guard, run_id, 0, {}, note=database.SKIPPED_NOTE)
+
+
+def _record_finish(guard, run_id, code, stats, note=None) -> None:
+    if guard is None or run_id is None:
+        return
+    try:
+        database.finish_scout_run(guard, run_id, code, stats.get("new_rows"), stats.get("notified"), note)
+    except Exception as error:
+        _quiet_rollback(guard)
+        log.warning("could not record the run result: %s", error)
+
+
+def _run_guarded(args, stats) -> int:
     settings = careerconnect.Settings.from_env()
     drains: list[careerconnect.DrainResult] = []
-    code = _run(args, settings, drains)
+    code = _run(args, settings, drains, stats)
     # after the other sources
     problems = drains[0].problems(settings) if drains else []
     for line in problems:
@@ -63,7 +119,7 @@ def _run_guarded(args) -> int:
     return code
 
 
-def _run(args, settings, drains) -> int:
+def _run(args, settings, drains, stats) -> int:
     config = Config.load(args.config)
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -141,11 +197,13 @@ def _run(args, settings, drains) -> int:
         try:
             database.require_schema(conn)
             new_rows = database.upsert_open(conn, matched_simplify + matched_boards)
+            stats["new_rows"] = new_rows
 
             if mail_bucket is not None:
                 drains.append(careerconnect.drain(
                     mail_bucket, lambda rows: _store_alerts(conn, config, rows), settings
                 ))
+                stats["new_rows"] += drains[-1].new
 
             for source, keys in closed_keys.items():
                 if keys:
@@ -235,6 +293,7 @@ def _run(args, settings, drains) -> int:
 
             database.mark_notified(conn, [key for row in sending
                                            for key in row.get("duplicate_keys", [row["dedupe_key"]])])
+            stats["notified"] = len(sending)
             log.info(
                 "notified %d matches, %d held for the next run", len(sending), len(held)
             )

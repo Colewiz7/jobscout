@@ -11,6 +11,7 @@ import datetime as dt
 import os
 import threading
 
+import psycopg
 import pytest
 
 from jobscout import db as database
@@ -37,6 +38,7 @@ def conn():
         cur.execute("drop table if exists saved_view_order")
         cur.execute("drop table if exists hide_undo_tokens")
         cur.execute("drop table if exists apply_sessions")
+        cur.execute("drop table if exists scout_runs")
         cur.execute("drop table if exists interviews")
         cur.execute("drop table if exists reminders")
         cur.execute("drop table if exists eligibility_overrides")
@@ -113,6 +115,7 @@ def test_migration_is_recorded_and_advisory_lock_is_released(conn):
             {"version": 28, "name": "saved_view_edits"},
             {"version": 29, "name": "hide_undo_tokens"},
             {"version": 30, "name": "apply_sessions"},
+            {"version": 31, "name": "scout_runs"},
         ]
     with database.connect(DSN) as other, other.cursor() as cur:
         cur.execute("select pg_try_advisory_lock(%s) as acquired", (migrations.MIGRATION_LOCK_ID,))
@@ -2282,3 +2285,146 @@ def test_a_failing_hold_rolls_the_whole_upsert_back(conn, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("select count(*) as n from postings where source = 'careerconnect'")
         assert cur.fetchone()["n"] == 0
+
+
+def test_recent_scout_runs_are_newest_first_and_limited(conn):
+    first = database.start_scout_run(conn, "scheduled", "job-a")
+    database.finish_scout_run(conn, first, 0, 3, 1)
+    second = database.start_scout_run(conn, "manual", "job-b")
+    rows = database.recent_scout_runs(conn, limit=1)
+    assert [r["id"] for r in rows] == [second]
+    assert rows[0]["finished_at"] is None
+    both = database.recent_scout_runs(conn)
+    assert [(r["id"], r["exit_code"], r["new_rows"], r["notified"]) for r in both] == [
+        (second, None, None, None), (first, 0, 3, 1)]
+    assert "job_name" not in both[0]
+
+
+def test_scout_runs_reject_an_unknown_trigger(conn):
+    with pytest.raises(psycopg.errors.CheckViolation):
+        database.start_scout_run(conn, "cron", None)
+    conn.rollback()
+
+
+def test_the_postgres_store_reads_scout_runs(conn):
+    from jobscout.dashboard import PostgresStore
+
+    database.finish_scout_run(conn, database.start_scout_run(conn, "manual", None), 0, 0, 0)
+    assert [r["trigger"] for r in PostgresStore(DSN).scout_runs(5)] == ["manual"]
+
+
+def test_a_claim_reserves_one_manual_run(conn):
+    first = database.claim_manual_scan(conn, "manual-a")
+    assert "id" in first
+    again = database.claim_manual_scan(conn, "manual-b")
+    assert again["busy"] >= 0 and "id" not in again
+
+
+def test_a_finished_manual_run_still_holds_the_cooldown_after_its_job_is_gone(conn):
+    run = database.claim_manual_scan(conn, "manual-a")["id"]
+    database.confirm_manual_scan(conn, run)
+    database.finish_scout_run(conn, run, 0, 1, 0)
+    with conn.cursor() as cur:
+        cur.execute("update scout_runs set started_at = now() - interval '5 minutes'")
+    conn.commit()
+    wait = database.claim_manual_scan(conn, "manual-b")["wait"]
+    assert 9 * 60 <= wait <= 10 * 60 + 2
+    with conn.cursor() as cur:
+        cur.execute("update scout_runs set started_at = now() - interval '16 minutes'")
+    conn.commit()
+    assert "id" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_scheduled_runs_do_not_count_toward_the_cooldown(conn):
+    database.finish_scout_run(conn, database.start_scout_run(conn, "scheduled", "cron-1"), 0, 0, 0)
+    assert "id" in database.claim_manual_scan(conn, "manual-a")
+
+
+def test_a_released_claim_leaves_no_cooldown(conn):
+    run = database.claim_manual_scan(conn, "manual-a")["id"]
+    database.release_manual_scan(conn, run)
+    assert "id" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_an_abandoned_claim_expires(conn):
+    database.claim_manual_scan(conn, "manual-a")
+    with conn.cursor() as cur:
+        cur.execute("update scout_runs set started_at = now() - interval '3 hours'")
+    conn.commit()
+    assert "id" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_a_reservation_that_never_got_a_job_does_not_hold_the_cooldown(conn):
+    database.claim_manual_scan(conn, "manual-a")
+    assert database.claim_manual_scan(conn, "manual-b")["job_name"] == "manual-a"
+    assert database.close_manual_scan(conn, "manual-a", existed=False) == 1
+    assert "id" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_a_reservation_whose_job_ran_keeps_the_cooldown_when_closed(conn):
+    database.claim_manual_scan(conn, "manual-a")
+    assert database.close_manual_scan(conn, "manual-a", existed=True) == 1
+    assert "wait" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_closing_touches_only_the_named_reservation(conn):
+    database.claim_manual_scan(conn, "manual-a")
+    assert database.close_manual_scan(conn, "other-name", existed=False) == 0
+    assert "busy" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_an_unconfirmed_expired_claim_is_failed_and_not_counted(conn):
+    database.claim_manual_scan(conn, "manual-a")
+    with conn.cursor() as cur:
+        cur.execute("update scout_runs set started_at = now() - interval '3 hours'")
+    conn.commit()
+    assert "id" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_two_connections_claiming_at_once_get_exactly_one(conn):
+    results, barrier = [], threading.Barrier(2)
+
+    def go(name):
+        other = database.connect(DSN)
+        try:
+            barrier.wait()
+            results.append(database.claim_manual_scan(other, name))
+        finally:
+            other.close()
+
+    threads = [threading.Thread(target=go, args=(f"manual-{i}",)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted("id" in result for result in results) == [False, True]
+
+
+def test_the_database_refuses_a_second_open_manual_row(conn):
+    database.start_scout_run(conn, "manual", "one")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        database.start_scout_run(conn, "manual", "two")
+    conn.rollback()
+
+
+def test_the_scout_adopts_the_reserved_row_instead_of_adding_one(conn):
+    reserved = database.claim_manual_scan(conn, "manual-a")["id"]
+    assert database.start_scout_run(conn, "manual", "manual-a") == reserved
+    assert len(database.recent_scout_runs(conn)) == 1
+    # the scout proves the Job exists
+    assert "wait" not in database.claim_manual_scan(conn, "manual-b")
+    database.finish_scout_run(conn, reserved, 0, 0, 0)
+    assert "wait" in database.claim_manual_scan(conn, "manual-b")
+
+
+def test_a_manual_run_without_a_job_name_takes_the_oldest_open_reservation(conn):
+    reserved = database.claim_manual_scan(conn, "manual-a")["id"]
+    assert database.start_scout_run(conn, "manual", None) == reserved
+
+
+def test_a_named_run_never_takes_someone_elses_reservation(conn):
+    reserved = database.claim_manual_scan(conn, "manual-a")["id"]
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        database.start_scout_run(conn, "manual", "manual-other")
+    conn.rollback()
+    assert reserved
