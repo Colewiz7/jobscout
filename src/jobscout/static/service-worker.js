@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE = "jobseer-reads-v27";
+const CACHE = "jobseer-reads-v28";
 const SHELL = [
   "/static/index.html",
   "/static/app.css",
@@ -32,8 +32,42 @@ const SHELL = [
   "/static/company-logos/manifest.json",
 ];
 
+const PROBE = "/static/app.css";
+
+// login page can come back as 200
+async function isRealAsset(response, html) {
+  if (!response.ok || response.redirected || response.type !== "basic") return false;
+  const type = response.headers.get("Content-Type") || "";
+  if (!html) return !type.includes("text/html");
+  if (!type.includes("text/html")) return false;
+  const body = await response.clone().text();
+  return body.includes('id="route-view"') && !/goauthentik|outpost\./i.test(body);
+}
+
+async function fetchAsset(path) {
+  const response = await fetch(path, { redirect: "manual" });
+  if (!(await isRealAsset(response, path.endsWith(".html")))) throw new Error("not an asset: " + path);
+  return response;
+}
+
+async function precache() {
+  // dead session costs one request
+  const probe = await fetchAsset(PROBE);
+  const rest = SHELL.filter((path) => path !== PROBE);
+  const responses = await Promise.all(rest.map(fetchAsset));
+  const cache = await caches.open(CACHE);
+  const entries = [[PROBE, probe], ...rest.map((path, i) => [path, responses[i]])];
+  try {
+    for (const [path, response] of entries) await cache.put(path, response);
+  } catch (error) {
+    // no partial shell left behind
+    await Promise.all(entries.map(([path]) => cache.delete(path)));
+    throw error;
+  }
+}
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(precache().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
@@ -57,8 +91,10 @@ async function networkFirst(request, fallback) {
     const path = new URL(request.url).pathname;
     const expectedType = request.mode === "navigate" || !path.startsWith("/api/v1/")
       ? null : path.startsWith("/api/v1/company-icons/") ? "image/" : "application/json";
+    const html = request.mode === "navigate" || path.endsWith(".html");
     if (response.ok && !response.redirected && response.type === "basic"
         && responseUrl.origin === self.location.origin
+        && (!(html || path.startsWith("/static/")) || await isRealAsset(response, html))
         && (!expectedType || response.headers.get("Content-Type")?.includes(expectedType))) {
       const cache = await caches.open(CACHE);
       await cache.put(request, response.clone());
