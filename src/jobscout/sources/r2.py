@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -23,13 +24,39 @@ _REGION = "auto"          # R2 has no regions but the signature needs a value
 _SERVICE = "s3"
 _EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
-_KEY = re.compile(r"<Key>([^<]+)</Key>")
-_TRUNCATED = re.compile(r"<IsTruncated>\s*true\s*</IsTruncated>", re.I)
-_CONTINUATION = re.compile(r"<NextContinuationToken>([^<]+)</NextContinuationToken>")
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_listing(text: str) -> tuple[list[tuple[str, str]], bool, str]:
+    # real parser decodes entities
+    if "<!DOCTYPE" in text or "<!ENTITY" in text:
+        raise R2Error("listing carried a DTD")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        raise R2Error("listing was not valid XML")
+    entries: list[tuple[str, str]] = []
+    truncated, token = False, ""
+    for child in root:
+        name = _local(child.tag)
+        if name == "Contents":
+            fields = {_local(item.tag): item.text or "" for item in child}
+            if fields.get("Key"):
+                entries.append((fields["Key"], fields.get("LastModified", "")))
+        elif name == "IsTruncated":
+            truncated = (child.text or "").strip().lower() == "true"
+        elif name == "NextContinuationToken":
+            token = (child.text or "").strip()
+    return entries, truncated, token
 
 
 class R2Error(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def _sign(key: bytes, message: str) -> bytes:
@@ -40,15 +67,17 @@ class Bucket:
     """One bucket, addressed by path, signed per request."""
 
     def __init__(self, endpoint: str, bucket: str, access_key: str, secret_key: str,
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None, get_timeout: float | None = None):
         self._host = urllib.parse.urlparse(endpoint).netloc or endpoint
         self._bucket = bucket
         self._access = access_key
         self._secret = secret_key
         self._client = client or httpx.Client(timeout=30.0)
+        # short reads, stuck keys cheap
+        self._get_timeout = get_timeout
 
     @classmethod
-    def from_env(cls, client: httpx.Client | None = None) -> "Bucket | None":
+    def from_env(cls, client: httpx.Client | None = None, get_timeout: float | None = None) -> "Bucket | None":
         """None when unconfigured, so the source is simply skipped."""
         endpoint = os.environ.get("R2_ENDPOINT", "")
         bucket = os.environ.get("R2_BUCKET", "")
@@ -56,10 +85,10 @@ class Bucket:
         secret = os.environ.get("R2_SECRET_ACCESS_KEY", "")
         if not all((endpoint, bucket, access, secret)):
             return None
-        return cls(endpoint, bucket, access, secret, client)
+        return cls(endpoint, bucket, access, secret, client, get_timeout)
 
     def _request(self, method: str, key: str = "", body: bytes = b"",
-                 query: str = "") -> httpx.Response:
+                 query: str = "", timeout: float | None = None) -> httpx.Response:
         path = "/" + self._bucket + ("/" + urllib.parse.quote(key) if key else "")
         now = datetime.datetime.now(datetime.timezone.utc)
         amzdate = now.strftime("%Y%m%dT%H%M%SZ")
@@ -84,6 +113,7 @@ class Bucket:
         url = f"https://{self._host}{path}" + (f"?{query}" if query else "")
         return self._client.request(
             method, url, content=body or None,
+            timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
             headers={
                 "x-amz-date": amzdate,
                 "x-amz-content-sha256": payload_hash,
@@ -93,29 +123,37 @@ class Bucket:
         )
 
     def keys(self, prefix: str) -> list[str]:
-        """Every key under a prefix, following continuation tokens."""
-        found: list[str] = []
+        return [key for key, _ in self.entries(prefix)]
+
+    def entries(self, prefix: str) -> list[tuple[str, str]]:
+        """Every (key, last modified) under a prefix, following continuation tokens."""
+        found: list[tuple[str, str]] = []
         token = ""
+        used: set[str] = set()
         while True:
-            query = "list-type=2&max-keys=200&prefix=" + urllib.parse.quote(prefix, safe="")
+            params = {"list-type": "2", "max-keys": "200", "prefix": prefix}
             if token:
-                query += "&continuation-token=" + urllib.parse.quote(token, safe="")
+                params["continuation-token"] = token
+            # sorted, as signing requires
+            query = "&".join("%s=%s" % (name, urllib.parse.quote(value, safe="")) for name, value in sorted(params.items()))
             response = self._request("GET", query=query)
             if response.status_code != 200:
                 raise R2Error(f"listing {prefix!r} returned {response.status_code}")
-            body = response.text
-            found.extend(_KEY.findall(body))
-            if not _TRUNCATED.search(body):
+            page, truncated, token = _parse_listing(response.text)
+            found.extend(page)
+            if not truncated:
                 return found
-            nxt = _CONTINUATION.search(body)
-            if not nxt:
-                return found
-            token = nxt.group(1)
+            # a partial list is not complete
+            if not token:
+                raise R2Error(f"listing {prefix!r} was truncated with no continuation token")
+            if token in used:
+                raise R2Error(f"listing {prefix!r} repeated a continuation token")
+            used.add(token)
 
     def get(self, key: str) -> bytes:
-        response = self._request("GET", key)
+        response = self._request("GET", key, timeout=self._get_timeout)
         if response.status_code != 200:
-            raise R2Error(f"get {key!r} returned {response.status_code}")
+            raise R2Error(f"get {key!r} returned {response.status_code}", response.status_code)
         return response.content
 
     def put(self, key: str, body: bytes) -> None:

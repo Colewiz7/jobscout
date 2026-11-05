@@ -23,3 +23,16 @@ def fixture_json():
     import json
 
     return lambda name: json.loads((FIXTURES / name).read_text())
+
+
+class _NoRotation:
+    def randrange(self, n):
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def _steady_drain_order(monkeypatch):
+    # tests pass their own rng
+    from jobscout.sources import careerconnect
+
+    monkeypatch.setattr(careerconnect, "RNG", _NoRotation())
