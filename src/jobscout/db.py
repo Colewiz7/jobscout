@@ -99,7 +99,7 @@ def require_schema(conn: psycopg.Connection) -> None:
     migrations.require_current(conn)
 
 
-def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
+def upsert_open(conn: psycopg.Connection, postings: list[Posting], held: dict[str, str] | None = None) -> int:
     """Insert or refresh every open posting. Returns the number of new rows."""
     if not postings:
         return 0
@@ -164,10 +164,48 @@ def upsert_open(conn: psycopg.Connection, postings: list[Posting]) -> int:
         })
         _apply_rules_cursor(cur)
         _apply_hidden_cursor(cur)
+        # same transaction as the upsert
+        _hold(cur, held or {})
         cur.execute("select count(*) as n from postings")
         after = cur.fetchone()["n"]
     conn.commit()
     return after - before
+
+
+def _hold(cur, held: dict[str, str]) -> int:
+    # archived with a reason, never pushed
+    if not held:
+        return 0
+    archived = 0
+    for key, reason in held.items():
+        cur.execute(
+            """
+            insert into application_states (dedupe_key, status, notes)
+            values (%s, 'archived', %s)
+            on conflict (dedupe_key) do nothing
+            returning dedupe_key
+            """,
+            (key, "Held back: " + reason),
+        )
+        if cur.fetchone() is None:
+            continue
+        archived += 1
+        cur.execute(
+            "insert into application_status_history (dedupe_key, from_status, to_status) values (%s, 'new', 'archived')",
+            (key,),
+        )
+    cur.execute(
+        "update postings set notified_at = now() where dedupe_key = any(%s) and notified_at is null",
+        (list(held),),
+    )
+    return archived
+
+
+def hold_unmatched(conn: psycopg.Connection, held: list[tuple[str, str]]) -> int:
+    with conn.cursor() as cur:
+        archived = _hold(cur, dict(held))
+    conn.commit()
+    return archived
 
 
 def title_key(company: str, title: str) -> str:

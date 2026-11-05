@@ -2224,3 +2224,61 @@ def test_a_status_only_write_keeps_the_current_notes(conn):
     with conn.cursor() as cur:
         cur.execute("select status, notes from application_states where dedupe_key = %s", (key,))
         assert dict(cur.fetchone()) == {"status": "applied", "notes": "written after the batch"}
+
+
+def test_hold_unmatched_archives_with_a_reason_and_never_notifies(conn):
+    posting = _p(source="careerconnect", provider_id="careerconnect:" + "a" * 32, title="Sales Intern")
+    database.upsert_open(conn, [posting])
+    assert database.hold_unmatched(conn, [(posting.dedupe_key, "title is not this kind of work")]) == 1
+    with conn.cursor() as cur:
+        cur.execute("select status, notes from application_states where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone() == {"status": "archived", "notes": "Held back: title is not this kind of work"}
+        cur.execute("select to_status from application_status_history where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchall() == [{"to_status": "archived"}]
+    assert database.pending(conn) == []
+
+
+def test_hold_unmatched_leaves_an_existing_decision_alone(conn):
+    posting = _p(source="careerconnect", provider_id="careerconnect:" + "b" * 32)
+    database.upsert_open(conn, [posting])
+    database.save_application_state(conn, posting.dedupe_key, "saved", "mine")
+    assert database.hold_unmatched(conn, [(posting.dedupe_key, "location is not in the US")]) == 0
+    with conn.cursor() as cur:
+        cur.execute("select status, notes from application_states where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone() == {"status": "saved", "notes": "mine"}
+
+
+def test_hold_unmatched_survives_a_repeat_alert(conn):
+    posting = _p(source="careerconnect", provider_id="careerconnect:" + "c" * 32)
+    for _ in range(2):
+        database.upsert_open(conn, [posting])
+        database.hold_unmatched(conn, [(posting.dedupe_key, "level is not early career")])
+    with conn.cursor() as cur:
+        cur.execute("select count(*) as n from application_status_history where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone()["n"] == 1
+
+
+def test_upsert_with_held_stores_the_job_already_archived(conn):
+    posting = _p(source="careerconnect", provider_id="careerconnect:" + "e" * 32, title="Sales Intern")
+    database.upsert_open(conn, [posting], held={posting.dedupe_key: "title is not this kind of work"})
+    with conn.cursor() as cur:
+        cur.execute("select status from application_states where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone() == {"status": "archived"}
+        cur.execute("select notified_at is not null as sent from postings where dedupe_key = %s", (posting.dedupe_key,))
+        assert cur.fetchone() == {"sent": True}
+    assert database.pending(conn) == []
+
+
+def test_a_failing_hold_rolls_the_whole_upsert_back(conn, monkeypatch):
+    posting = _p(source="careerconnect", provider_id="careerconnect:" + "f" * 32)
+
+    def boom(cur, held):
+        raise RuntimeError("hold failed")
+
+    monkeypatch.setattr(database, "_hold", boom)
+    with pytest.raises(RuntimeError):
+        database.upsert_open(conn, [posting], held={posting.dedupe_key: "x"})
+    conn.rollback()
+    with conn.cursor() as cur:
+        cur.execute("select count(*) as n from postings where source = 'careerconnect'")
+        assert cur.fetchone()["n"] == 0
