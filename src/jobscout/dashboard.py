@@ -1,6 +1,7 @@
 """Dependency-free HTTP boundary for the JobSeer application workspace."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import datetime as dt
@@ -32,6 +33,7 @@ from .descriptions import DescriptionAccessBlocked, ProviderDescriptionFetcher, 
 from .overview import OverviewService
 from .eligibility import ELIGIBILITY_FIELDS, analyze as analyze_eligibility
 from .http import Fetcher
+from . import scan_runs
 from .liveness import LivenessResult, PostingLivenessChecker
 
 log = logging.getLogger("jobscout.dashboard")
@@ -572,6 +574,10 @@ def _with_checks(profile: dict) -> dict:
     return {**profile, "eligibility_checks": ELIGIBILITY_FIELDS}
 
 
+SCAN_RUN_LIMIT = 5
+SCAN_CLAIM_GRACE = 60
+
+
 def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -798,6 +804,46 @@ class PostgresStore:
         with database.connect(self.dsn) as conn:
             database.require_schema(conn)
             return database.undo_hide(conn, _hide_undo_hash(token))
+
+    def scout_runs(self, limit: int = 5) -> list[dict]:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.recent_scout_runs(conn, limit)
+
+    @contextlib.contextmanager
+    def scan_guard(self, timeout: float = 3.0):
+        """Hold one lock across claim, list and create."""
+        conn = database.connect(self.dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("select set_config('lock_timeout', %s, false)", (f"{int(timeout * 1000)}ms",))
+                cur.execute("select pg_advisory_lock(%s)", (database.MANUAL_GUARD_LOCK_ID,))
+            # keep the lock, not a transaction
+            conn.commit()
+            yield
+        finally:
+            # closing frees the session lock
+            try:
+                conn.close()
+            except Exception:
+                log.exception("could not close the scan guard")
+
+    def claim_manual_scan(self, job_name: str) -> dict:
+        with database.connect(self.dsn) as conn:
+            database.require_schema(conn)
+            return database.claim_manual_scan(conn, job_name)
+
+    def confirm_manual_scan(self, run_id: int) -> None:
+        with database.connect(self.dsn) as conn:
+            database.confirm_manual_scan(conn, run_id)
+
+    def release_manual_scan(self, run_id: int) -> None:
+        with database.connect(self.dsn) as conn:
+            database.release_manual_scan(conn, run_id)
+
+    def close_manual_scan(self, job_name: str, existed: bool) -> int:
+        with database.connect(self.dsn) as conn:
+            return database.close_manual_scan(conn, job_name, existed)
 
     def hidden_keys(self, dedupe_keys: list[str]) -> set[str]:
         with database.connect(self.dsn) as conn:
@@ -1375,6 +1421,9 @@ class DemoStore:
         self._history: list[dict] = []
         self._dismissed_overviews: set[str] = set()
         self._apply_sessions: list[dict] = []
+        self._scout_runs: list[dict] = []
+        self._scan_lock = threading.Lock()
+        self._guard_lock = threading.Lock()
         self._rule_action_history: set[tuple[int, str]] = set()
         self._next_rule_id = 1
         self._next_rule_action_id = 1
@@ -1496,6 +1545,73 @@ class DemoStore:
         for key in doomed:
             del self._hidden[key]
         return len(doomed)
+
+    def scout_runs(self, limit: int = 5) -> list[dict]:
+        return [dict(run) for run in reversed(self._scout_runs)][:limit]
+
+    @contextlib.contextmanager
+    def scan_guard(self, timeout: float = 3.0):
+        if not self._guard_lock.acquire(timeout=timeout):
+            raise TimeoutError("scan guard busy")
+        try:
+            yield
+        finally:
+            self._guard_lock.release()
+
+    def claim_manual_scan(self, job_name: str) -> dict:
+        """Same rules as the Postgres claim."""
+        with self._scan_lock:
+            now = dt.datetime.now(dt.timezone.utc)
+            manual = [run for run in self._scout_runs if run["trigger"] == "manual"]
+            for run in manual:
+                if run["finished_at"] is None and (now - run["started_at"]).total_seconds() > database.MANUAL_STALE_SECONDS:
+                    run.update(finished_at=now, exit_code=1)
+            held = [run for run in manual if run["finished_at"] is None]
+            if held:
+                return {"busy": int((now - held[-1]["started_at"]).total_seconds()), "job_name": held[-1].get("job_name")}
+            counted = [run["started_at"] for run in manual if run.get("job_created_at")]
+            if counted:
+                wait = (max(counted) - now).total_seconds() + database.MANUAL_COOLDOWN_SECONDS
+                if wait > 0:
+                    return {"wait": int(wait) + 1}
+            row = {
+                "id": len(self._scout_runs) + 1, "trigger": "manual", "started_at": now,
+                "finished_at": None, "exit_code": None, "new_rows": None, "notified": None,
+                "job_name": job_name, "job_created_at": None, "note": None,
+            }
+            self._scout_runs.append(row)
+            return {"id": row["id"]}
+
+    def confirm_manual_scan(self, run_id: int) -> None:
+        with self._scan_lock:
+            for run in self._scout_runs:
+                if run["id"] == run_id and not run.get("job_created_at"):
+                    run["job_created_at"] = dt.datetime.now(dt.timezone.utc)
+
+    def release_manual_scan(self, run_id: int) -> None:
+        with self._scan_lock:
+            self._scout_runs = [r for r in self._scout_runs if not (r["id"] == run_id and r["finished_at"] is None)]
+
+    def close_manual_scan(self, job_name: str, existed: bool) -> int:
+        with self._scan_lock:
+            now = dt.datetime.now(dt.timezone.utc)
+            shut = [r for r in self._scout_runs if r["trigger"] == "manual" and r["finished_at"] is None
+                    and r.get("job_name") == job_name]
+            for run in shut:
+                run.update(finished_at=now, exit_code=1, note="ended without a report")
+                if existed and not run.get("job_created_at"):
+                    run["job_created_at"] = now
+            return len(shut)
+
+    def finish_demo_scout_run(self, exit_code: int, new_rows: int, notified: int) -> None:
+        with self._scan_lock:
+            for run in reversed(self._scout_runs):
+                if run["trigger"] == "manual" and run["finished_at"] is None:
+                    run.update(
+                        finished_at=dt.datetime.now(dt.timezone.utc),
+                        exit_code=exit_code, new_rows=new_rows, notified=notified,
+                    )
+                    return
 
     def hidden_keys(self, dedupe_keys: list[str]) -> set[str]:
         return {row["dedupe_key"] for row in self.rows if row["dedupe_key"] in dedupe_keys and self._is_hidden(row)}
@@ -2747,6 +2863,94 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.GONE, HIDDEN_WRITE)
         return hidden
 
+    def _scan_runs_overview(self) -> None:
+        launcher = self.app.scan_launcher
+        if launcher is None:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        status = None
+        try:
+            status = launcher.status()
+        except scan_runs.ScanError:
+            pass
+        except Exception:
+            log.exception("could not read scan status")
+        try:
+            rows = self.app.store.scout_runs(SCAN_RUN_LIMIT)
+        except Exception:
+            log.exception("could not read scout runs")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't load scan history. Retry shortly.")
+            return
+        now = dt.datetime.now(dt.timezone.utc)
+        self._json(scan_runs.overview(rows, status, now))
+
+    def _scan_run_start(self) -> None:
+        if not self._require_write_security():
+            return
+        launcher = self.app.scan_launcher
+        if launcher is None:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        if self.headers.get("Content-Length", "0").strip() not in {"", "0"}:
+            # no field is ever client-chosen
+            self._error(HTTPStatus.BAD_REQUEST, "This request takes no body.")
+            return
+        try:
+            started = self._start_scan(launcher, self.app.store)
+        except scan_runs.ScanBusy:
+            self._error(HTTPStatus.CONFLICT, "A scan is already running.")
+        except scan_runs.ScanTooSoon as error:
+            self._json(
+                {"error": "A scan started recently. Try again a little later.",
+                 "retry_after": error.retry_after},
+                HTTPStatus.TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(error.retry_after)},
+            )
+        except scan_runs.ScanError:
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't start a scan. Retry shortly.")
+        except Exception:
+            log.exception("could not start a scan")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Couldn't start a scan. Retry shortly.")
+        else:
+            self._json({"run": started}, HTTPStatus.ACCEPTED)
+
+    def _start_scan(self, launcher, store) -> dict:
+        name = launcher.new_name()
+        # a scheduled tick can still slip in; Forbid and the run lock cover it
+        with store.scan_guard():
+            claimed = self._claim_scan(launcher, store, name)
+            try:
+                started = launcher.start(name)
+            except scan_runs.ScanUncertain:
+                # the Job may exist
+                raise
+            except BaseException:
+                try:
+                    store.release_manual_scan(claimed)
+                except Exception:
+                    log.exception("could not release the scan claim")
+                raise
+            try:
+                store.confirm_manual_scan(claimed)
+            except Exception:
+                log.exception("could not confirm the scan claim")
+            return {**started, "id": claimed}
+
+    def _claim_scan(self, launcher, store, name: str) -> int:
+        claim = store.claim_manual_scan(name)
+        busy = claim.get("busy")
+        if busy is not None and busy > SCAN_CLAIM_GRACE:
+            # only a reservation with no live Job
+            state = launcher.job_state(claim.get("job_name"))
+            if state in {"missing", "finished"}:
+                store.close_manual_scan(claim["job_name"], existed=state == "finished")
+                claim = store.claim_manual_scan(name)
+        if "busy" in claim:
+            raise scan_runs.ScanBusy("a scan is running")
+        if "wait" in claim:
+            raise scan_runs.ScanTooSoon(claim["wait"])
+        return claim["id"]
+
     def _overview_write(self, key: str, action: str) -> None:
         if not self._require_write_security():
             return
@@ -2952,11 +3156,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "csrf_token": self.app.csrf_token,
                         "features": {
                             "quick_fill": self.app.quick_fill_enabled,
+                            "scan_run": self.app.scan_launcher is not None,
                             "ai_overview": self.app.overviews is not None,
                         },
                     },
                     headers={"Set-Cookie": cookie},
                 )
+                return
+            if parsed.path == "/api/v1/scan-runs":
+                self._scan_runs_overview()
                 return
             if parsed.path == "/api/v1/jobs":
                 query = urllib.parse.parse_qs(parsed.query)
@@ -3406,6 +3614,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/scan-runs":
+            self._scan_run_start()
+            return
         description_prefix = "/api/v1/jobs/"
         overview_suffix = "/overview"
         if parsed.path.startswith(description_prefix) and parsed.path.endswith(overview_suffix):
@@ -4069,6 +4280,7 @@ class DashboardServer(ThreadingHTTPServer):
         authentik_user: str | None = None,
         quick_fill_enabled: bool = False,
         overviews: OverviewService | None = None,
+        scan_launcher=None,
     ):
         super().__init__(address, DashboardHandler)
         self.store = store
@@ -4077,6 +4289,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.authentik_user = authentik_user
         self.quick_fill_enabled = quick_fill_enabled
         self.overviews = overviews
+        self.scan_launcher = scan_launcher
         self.csrf_token = secrets.token_urlsafe(32)
         self._overview_lock = threading.Lock()
         self._overview_running = False
@@ -4112,6 +4325,11 @@ def serve(
     demo_count = int(os.environ.get("JOBSCOUT_DEMO_COUNT", "2"))
     demo_seed = int(os.environ.get("JOBSCOUT_DEMO_SEED", "0"))
     store = DemoStore(count=demo_count, seed=demo_seed, profile_path=profile_path) if demo else PostgresStore(dsn or "")
+    launcher = None
+    if _env_enabled("JOBSCOUT_SCOUT_TRIGGER_ENABLED"):
+        launcher = scan_runs.FakeLauncher(store) if demo else scan_runs.KubernetesLauncher.from_env()
+        if launcher is None:
+            log.warning("scan trigger is enabled but no cluster credentials were found")
     server = DashboardServer(
         (host, port),
         store,
@@ -4119,6 +4337,7 @@ def serve(
         authentik_app=os.environ.get("JOBSCOUT_AUTHENTIK_APP", "jobseer"),
         authentik_user=os.environ.get("JOBSCOUT_AUTHENTIK_USER"),
         quick_fill_enabled=_env_enabled("JOBSCOUT_QUICK_FILL_ENABLED"),
+        scan_launcher=launcher,
         overviews=(
             OverviewService(
                 os.environ.get("JOBSCOUT_LLM_URL", "http://ollama.ai.svc.cluster.local:11434"),
