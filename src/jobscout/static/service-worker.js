@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE = "jobseer-reads-v29";
+const CACHE = "jobseer-reads-v30";
 const SHELL = [
   "/static/index.html",
   "/static/app.css",

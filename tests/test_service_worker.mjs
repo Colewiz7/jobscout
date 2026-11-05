@@ -174,6 +174,7 @@ test("every module the app imports is precached", () => {
   const app = fs.readFileSync(new URL("../src/jobscout/static/app.js", import.meta.url), "utf8");
   const modules = [...app.matchAll(/from "\.\/([\w-]+\.js)"/g)].map((match) => match[1]);
   assert.ok(modules.includes("search.js"));
+  assert.ok(modules.includes("scan-run.js"));
   const shell = shellPaths();
   for (const name of modules) assert.ok(shell.includes(`/static/${name}`), name);
 });
