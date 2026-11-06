@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 # No .pyc anywhere: the container runs with a read-only root filesystem, so a
 # stray write attempt is a crash rather than a cache.
