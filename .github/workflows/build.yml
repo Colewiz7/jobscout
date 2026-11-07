@@ -14,7 +14,7 @@ jobs:
       # The dedupe and close rules are the part most worth testing and they are
       # pure SQL, so the tests run against a real Postgres rather than a stub.
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: jobscout
