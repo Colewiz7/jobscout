@@ -2140,18 +2140,7 @@ def save_application_state(
                 """,
                 (dedupe_key, previous, status),
             )
-        if status == "applied" and previous != "applied":
-            cur.execute(
-                """
-                insert into reminders (dedupe_key, kind, due_at)
-                values (%s, 'follow_up', now() + interval '7 days')
-                on conflict (dedupe_key, kind) where kind <> 'manual' do update set
-                    due_at = excluded.due_at, status = 'pending',
-                    snoozed_until = null, completed_at = null
-                """,
-                (dedupe_key,),
-            )
-        elif previous == "applied" and (status != "applied" or notes != previous_notes):
+        if previous == "applied" and (status != "applied" or notes != previous_notes):
             cur.execute(
                 """
                 update reminders set status = 'done', completed_at = now()
@@ -2328,16 +2317,6 @@ def mark_application_applied(
                 """,
                 (dedupe_key, previous),
             )
-        cur.execute(
-            """
-            insert into reminders (dedupe_key, kind, due_at)
-            values (%s, 'follow_up', now() + interval '7 days')
-            on conflict (dedupe_key, kind) where kind <> 'manual' do update set
-                due_at = excluded.due_at, status = 'pending',
-                snoozed_until = null, completed_at = null
-            """,
-            (dedupe_key,),
-        )
         locations = merge_locations(posting["locations_raw"] or "")
         sections = posting["description_sections"] or []
         cur.execute(

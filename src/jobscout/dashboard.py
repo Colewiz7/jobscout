@@ -1441,23 +1441,6 @@ class DemoStore:
                 })
                 self._next_reminder_id += 1
 
-    def _upsert_demo_followup(self, row: dict) -> None:
-        reminder = next(
-            (item for item in self._reminders if item["dedupe_key"] == row["dedupe_key"] and item["kind"] == "follow_up"),
-            None,
-        )
-        values = {
-            "dedupe_key": row["dedupe_key"], "kind": "follow_up",
-            "due_at": row["applied_at"] + dt.timedelta(days=7),
-            "status": "pending", "snoozed_until": None, "completed_at": None,
-            "company": row["company"], "title": row["title"],
-        }
-        if reminder:
-            reminder.update(values)
-        else:
-            self._reminders.append({"id": self._next_reminder_id, "note": "", "revision": 0, **values})
-            self._next_reminder_id += 1
-
     def _complete_demo_followup(self, key: str) -> list[dict]:
         closed = []
         for reminder in self._reminders:
@@ -1847,7 +1830,6 @@ class DemoStore:
                     row["board_position"] = None
                 if effective_status == "applied" and row.get("applied_at") is None:
                     row["applied_at"] = dt.datetime.now(dt.timezone.utc)
-                    self._upsert_demo_followup(row)
                 elif previous_status == "applied" and (
                     effective_status != "applied" or notes != previous_notes
                 ):
@@ -1986,7 +1968,6 @@ class DemoStore:
                 queue_position=None, resume_document_id=document_id,
                 resume_name=document.get("name") if document else None,
             )
-            self._upsert_demo_followup(row)
             return {
                 "dedupe_key": key, "captured_at": now, "company": row["company"],
                 "title": row["title"], "location": row.get("location", ""),

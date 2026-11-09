@@ -743,11 +743,19 @@ def test_an_apply_session_saves_conditionally_and_pauses_while_ended(conn):
     assert database.update_apply_session(conn, 999, {"ended": True}, 0) is None
 
 
+def _legacy_follow_up(conn, key):
+    # stands in for rows made before auto reminders stopped
+    with conn.cursor() as cur:
+        cur.execute("insert into reminders (dedupe_key, kind, due_at) values (%s, 'follow_up', now() + interval '7 days')", (key,))
+    conn.commit()
+
+
 def test_undoing_a_next_step_reopens_the_follow_up_it_closed(conn):
     posting = _p(url="https://boards.greenhouse.io/acme/jobs/1")
     database.upsert_open(conn, [posting])
     key = posting.dedupe_key
     database.save_application_state(conn, key, "applied", "")
+    _legacy_follow_up(conn, key)
     saved = database.save_next_step(conn, key, "Email Sam")
     assert len(saved["closed"]) == 1
     status = lambda: database.tracker_support(conn)["reminders"]
@@ -1243,6 +1251,8 @@ def test_tracker_followups_interviews_and_company_records(conn):
         cur.execute("select key, name from companies")
         assert cur.fetchall() == [{"key": "acme", "name": "Acme"}]
     database.save_application_state(conn, posting.dedupe_key, "applied", "")
+    assert database.tracker_support(conn)["reminders"] == []
+    _legacy_follow_up(conn, posting.dedupe_key)
     support = database.tracker_support(conn)
     assert len(support["reminders"]) == 1
     assert support["reminders"][0]["kind"] == "follow_up"
@@ -1285,6 +1295,7 @@ def test_follow_ups_reopen_snooze_and_sit_beside_hand_made_ones(conn):
     database.upsert_open(conn, [posting])
     key = posting.dedupe_key
     database.save_application_state(conn, key, "applied", "")
+    _legacy_follow_up(conn, key)
     automatic = database.tracker_support(conn)["reminders"][0]
     later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=5)
 
@@ -1310,11 +1321,11 @@ def test_follow_ups_reopen_snooze_and_sit_beside_hand_made_ones(conn):
     assert database.save_reminder(conn, automatic["id"], "unsnooze")["reminder"]["snoozed_until"] is None
     assert database.save_reminder(conn, 999_999, "done") is None
 
-    # reapplying resets only the automatic one
+    # reapplying adds no new automatic one
     database.save_application_state(conn, key, "interviewing", "")
     database.save_application_state(conn, key, "applied", "x")
     kinds = sorted(item["kind"] for item in database.tracker_support(conn)["reminders"])
-    assert kinds == ["follow_up", "manual", "manual"]
+    assert kinds == ["manual", "manual"]
     assert database.delete_reminder(conn, automatic["id"]) is False
     assert database.delete_reminder(conn, second["id"]) is True
     assert database.delete_reminder(conn, second["id"]) is False

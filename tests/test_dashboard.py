@@ -1122,13 +1122,26 @@ def test_an_opened_job_can_be_rechecked_after_a_reload(dashboard):
         client.close()
 
 
+def _legacy_follow_up(store, key="demo:2"):
+    # stands in for rows made before auto reminders stopped
+    row = next(job for job in store.rows if job["dedupe_key"] == key)
+    store._reminders.append({
+        "id": store._next_reminder_id, "dedupe_key": key, "kind": "follow_up",
+        "due_at": dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7),
+        "status": "pending", "snoozed_until": None, "completed_at": None, "note": "", "revision": 0,
+        "company": row["company"], "title": row["title"],
+    })
+    store._next_reminder_id += 1
+
+
 def test_undoing_a_next_step_reopens_its_follow_up(dashboard):
-    base, _ = dashboard
+    base, store = dashboard
     client, csrf = authenticated_client(base)
     path = "/api/v1/applications/demo%3A2/next-step"
     headers = {"X-CSRF-Token": csrf}
     try:
         client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        _legacy_follow_up(store)
         follow_up = lambda: next(item for item in client.get("/api/v1/tracker").json()["reminders"] + client.get("/api/v1/tracker").json()["done_reminders"] if item["dedupe_key"] == "demo:2" and item["kind"] == "follow_up")
         saved = client.put(path, headers=headers, json={"next_step": "Send portfolio", "expected_next_step": ""}).json()
         assert [item["id"] for item in saved["closed_follow_ups"]] == [follow_up()["id"]]
@@ -1216,7 +1229,7 @@ def test_tracker_followup_interview_calendar_and_next_step(dashboard):
         client.close()
 
     assert applied.status_code == 200
-    assert tracker.json()["reminders"][0]["kind"] == "follow_up"
+    assert tracker.json()["reminders"] == []
     assert next_step.status_code == 200
     assert interview.status_code == 201
     assert after.json()["applications"][0]["status"] == "interviewing"
@@ -1225,16 +1238,31 @@ def test_tracker_followup_interview_calendar_and_next_step(dashboard):
     assert "Video call" in calendar.text
 
 
-def _soon(**delta):
-    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(**delta)).isoformat()
-
-
-def test_follow_ups_reopen_snooze_to_a_date_and_are_added_by_hand(dashboard):
+def test_marking_applied_adds_no_follow_up(dashboard):
     base, _ = dashboard
     client, csrf = authenticated_client(base)
     headers = {"X-CSRF-Token": csrf}
     try:
         client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        client.patch("/api/v1/jobs/demo%3A1", headers=headers, json={"status": "applied", "notes": ""})
+        tracker = client.get("/api/v1/tracker").json()
+    finally:
+        client.close()
+
+    assert not [item for item in tracker["reminders"] if item["dedupe_key"] in {"demo:1", "demo:2"}]
+
+
+def _soon(**delta):
+    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(**delta)).isoformat()
+
+
+def test_follow_ups_reopen_snooze_to_a_date_and_are_added_by_hand(dashboard):
+    base, store = dashboard
+    client, csrf = authenticated_client(base)
+    headers = {"X-CSRF-Token": csrf}
+    try:
+        client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        _legacy_follow_up(store)
         reminder = client.get("/api/v1/tracker").json()["reminders"][0]
         path = f"/api/v1/reminders/{reminder['id']}"
         snoozed = client.put(path, headers=headers, json={"action": "snooze", "until": _soon(days=7), "expected_revision": reminder["revision"]})
@@ -1276,11 +1304,12 @@ def test_follow_ups_reopen_snooze_to_a_date_and_are_added_by_hand(dashboard):
 
 
 def test_follow_up_writes_check_auth_csrf_input_and_hidden_jobs(dashboard):
-    base, _ = dashboard
+    base, store = dashboard
     client, csrf = authenticated_client(base)
     headers = {"X-CSRF-Token": csrf}
     try:
         client.post("/api/v1/applications/demo%3A2/applied", headers=headers, json={"document_id": None})
+        _legacy_follow_up(store)
         reminder = client.get("/api/v1/tracker").json()["reminders"][0]
         path = f"/api/v1/reminders/{reminder['id']}"
         no_auth = httpx.put(f"{base}{path}", json={"action": "done"}, timeout=2)
