@@ -62,51 +62,7 @@ export function ruleValueHelp(kind) {
   return "Archive rules ignore this.";
 }
 
-// undo sends the old state back
-export function reminderUndo(action, previous) {
-  if (action === "done") return { action: "reopen" };
-  if (action === "reopen") return { action: "done" };
-  if (previous.status === "snoozed" && previous.snoozed_until) return { action: "snooze", until: previous.snoozed_until };
-  return { action: "unsnooze" };
-}
-
-function at(now, days, hour = 9) {
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, hour);
-}
-
-// snoozes land at 9 am
-export function snoozeChoices(now = new Date()) {
-  const toMonday = ((8 - now.getDay()) % 7) || 7;
-  return [
-    { key: "tomorrow", label: "Tomorrow", until: at(now, 1) },
-    { key: "three-days", label: "In 3 days", until: at(now, 3) },
-    { key: "next-week", label: "Next week", until: at(now, toMonday) },
-  ];
-}
-
-export function dateInputValue(date) {
-  const pad = (number) => String(number).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-// a picked day means 9 am
-export function pickedDay(value, now = new Date()) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
-  if (!match) return { error: "Pick a date." };
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 9);
-  if (Number.isNaN(date.valueOf()) || date.getDate() !== Number(match[3])) return { error: "Pick a real date." };
-  if (date < at(now, 1, 0)) return { error: "Pick a day after today." };
-  if (date - now > 365 * 864e5) return { error: "Pick a day within a year." };
-  return { until: date };
-}
-
-// formatDate only looks back
-export function upcomingDay(value, now = new Date(), locale = undefined) {
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return "";
-  const days = Math.round((new Date(date.getFullYear(), date.getMonth(), date.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 864e5);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Tomorrow";
-  if (days < 7) return new Intl.DateTimeFormat(locale, { weekday: "long" }).format(date);
-  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) }).format(date);
+// empty list still skips closing
+export function nextStepPayload(value, expected = null, reopen = null) {
+  return { next_step: value, ...(expected === null ? {} : { expected_next_step: expected }), ...(reopen ? { reopen_follow_ups: reopen } : {}) };
 }
