@@ -1953,7 +1953,7 @@ body > .visually-hidden {
   font-size: 14px;
 }
 
-.status-line > span {
+.status-line > span:first-child {
   width: 7px;
   height: 7px;
   border-radius: var(--r-full);
@@ -5524,4 +5524,16 @@ body.quick-fill-popout {
   .submission-prompt > div > :first-child {
     grid-column: 1 / -1;
   }
+}
+
+.day-count {
+  display: block;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-line .day-count {
+  display: inline;
+  font-size: 13px;
 }
