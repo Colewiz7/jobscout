@@ -17,6 +17,8 @@ import urllib.parse
 
 from bs4 import BeautifulSoup
 
+from .models import is_signin_url
+
 
 @dataclasses.dataclass(frozen=True)
 class ParsedDescription:
@@ -299,6 +301,8 @@ class ProviderDescriptionFetcher:
         self._last_request: dict[str, float] = {}
 
     def _get_json(self, provider: str, url: str):
+        if is_signin_url(url):
+            return None
         with self._lock:
             remaining = self.min_interval - (time.monotonic() - self._last_request.get(provider, 0))
             if remaining > 0:
@@ -317,6 +321,8 @@ class ProviderDescriptionFetcher:
             return payload
 
     def _get_html(self, provider: str, url: str) -> str | None:
+        if is_signin_url(url):
+            return None
         with self._lock:
             remaining = self.min_interval - (time.monotonic() - self._last_request.get(provider, 0))
             if remaining > 0:
@@ -335,6 +341,9 @@ class ProviderDescriptionFetcher:
         key = str(target.get("dedupe_key") or "")
         provider, _, provider_id = key.partition(":")
         url = str(target.get("url") or "")
+        # sign-in pages have no public description
+        if provider == "careerconnect" or (url and is_signin_url(url)):
+            return None
         parsed = urllib.parse.urlsplit(url)
         host = (parsed.hostname or "").casefold()
         parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]

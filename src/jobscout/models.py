@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import ipaddress
 import re
 import urllib.parse
+
+import httpx
 
 # Providers whose job id is stable enough to dedupe on directly. A posting that
 # appears both in the Simplify README and on the company's own board is the
@@ -25,6 +28,81 @@ _AGE_DAYS = {"h": 0, "d": 1, "w": 7, "mo": 30, "y": 365}
 
 _WS = re.compile(r"\s+")
 _PUNCT = re.compile(r"[^a-z0-9 ]+")
+
+
+# hosts behind university sign-in, never fetched
+SIGN_IN_HOSTS = ("symplicity.com", "careerconnect.rit.edu")
+
+
+_URL_HEAD = re.compile(r"https?://([^/?#]*)", re.I)
+_BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+
+
+def _port_ok(port: str) -> bool:
+    # ascii only, no zero or padding
+    return bool(_PORT.fullmatch(port)) and int(port) <= 65535
+_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _ascii_host(host: str) -> str | None:
+    try:
+        host = host.lower().encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    return host[:-1] if host.endswith(".") else host
+
+
+def _plain_host(url) -> str | None:
+    # none means not a plain http(s) url
+    if not isinstance(url, str) or _BAD_CHARS.search(url):
+        return None
+    head = _URL_HEAD.match(url)
+    if not head:
+        return None
+    authority = head.group(1)
+    if not authority or "%" in authority or "@" in authority:
+        return None
+    if authority.startswith("["):
+        host, closed, rest = authority[1:].partition("]")
+        if not closed or (rest and not (rest[0] == ":" and _port_ok(rest[1:]))):
+            return None
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+        return host.lower()
+    host, colon, port = authority.partition(":")
+    if colon and not _port_ok(port):
+        return None
+    host = _ascii_host(host)
+    if not host or len(host) > 253:
+        return None
+    labels = host.split(".")
+    if not all(_LABEL.fullmatch(label) for label in labels):
+        return None
+    # numeric forms must be a strict ipv4
+    if labels[-1].isdigit() or labels[-1].startswith("0x"):
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            return None
+    try:
+        seen = httpx.URL(url).host
+    except Exception:
+        return None
+    # a second parser must agree
+    if _ascii_host(seen.strip("[]")) != host:
+        return None
+    return host
+
+
+def is_signin_url(url) -> bool:
+    # fails closed, callers skip empty urls first
+    host = _plain_host(url)
+    if host is None:
+        return True
+    return any(host == name or host.endswith("." + name) for name in SIGN_IN_HOSTS)
 
 
 def normalise(text: str) -> str:

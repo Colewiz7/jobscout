@@ -12,6 +12,8 @@ import time
 
 import httpx
 
+from .models import is_signin_url
+
 log = logging.getLogger(__name__)
 
 CONNECT_RETRY_SECONDS = 90
@@ -21,12 +23,24 @@ USER_AGENT = "jobscout (+https://github.com/Colewiz7/jobscout)"
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+class SignInRefused(Exception):
+    pass
+
+
+def _refuse_signin(request: httpx.Request) -> None:
+    # also catches redirect hops
+    if is_signin_url(str(request.url)):
+        raise SignInRefused(request.url.host)
+
+
 class Fetcher:
-    def __init__(self, timeout: float = 25.0, retry_seconds: float = CONNECT_RETRY_SECONDS):
+    def __init__(self, timeout: float = 25.0, retry_seconds: float = CONNECT_RETRY_SECONDS, transport=None):
         self._client = httpx.Client(
             timeout=timeout,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
+            event_hooks={"request": [_refuse_signin]},
+            transport=transport,
         )
         self._retry_seconds = retry_seconds
 
@@ -54,6 +68,11 @@ class Fetcher:
         deadline = time.monotonic() + self._retry_seconds
         attempt = 0
         last: Exception | None = None
+        # not 403, that reads as a host block
+        refused = httpx.Response(451, request=httpx.Request("GET", "https://refused.invalid/")) if return_errors else None
+        if is_signin_url(url):
+            log.info("refusing sign-in url")
+            return refused
         while True:
             try:
                 response = self._client.request(method, url, **kwargs)
@@ -68,7 +87,18 @@ class Fetcher:
                     # board is gone. Callers log and move on.
                     log.debug("%s -> %s", url, response.status_code)
                     return response if return_errors else None
+            except SignInRefused:
+                log.info("refusing sign-in redirect")
+                return refused
+            except (httpx.InvalidURL, ValueError):
+                # bad redirect target, nothing was sent
+                log.info("refusing malformed url")
+                return refused
             except httpx.HTTPError as exc:
+                # a bad location never improves on retry
+                if isinstance(exc, httpx.RemoteProtocolError) and "location header" in str(exc):
+                    log.info("refusing malformed redirect")
+                    return refused
                 last = exc
 
             if time.monotonic() >= deadline:

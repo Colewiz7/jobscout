@@ -7,6 +7,7 @@ import time
 import urllib.parse
 
 from .descriptions import _slug_from_url
+from .models import is_signin_url
 
 
 @dataclasses.dataclass(frozen=True)
@@ -48,6 +49,10 @@ class PostingLivenessChecker:
             parts = key.split(":", 2)
             provider_id = parts[2] if len(parts) == 3 else ""
         url = str(target.get("url") or "")
+
+        # a probe would only hit sign-in
+        if provider == "careerconnect" or (url and is_signin_url(url)):
+            return LivenessResult("unknown", "Career Connect postings sit behind sign-in and are not checked")
         board = target.get("board") or _slug_from_url(url, provider)
 
         try:

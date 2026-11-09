@@ -20,6 +20,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from . import db
+from .models import is_signin_url
 
 log = logging.getLogger(__name__)
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -59,6 +60,8 @@ def _same_site_redirect(original: str, target: str) -> bool:
 def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool = False,
           favicon_placeholder: bool = False, html_origin: str = "",
           redirects_left: int = 2) -> bytes | None:
+    if is_signin_url(url):
+        return None
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in {None, 443}:
         return None
@@ -91,7 +94,8 @@ def _read(client: httpx.Client, url: str, limit: int, *, favicon_redirect: bool 
                 if len(data) > limit:
                     return bytes(data[:limit]) if html_origin else None
             return bytes(data)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError):
+        # bad location header, nothing sent
         return None
 
 
@@ -136,6 +140,8 @@ def _candidate_domains(name: str, urls: list[str]) -> list[str]:
     company = "".join(db.company_key(name).split())
     candidates: list[str] = []
     for url in urls:
+        if is_signin_url(url):
+            continue
         parsed = urllib.parse.urlsplit(url)
         host = (parsed.hostname or "").casefold()
         if parsed.scheme != "https":
@@ -209,7 +215,7 @@ def refresh(conn, *, client: httpx.Client | None = None, now: dt.datetime | None
             options = [domains[key]] if curated else _candidate_domains(name, urls.get(key, []))
             found = None
             for domain in options:
-                if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{2,250}", domain):
+                if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{2,250}", domain) or is_signin_url("https://" + domain):
                     continue
                 # Explicitly curated domains have already been verified by a
                 # person. Many real companies block robots on their homepage;
