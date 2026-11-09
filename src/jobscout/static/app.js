@@ -4,6 +4,7 @@ import { bindObjectMenus, toggleMenu } from "./action-menu.js";
 import { inboxCopyText } from "./copy-text.js";
 import { countLabel } from "./counts.js";
 import { dayCountMarkup } from "./day-count.js";
+import { initialsTone } from "./initials-tone.js";
 import { findPostingHighlights, HIGHLIGHT_LABELS } from "./highlight-terms.js";
 import { ariaKeyshortcuts, formatShortcut, isTextEntry, matchShortcut } from "./shortcuts.js";
 import { Countdown, EditSessions, UndoStack, closedUndoIds, exitDelay, mergeSnackbar, snackbarDuration, textChange, withdrawSnackbar } from "./undo-stack.js";
@@ -444,7 +445,7 @@ function companyLogoMarkup(company, className = "job-logo") {
     : state.companyIconKeys.has(key) ? `/api/v1/company-icons/${encodeURIComponent(company)}` : "";
   const tile = lightLogoTiles.has(key) ? " data-logo-light" : "";
   const loading = className === "company-monogram" ? "lazy" : "eager";
-  return `<span class="${className}"${source ? tile : ""} aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${source ? `<img src="${source}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
+  return `<span class="${className}"${source ? tile : ""} data-tone="${initialsTone(key)}" aria-hidden="true"><span class="logo-initials">${escapeHtml(initials(company))}</span>${source ? `<img src="${source}" width="64" height="64" loading="${loading}" decoding="async" alt="">` : ""}</span>`;
 }
 
 function highlightMarkup(text, field) {

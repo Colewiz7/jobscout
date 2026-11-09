@@ -1211,6 +1211,27 @@ body > .visually-hidden {
   background: var(--on-surface);
 }
 
+.job-logo[data-tone="brass"]:not(.has-logo),
+.detail-company-logo[data-tone="brass"]:not(.has-logo),
+.company-monogram[data-tone="brass"]:not(.has-logo) {
+  background: var(--brass-container);
+  color: var(--brass-on-container);
+}
+
+.job-logo[data-tone="ink"]:not(.has-logo),
+.detail-company-logo[data-tone="ink"]:not(.has-logo),
+.company-monogram[data-tone="ink"]:not(.has-logo) {
+  background: var(--ink-container);
+  color: var(--ink-on-container);
+}
+
+.job-logo[data-tone="plum"]:not(.has-logo),
+.detail-company-logo[data-tone="plum"]:not(.has-logo),
+.company-monogram[data-tone="plum"]:not(.has-logo) {
+  background: var(--plum-container);
+  color: var(--plum-on-container);
+}
+
 .logo-initials {
   position: relative;
   z-index: 0;
