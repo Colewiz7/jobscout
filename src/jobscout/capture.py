@@ -10,8 +10,13 @@ import dataclasses
 import re
 import urllib.parse
 
+from . import ats
 from .descriptions import ParsedDescription, parse_description
 from .models import Posting, provider_id_from_url
+
+
+class PostingGone(ValueError):
+    """The provider answered and says the posting is no longer there."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -90,9 +95,13 @@ class PostingCapture:
                 captured = self._ashby(url, parts)
             elif _WORKDAY_HOST.match(host):
                 captured = self._workday(url, parsed, parts)
+            elif (found := ats.match(url)) is not None:
+                captured = self._adapter(*found)
             else:
                 return manual_capture(payload, url)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, PostingGone) and not override:
+                raise
             if not override:
                 raise ValueError(
                     "The provider did not return enough details. Add the company and role manually."
@@ -175,10 +184,28 @@ class PostingCapture:
             parse_description(raw) if raw else None,
         )
 
+    def _adapter(self, adapter, ref: ats.Ref) -> CapturedPosting:
+        try:
+            detail = adapter.detail(self.fetcher, ref)
+        except ats.Gone:
+            raise PostingGone("That posting is no longer open on the provider's site") from None
+        except ats.Unavailable as error:
+            raise ValueError(str(error)) from None
+        if not detail.title.strip() or not detail.company.strip():
+            raise ValueError(f"{ref.provider} posting is missing a title or company")
+        raw = detail.description_html or ""
+        return CapturedPosting(
+            detail.posting(),
+            parse_description(raw, provider_deadline=detail.deadline) if raw else None,
+        )
+
     def _workday(
         self, url: str, parsed: urllib.parse.SplitResult, parts: list[str]
     ) -> CapturedPosting:
         match = _WORKDAY_HOST.match(parsed.hostname or "")
+        # a shared link usually carries the locale: /en-US/<site>/job/...
+        if parts and re.fullmatch(r"[a-z]{2}-[A-Za-z]{2}", parts[0]):
+            parts = parts[1:]
         if match is None or len(parts) < 3 or parts[1] != "job":
             raise ValueError("unsupported Workday URL")
         tenant, dc = match.group("tenant"), match.group("dc")

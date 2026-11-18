@@ -1,0 +1,68 @@
+{
+ "id": "3743990015408206",
+ "name": "Computing Undergraduate Student Intern: DevOps Internship Program - Summer 2027",
+ "uuid": "1547c6f7-b7d4-4ed0-aae1-279864054546",
+ "jobId": "833ed145-eb54-405d-a3bb-7726417a2909",
+ "refNumber": "REF8833G",
+ "company": {
+  "name": "LLNL",
+  "identifier": "LLNL"
+ },
+ "location": {
+  "city": "Livermore",
+  "region": "CA",
+  "country": "us",
+  "remote": false,
+  "hybrid": false,
+  "latitude": "37.6818688",
+  "longitude": "-121.7684732",
+  "fullLocation": "Livermore, CA, United States"
+ },
+ "releasedDate": "2026-09-18T23:00:42.630Z",
+ "postingUrl": "https://jobs.smartrecruiters.com/LLNL/3743990015408206-computing-undergraduate-student-intern-devops-internship-program-summer-2027",
+ "applyUrl": "https://jobs.smartrecruiters.com/LLNL/3743990015408206-computing-undergraduate-student-intern-devops-internship-program-summer-2027?oga=true",
+ "active": true,
+ "visibility": "PUBLIC",
+ "unpublishOn": "2027-01-16T08:00:00.000Z",
+ "industry": {
+  "id": "research",
+  "label": "Research"
+ },
+ "function": {
+  "id": "science",
+  "label": "Science"
+ },
+ "experienceLevel": {
+  "id": "internship",
+  "label": "Internship"
+ },
+ "typeOfEmployment": {
+  "id": "intern",
+  "label": "Intern"
+ },
+ "language": {
+  "code": "en",
+  "label": "English",
+  "labelNative": "English (US)"
+ },
+ "jobAd": {
+  "sections": {
+   "companyDescription": {
+    "title": "Company Description",
+    "text": "<p><strong>Join us and make YOUR mark on the World!</strong></p><p>Lawrence Livermore National Laboratory (LLNL) has turned bold ideas into world-changing impact advancing science and technology to strengthen U.S. security and promote global stability.&#xa0;</p><p>Our mission spans four critical</p>"
+   },
+   "jobDescription": {
+    "title": "Job Description",
+    "text": "<p>Positions will close to applicants on January 15, 2027. Computing mentors will have until February 5, 2027 to make their Summer selections.</p><p><strong>Internship Dates:&#xa0;</strong></p><ul><li>May 17, 2027 - August 6, 2027</li><li>May 24, 2027 - August 13, 2027</li><li>June 14, 2027 -</p>"
+   },
+   "qualifications": {
+    "title": "Qualifications",
+    "text": "<ul><li>Must be eligible to access the Laboratory in compliance with Section 3112 of the National Defense Authorization Act (NDAA). See Additional Information section below for details.&#xa0;</li><li>Must be a continuing college or university student in good standing at an accredited institution</p>"
+   },
+   "additionalInformation": {
+    "title": "Additional Information",
+    "text": "<p>All your information will be kept confidential according to EEO guidelines.</p><div sr-tagline=\"\"></div><p><strong>Why Lawrence Livermore National Laboratory?</strong></p><ul><li>Included in 2026&#xa0;Best Places to Work by Glassdoor!</li><li>Holiday Pay</li><li>Sick leave</p>"
+   }
+  }
+ }
+}

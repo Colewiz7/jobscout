@@ -12,6 +12,15 @@ class FakeFetcher:
         self.urls.append(url)
         return self.payload
 
+    def send(self, method, url, **kwargs):
+        import json
+
+        import httpx
+
+        self.urls.append(url)
+        body = self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
+        return httpx.Response(200, text=body, request=httpx.Request(method, url))
+
 
 class FakeHtmlFetcher(FakeFetcher):
     def get_text(self, url):
@@ -178,7 +187,9 @@ def test_workday_is_inferred_from_a_simplify_posting_url():
 
 
 def test_embedded_greenhouse_job_id_resolves_the_real_board():
-    client = FakeFetcher({"content": "<h2>Responsibilities</h2><p>Build safe systems.</p>"})
+    # read through the greenhouse-domains adapter
+    client = FakeFetcher({"id": 8231711, "title": "Systems Engineer", "absolute_url": "https://careers.withwaymo.com/jobs?gh_jid=8231711",
+                          "content": "<h2>Responsibilities</h2><p>Build safe systems.</p>"})
     detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
         "dedupe_key": "sha256:abc", "board": None,
         "url": "https://careers.withwaymo.com/jobs?gh_jid=8231711",
@@ -198,28 +209,27 @@ def test_simplify_lever_url_uses_lever_detail_api():
 
 
 def test_smartrecruiters_sections_are_readable():
-    client = FakeFetcher({"jobAd": {"sections": {
-        "jobDescription": {"title": "Job Description", "text": "<p>Ship useful software.</p>"},
-        "qualifications": {"title": "Qualifications", "text": "<p>Python experience.</p>"},
-    }}})
+    import pathlib
+
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "ats" / "smartrecruiters_detail.json"
+    client = FakeFetcher(fixture.read_text())
     detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
         "dedupe_key": "sha256:abc", "board": None,
-        "url": "https://jobs.smartrecruiters.com/AbbVie/3743990015684476",
+        "url": "https://jobs.smartrecruiters.com/LLNL/3743990015408206-devops-internship",
     })
-    assert client.urls == ["https://api.smartrecruiters.com/v1/companies/AbbVie/postings/3743990015684476"]
-    assert [section["key"] for section in detail.sections] == ["role", "requirements"]
-    assert "Ship useful software" in detail.text
-
+    # read through the SmartRecruiters adapter, slug stripped from the id
+    assert client.urls == ["https://api.smartrecruiters.com/v1/companies/LLNL/postings/3743990015408206"]
+    assert {"role", "requirements"} <= {section["key"] for section in detail.sections}
 
 def test_allowlisted_jobposting_jsonld_is_used_without_generic_url_fetching():
     page = '<script type="application/ld+json">{"@type":"JobPosting","description":"' + ("Build safe systems. " * 8) + '"}</script>'
     client = FakeHtmlFetcher(page)
     detail = ProviderDescriptionFetcher(client, min_interval=0).fetch({
         "dedupe_key": "sha256:abc", "board": None,
-        "url": "https://careers.amd.com/jobs/90950?icims=1",
+        "url": "https://careers.excellusbcbs.com/jobs/90950",
     })
     assert detail.text.startswith("Build safe systems")
-    assert client.urls == ["https://careers.amd.com/jobs/90950?icims=1"]
+    assert client.urls == ["https://careers.excellusbcbs.com/jobs/90950"]
     client.urls.clear()
     assert ProviderDescriptionFetcher(client, min_interval=0).fetch({
         "dedupe_key": "sha256:abc", "board": None,

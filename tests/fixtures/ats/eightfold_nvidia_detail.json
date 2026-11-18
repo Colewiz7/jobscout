@@ -1,0 +1,34 @@
+{
+  "status": 200,
+  "error": {
+    "message": "",
+    "body": ""
+  },
+  "data": {
+    "id": 893397724522,
+    "displayJobId": "JR2025882",
+    "name": "Software DevOps Engineer, Networking",
+    "locations": [
+      "US, CA, Santa Clara"
+    ],
+    "standardizedLocations": [
+      "Santa Clara, CA, US"
+    ],
+    "postedTs": 1793318400,
+    "stars": 0,
+    "department": "Engineer, Dev Ops",
+    "creationTs": 1789430400,
+    "jobDescription": "<p>NVIDIA's networking software runs the fabrics inside the world's largest AI systems: NVLink and InfiniBand switch management, subnet managers, in-network computing, and fabric telemetry. Our infrastructure and DevOps team owns how that software is built, tested, scanned, and released — the CI/CD pipelines, Kubernetes-based build fleets, artifact and container registries, quality and security gates, and the hardware-simulation and lab environments the product teams rely on every day. We are looking for a senior DevOps engineer who is at home on Linux, automates in Python and Bash without</p>",
+    "location": "US, CA, Santa Clara",
+    "isHot": 0,
+    "workLocationOption": "onsite",
+    "locationFlexibility": null,
+    "atsJobId": "JR2025882",
+    "positionUrl": "/careers/job/893397724522",
+    "publicUrl": "https://jobs.nvidia.com/careers/job/893397724522",
+    "efcustomTextTimeType": [
+      "Full time"
+    ]
+  },
+  "metadata": null
+}

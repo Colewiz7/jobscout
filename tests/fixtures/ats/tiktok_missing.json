@@ -1,0 +1,13 @@
+{
+ "code": 0,
+ "data": {
+  "job_post_detail": null,
+  "BaseResp": {
+   "StatusMessage": "Success",
+   "StatusCode": 0,
+   "Extra": null
+  }
+ },
+ "message": "ok",
+ "error": null
+}

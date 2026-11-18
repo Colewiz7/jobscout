@@ -1,0 +1,214 @@
+{
+ "code": 0,
+ "data": {
+  "job_post_list": [
+   {
+    "id": "7704981006856145205",
+    "code": "A168886",
+    "title": "Research Engineer Intern (TikTok Generalized Arch) - 2027 Start (PhD)",
+    "description": "TikTok Generalized Architecture team focuses on building scalable, reusable, and future-proof technical foundations that support a wide range of TikTok products and business scenarios. The team is responsible for designing and evolving core architecture, improving system performance and reliability,...",
+    "requirement": "Minimum Qualifications\n-  Currently pursuing a PhD in Computer Science or a related discipline. \n- Multiple publications at top-tier conferences in relevant fields.\n- Proficiency in AI, LLM, and machi...",
+    "recruit_type": {
+     "id": "202",
+     "name": null,
+     "en_name": "Intern",
+     "i18n_name": "Intern"
+    },
+    "job_category": {
+     "id": "6704215862557018372",
+     "name": null,
+     "en_name": "Backend",
+     "i18n_name": "Backend",
+     "parent": {
+      "id": "6704215862603155720",
+      "name": null,
+      "en_name": "R&D",
+      "i18n_name": "R&D",
+      "parent": null
+     }
+    },
+    "city_info": {
+     "code": "CT_1103355",
+     "location_type": 3,
+     "name": null,
+     "en_name": "San Jose",
+     "i18n_name": "San Jose",
+     "parent": {
+      "code": "ST_31",
+      "location_type": 2,
+      "name": null,
+      "en_name": "California",
+      "i18n_name": "California",
+      "parent": {
+       "code": "CN_6",
+       "location_type": 1,
+       "name": null,
+       "en_name": "United States of America",
+       "i18n_name": "United States of America",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": {
+     "id": "7602166391986194741",
+     "name": null,
+     "en_name": "PhD Intern - 2027 Start",
+     "i18n_name": "PhD Intern - 2027 Start"
+    },
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   },
+   {
+    "id": "7563519140531915061",
+    "code": "A93575",
+    "title": "Software Engineer Project Intern (Dev Infra) - 2026 Start (BS/MS)",
+    "description": "Team Introduction\nOur Ads QA team focus on the quality assurance of the whole ads-system, including AD manager, delivery system, review system, conversion measurement and etc. We aim to improve the usability, reliability, stability of the whole system and user experience through project testing, aut...",
+    "requirement": "Minimum Qualifications:\n-  Undergraduate, or Postgraduate who is currently pursuing a degree/master in computer science, software engineering or related fields\n- Experience in Java/Golang (go) program...",
+    "recruit_type": {
+     "id": "202",
+     "name": null,
+     "en_name": "Intern",
+     "i18n_name": "Intern"
+    },
+    "job_category": {
+     "id": "6704215862603155720",
+     "name": null,
+     "en_name": "R&D",
+     "i18n_name": "R&D",
+     "parent": null
+    },
+    "city_info": {
+     "code": "CT_163",
+     "location_type": 3,
+     "name": null,
+     "en_name": "Singapore",
+     "i18n_name": "Singapore",
+     "parent": {
+      "code": "ST_100785",
+      "location_type": 2,
+      "name": null,
+      "en_name": "Singapore",
+      "i18n_name": "Singapore",
+      "parent": {
+       "code": "CN_25",
+       "location_type": 1,
+       "name": null,
+       "en_name": "Singapore",
+       "i18n_name": "Singapore",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": {
+     "id": "7391494724038953254",
+     "name": null,
+     "en_name": "Project Intern",
+     "i18n_name": "Project Intern"
+    },
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   },
+   {
+    "id": "7494051296631752978",
+    "code": "A237226",
+    "title": "Site Reliability Engineer - Compute Platform",
+    "description": "Team introduction\nOur Compute Platform SRE team supports all Big Data services and products across the company. We are a newly established team and waiting for talents like you to shape the team's future together. We are responsible for the reliability of all the company's major data warehouse produ...",
+    "requirement": "Minimal Qualifications:\n- Bachelor's Degree or above, in Computer Science, Engineering, or a related field. Passionate about computer science and Internet technology.\n- In-depth understanding of Linux...",
+    "recruit_type": {
+     "id": "101",
+     "name": null,
+     "en_name": "Regular",
+     "i18n_name": "Regular"
+    },
+    "job_category": {
+     "id": "6704215862603155720",
+     "name": null,
+     "en_name": "R&D",
+     "i18n_name": "R&D",
+     "parent": null
+    },
+    "city_info": {
+     "code": "CT_157",
+     "location_type": 3,
+     "name": null,
+     "en_name": "Seattle",
+     "i18n_name": "Seattle",
+     "parent": {
+      "code": "ST_54",
+      "location_type": 2,
+      "name": null,
+      "en_name": "Washington",
+      "i18n_name": "Washington",
+      "parent": {
+       "code": "CN_6",
+       "location_type": 1,
+       "name": null,
+       "en_name": "United States of America",
+       "i18n_name": "United States of America",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": null,
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   }
+  ],
+  "count": 3,
+  "BaseResp": {
+   "StatusMessage": "Success",
+   "StatusCode": 0,
+   "Extra": null
+  }
+ },
+ "message": "ok",
+ "error": null
+}

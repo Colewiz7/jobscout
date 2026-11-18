@@ -1,0 +1,110 @@
+{
+ "code": 0,
+ "data": {
+  "job_post_detail": {
+   "id": "7494051296631752978",
+   "code": "A237226",
+   "title": "Site Reliability Engineer - Compute Platform",
+   "description": "Team introduction\nOur Compute Platform SRE team supports all Big Data services and products across the company. We are a newly established team and waiting for talents like you to shape the team's future together. We are responsible for the reliabili...\n\nResponsibilities:\n- Responsible for the reliability of all TikTok's major data warehouse products, services, and query engines, such as ClickHouse, Spark, Presto, Doris, etc.\n- Uphold Service Level Agreements (SLAs): Ensure that all service level objectives and agreements from ByteDance's Data Platform services are met. Respond promp...",
+   "requirement": "Minimal Qualifications:\n- Bachelor's Degree or above, in Computer Science, Engineering, or a related field. Passionate about computer science and Internet technology.\n- In-depth understanding of Linux, computer networking, and databases. Proficient in common SRE/DevOps open-source toolsets, system monitoring tools, and contai...",
+   "recruit_type": {
+    "id": "101",
+    "name": null,
+    "en_name": "Regular",
+    "i18n_name": "Regular"
+   },
+   "job_category": {
+    "id": "6704215862603155720",
+    "name": null,
+    "en_name": "R&D",
+    "i18n_name": "R&D",
+    "parent": null
+   },
+   "city_info": {
+    "code": "CT_157",
+    "location_type": 3,
+    "name": null,
+    "en_name": "Seattle",
+    "i18n_name": "Seattle",
+    "parent": {
+     "code": "ST_54",
+     "location_type": 2,
+     "name": null,
+     "en_name": "Washington",
+     "i18n_name": "Washington",
+     "parent": {
+      "code": "CN_6",
+      "location_type": 1,
+      "name": null,
+      "en_name": "United States of America",
+      "i18n_name": "United States of America",
+      "parent": null
+     }
+    }
+   },
+   "tag_list": null,
+   "job_subject": null,
+   "vacancies": null,
+   "department_info": null,
+   "job_post_info": {
+    "min_salary": null,
+    "max_salary": null,
+    "currency": null,
+    "required_degree": null,
+    "experience": null,
+    "sequence": null,
+    "min_level": null,
+    "max_level": null,
+    "highlight_list": null,
+    "job_post_object_value_list": [
+     {
+      "field_name": {
+       "id": null,
+       "name": null,
+       "en_name": "【For Pay Transparency】Compensation Description (Annually)",
+       "i18n_name": "【For Pay Transparency】Compensation Description (Annually)"
+      },
+      "field_value": "<div class=\"editor-content\" style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif, 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; color: #1f2329; word-wrap: break-word; white-space: pre-wrap;\"><p style=\"font-size: 14px; text-align: left;\">The base salary range for this position in the selected city is $153900 - $368220 annually.<span>&#8203;</span></p><p style=\"font-size: 14px; text-align: left;\">Compensation may vary outside of this range depending on a number of factors, including a candidate’s qualifications, skills, competencies and experience, and location. Base pay is one part of the Total Package that is provided to compensate and recognize employees for their work, and this role may be eligible for additional discretionary bonuses/incentives, and restricted stock units.<span>&#8203;</span></p></div>"
+     },
+     {
+      "field_name": {
+       "id": null,
+       "name": null,
+       "en_name": "About TikTok",
+       "i18n_name": "About TikTok"
+      },
+      "field_value": "<div class=\"editor-content\" style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif, 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; color: #1f2329; word-wrap: break-word; white-space: pre-wrap;\"><p style=\"font-size: 14px; text-align: left;\">TikTok is the leading destination for short-form mobile video. At TikTok, our mission is to inspire creativity and bring joy. TikTok's global headquarters are in Los Angeles and Singapore, and we also have offices in New York City, London, Dublin, Paris, Berlin, Dubai, Jakarta, Seoul, and Tokyo.<span>&#8203;</span></p></div>"
+     },
+     {
+      "field_name": {
+       "id": null,
+       "name": null,
+       "en_name": "Why Join Us",
+       "i18n_name": "Why Join Us"
+      },
+      "field_value": "<div class=\"editor-content\" style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif, 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; color: #1f2329; word-wrap: break-word; white-space: pre-wrap;\"><p style=\"font-size: 14px; text-align: left;\">Inspiring creativity is at the core of TikTok's mission. Our innovative product is built to help people authentically express themselves, discover and connect – and our global, diverse teams make that possible. Together, we create value for our communities, inspire creativity and bring joy - a mission we work towards every day.<span>&#8203;</span></p><p style=\"font-size: 14px; text-align: left;\">We strive to do great things with great people. We lead with curiosity, humility, and a desire to make impact in a rapidly growing tech company. Every challenge is an opportunity to learn and innovate as one team. We're resilient and embrace challenges as they come. By constantly iterating and fostering an \"Always Day 1\" mindset, we achieve meaningful breakthroughs for ourselves, our company, and our users. When we create and grow together, the possibilities are limitless. Join us.<span>&#8203;</span></p></div>"
+     },
+     {
+      "field_name": {
+       "id": null,
+       "name": null,
+       "en_name": "TikTok Accommodation",
+       "i18n_name": "TikTok Accommodation"
+      },
+      "field_value": "<div class=\"editor-content\" style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif, 'Roboto', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol'; color: #1f2329; word-wrap: break-word; white-space: pre-wrap;\"><p style=\"font-size: 14px; text-align: left;\">TikTok is committed to providing reasonable accommodations in our recruitment processes for candidates with disabilities, pregnancy, sincerely held religious beliefs or other reasons protected by applicable laws. If you need assistance or a reasonable accommodation, please reach out to us at <a href=\"https://bytedance.us.larkoffice.com/share/base/form/shrusW6pfDVzkZRjoYkIUjlOhth\" rel=\"noopener noreferrer nofollow\" elementtiming=\"admin-element-timing\">https://tinyurl.com/RA-request</a><span>&#8203;</span></p></div>"
+     }
+    ],
+    "expiry_time": null
+   },
+   "process_type": 1,
+   "channel_online_status": 1
+  },
+  "BaseResp": {
+   "StatusMessage": "Success",
+   "StatusCode": 0,
+   "Extra": null
+  }
+ },
+ "message": "ok",
+ "error": null
+}

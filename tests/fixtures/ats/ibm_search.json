@@ -1,0 +1,88 @@
+{
+ "took": 37,
+ "timed_out": false,
+ "_shards": {
+  "total": 20,
+  "successful": 20,
+  "skipped": 0,
+  "failed": 0
+ },
+ "hits": {
+  "total": {
+   "value": 3,
+   "relation": "eq"
+  },
+  "max_score": null,
+  "hits": [
+   {
+    "_index": "genesis-prod-1788036777996",
+    "_id": "9148c4182e1aec1f725f1bfbca1c6b0f1bab92f5af02d606eafc919526fd6586",
+    "_score": 47.612137,
+    "_source": {
+     "language": "en",
+     "url": "https://careers.ibm.com/careers/JobDetail?jobId=134057",
+     "dcdate": "2026-10-07",
+     "title": "Cybersecurity Remediation Engineer",
+     "description": "At IBM Infrastructure & Technology, we design and operate the systems that keep the world running. From high-resiliency mainframes and hybrid cloud platforms to networking, automation, and site reliab...",
+     "entitled": "",
+     "field_keyword_05": "United States",
+     "field_keyword_08": "Infrastructure & Technology",
+     "field_keyword_17": "Hybrid",
+     "field_keyword_18": "Professional",
+     "field_keyword_19": "Multiple Cities",
+     "field_text_01": 134057
+    },
+    "sort": [
+     47.612137,
+     0
+    ]
+   },
+   {
+    "_index": "genesis-prod-1788036777996",
+    "_id": "bb9ca6f5a4a26a9ee20c9af4141c3ada29e2eb4026a01aa79155736c6d9025e1",
+    "_score": 17.375046,
+    "_source": {
+     "language": "en",
+     "url": "https://careers.ibm.com/careers/JobDetail?jobId=133504",
+     "dcdate": "2026-10-19",
+     "title": "Quantum Infrastructure Intern 2027 - SRE",
+     "description": "As part of Quantum Operations, our mission is to build, maintain, and continuously elevate the foundational environment that enables the development and delivery of our Quantum solutions to customers....",
+     "entitled": "",
+     "field_keyword_05": "United States",
+     "field_keyword_08": "Infrastructure & Technology",
+     "field_keyword_17": "",
+     "field_keyword_18": "Internship",
+     "field_keyword_19": "Yorktown Heights, US",
+     "field_text_01": 133504
+    },
+    "sort": [
+     17.375046,
+     0
+    ]
+   },
+   {
+    "_index": "genesis-prod-1788036777996",
+    "_id": "ab5581b800774e3d9d30b88a43431f72ff433fa124c07f12b01273398ce22556",
+    "_score": 9.483891,
+    "_source": {
+     "language": "en",
+     "url": "https://careers.ibm.com/careers/JobDetail?jobId=130917",
+     "dcdate": "2026-11-03",
+     "title": "Confluent - Staff Software Engineer II - Secure Compute",
+     "description": "At IBM Software, we transform client challenges into solutions. Building the world’s leading AI-powered, cloud-native products that shape the future of business and society. Our legacy of innovation c...",
+     "entitled": "",
+     "field_keyword_05": "United States",
+     "field_keyword_08": "Software Engineering",
+     "field_keyword_17": "Remote",
+     "field_keyword_18": "Professional",
+     "field_keyword_19": "Multiple Cities",
+     "field_text_01": 130917
+    },
+    "sort": [
+     9.483891,
+     0
+    ]
+   }
+  ]
+ }
+}

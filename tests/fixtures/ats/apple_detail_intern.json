@@ -1,0 +1,53 @@
+{
+ "res": {
+  "id": "PIPE-200663981",
+  "type": "PIPE",
+  "reqId": "PIPE-200663981",
+  "jobNumber": "200663981-3810",
+  "postingTitle": "Hardware Undergrad Engineering Internships",
+  "transformedPostingTitle": "hardware-undergrad-engineering-internships",
+  "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's no telling what can be accomplished. Dynamic, smart people and inspiring, innovative technologies are the norm here. The people who work here have reinvented entire industries with Apple products. The same passion for innovation that goes into our products also applies to our practices strengthening our commitment to leave the world better than we found it. Join us to help deliver the next groundbreaking Apple product. Do you love working on challenges that no one has solved yet? As members of our dynamic group, interns will have the unrivaled and rewarding opportunity to craft upcoming products that will delight and inspire millions of Apple’s customers every single day!",
+  "description": "Responsibilities may include: \n\n<b>Camera/Touch/Display Engineering:</b> Optics, Flat Panel/HW, Touch Mechanical Design; Design & implement experiments validating new materials (optical, mechanical); Optimize for performance and reliability\n",
+  "minimumQualifications": "Currently pursuing a BS in Electrical Engineering, Computer Engineering, Electrical and Computer Engineering, or a related field.\nAt the end of the internship, you must return to school to continue your education or the internship must be the last requirement for you to graduate.",
+  "preferredQualifications": "Computer system architecture, digital logic design and verification, digital and analog circuit analysis, and Analog IC\n\nChip design and microarchitecture of on-chip interconnection networks\n",
+  "teamNames": [
+   "Students"
+  ],
+  "locations": [
+   {
+    "id": "postLocation-USA",
+    "name": "United States",
+    "code": "USA",
+    "countryName": "United States",
+    "countryID": "iso-country-USA",
+    "level": 1,
+    "postingIdentifier": "3810"
+   }
+  ],
+  "postDateInGMT": "2026-05-21T19:22:17.152+00:00",
+  "postingDate": "May 21, 2026",
+  "homeOffice": false,
+  "positionId": "200663981",
+  "jobType": "CORPORATE",
+  "postingFooters": [
+   {
+    "postLocationId": "postLocation-USA",
+    "localizations": {
+     "en_US": [
+      {
+       "displayOrder": 1,
+       "name": "Pay & Benefits",
+       "content": "This posting is not for a specific job opening and by submitting your resume you are expressing interest in being contacted about this type of role at Apple in the future.<br>"
+      },
+      {
+       "displayOrder": 4,
+       "name": "Application Deadline",
+       "content": "<p>Apple accepts applications to this posting on an ongoing basis.</p>"
+      }
+     ]
+    }
+   }
+  ],
+  "standardWeeklyHours": 40
+ }
+}

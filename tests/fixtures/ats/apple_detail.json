@@ -1,0 +1,57 @@
+{
+ "res": {
+  "id": "PIPE-200695030",
+  "type": "PIPE",
+  "reqId": "PIPE-200695030",
+  "jobNumber": "200695030-3956",
+  "postingTitle": "Build, Release & Infrastructure Engineer",
+  "transformedPostingTitle": "build-release-infrastructure-engineer",
+  "jobSummary": "Help hundreds of engineers build, test, and ship software with confidence.\n",
+  "description": "This is a hands-on engineering role: you will debug compilation and linking failures, improve CI pipelines, help drive our migration to Bazel, and work directly with compute fleets and lab hardware. You will partner with engineering teams across the organization and participate in a shared on-call rotation.",
+  "responsibilities": "CI/CD: Design, maintain, and monitor pipelines using tools such as Jenkins, Bitbucket Pipelines, and GitHub Actions. Improve build and test turnaround through caching, remote execution, and test sharding. Diagnose recurring failures and eliminate sources of instability.",
+  "minimumQualifications": "BS + 3 years of experience in build and release engineering, developer infrastructure, or a closely related DevOps role.\nStrong understanding of C++ compilation, linking, and dependency management, with experience debugging CMake, Make, and Ninja builds.",
+  "preferredQualifications": "Clear communication, a collaborative approach to developer support, and the ability to prioritize effectively during incidents.\nExperience migrating a large C++ codebase from CMake to Bazel.\nExperience operating remote caching or execution infrastructure, such as BuildBarn, BuildBuddy, or Bazel RBE.",
+  "teamNames": [
+   "Hardware"
+  ],
+  "locations": [
+   {
+    "id": "postLocation-SVL",
+    "name": "Sunnyvale",
+    "city": "Sunnyvale",
+    "code": "SVL",
+    "stateProvince": "California",
+    "metro": "San Francisco Bay Area",
+    "countryName": "United States",
+    "countryID": "iso-country-USA",
+    "level": 5,
+    "postingIdentifier": "3956"
+   }
+  ],
+  "postDateInGMT": "2026-11-18T18:34:59.523+00:00",
+  "postingDate": "Nov 18, 2026",
+  "employmentType": "Standard",
+  "homeOffice": false,
+  "positionId": "200695030",
+  "jobType": "CORPORATE",
+  "postingFooters": [
+   {
+    "postLocationId": "postLocation-SVL",
+    "localizations": {
+     "en_US": [
+      {
+       "displayOrder": 1,
+       "name": "Pay & Benefits",
+       "content": "At Apple, base pay is one part of our total compensation package and is determined within a range. This provides the opportunity to progress as you grow and develop within a role. The base pay range for this role is between $150,400 and $277,600, and your base pay will depend on your skills, qualifications, experience, and location."
+      },
+      {
+       "displayOrder": 4,
+       "name": "Application Deadline",
+       "content": "<p>Apple accepts applications to this posting on an ongoing basis.</p>"
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,109 @@
+{
+ "offset": 0,
+ "limit": 100,
+ "totalFound": 3,
+ "content": [
+  {
+   "id": "744000159260670",
+   "name": "Software Engineer Internship – AI Platform Team",
+   "uuid": "d1915985-41f6-4f2f-a6ae-009498cb464e",
+   "refNumber": "REF2044A",
+   "company": {
+    "identifier": "WellmarkInc",
+    "name": "Wellmark, Inc."
+   },
+   "releasedDate": "2026-11-02T23:01:38.097Z",
+   "location": {
+    "city": "Des Moines",
+    "region": "IA",
+    "country": "us",
+    "remote": false,
+    "hybrid": true,
+    "hybridDescription": "Tuesday, Wednesday, Thursday in office",
+    "latitude": "41.5896139",
+    "longitude": "-93.61639629999999",
+    "fullLocation": "Des Moines, IA, United States"
+   },
+   "function": {
+    "id": "finance",
+    "label": "Finance"
+   },
+   "typeOfEmployment": {
+    "id": "intern",
+    "label": "Intern"
+   },
+   "experienceLevel": {
+    "id": "internship",
+    "label": "Internship"
+   }
+  },
+  {
+   "id": "744000152694203",
+   "name": "Security Analyst Internship",
+   "uuid": "52b4e885-36ca-4965-84b5-511696124ccf",
+   "refNumber": "REF2038Z",
+   "company": {
+    "identifier": "WellmarkInc",
+    "name": "Wellmark, Inc."
+   },
+   "releasedDate": "2026-09-30T14:00:13.102Z",
+   "location": {
+    "city": "Des Moines",
+    "region": "IA",
+    "country": "us",
+    "remote": false,
+    "hybrid": true,
+    "hybridDescription": "Tuesday, Wednesday, Thursday",
+    "latitude": "41.5896139",
+    "longitude": "-93.61639629999999",
+    "fullLocation": "Des Moines, IA, United States"
+   },
+   "function": {
+    "id": "finance",
+    "label": "Finance"
+   },
+   "typeOfEmployment": {
+    "id": "intern",
+    "label": "Intern"
+   },
+   "experienceLevel": {
+    "id": "internship",
+    "label": "Internship"
+   }
+  },
+  {
+   "id": "744000150385195",
+   "name": "Enterprise Cloud Engineer IV - Observability ",
+   "uuid": "b4a5858e-78f1-4ece-b9f1-70017eabb73c",
+   "refNumber": "REF2027Q",
+   "company": {
+    "identifier": "WellmarkInc",
+    "name": "Wellmark, Inc."
+   },
+   "releasedDate": "2026-09-18T14:12:00.621Z",
+   "location": {
+    "city": "Des Moines",
+    "region": "IA",
+    "country": "us",
+    "remote": false,
+    "hybrid": true,
+    "hybridDescription": "In office Tuesday, Wednesday, and Thurday ",
+    "latitude": "41.5896139",
+    "longitude": "-93.61639629999999",
+    "fullLocation": "Des Moines, IA, United States"
+   },
+   "function": {
+    "id": "information_technology",
+    "label": "Information Technology"
+   },
+   "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+   },
+   "experienceLevel": {
+    "id": "associate",
+    "label": "Associate"
+   }
+  }
+ ]
+}

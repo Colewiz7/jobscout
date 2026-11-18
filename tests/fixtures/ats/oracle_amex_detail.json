@@ -1,0 +1,112 @@
+{
+  "items": [
+    {
+      "Id": "26016352",
+      "Title": "Site Reliability Engineer III",
+      "Category": "Technology",
+      "RequisitionType": "Professional (Band 40 and Below)",
+      "JobGrade": null,
+      "RequisitionId": 300002434607204,
+      "ExternalPostedStartDate": "2026-11-17T17:59:56+00:00",
+      "JobLevel": null,
+      "JobSchedule": "Full time",
+      "JobShift": "Day",
+      "StudyLevel": "High School Graduate",
+      "InternationalTravelRequired": null,
+      "ExternalContactName": null,
+      "ExternalContactEmail": null,
+      "ContractType": null,
+      "ExternalPostedEndDate": "2026-12-01T08:00:00+00:00",
+      "JobFamilyId": 300000081299474,
+      "GeographyId": 300000007667464,
+      "GeographyNodeId": 100020808352976,
+      "ExternalDescriptionStr": "<p class=\"p1\">Joining Amex Tech means discovering and shaping your contribution to something big. Here, you can work alongside talented tech teams and build a unique career with the Powerful Backing of American Express. With a range of opportunities to work with the latest technologies, and a commitment to back the broader engineering community through open source, our mission is to power your</p>",
+      "CorporateDescriptionStr": "",
+      "OrganizationDescriptionStr": "",
+      "ShortDescriptionStr": "",
+      "ContentLocale": "en",
+      "PrimaryLocation": "Phoenix, AZ, United States",
+      "PrimaryLocationCountry": "US",
+      "ObjectVerNumberProfile": "2",
+      "ApplyWhenNotPostedFlag": null,
+      "ExternalQualificationsStr": "<ul><li>Bachelor’s degree in Computer Science, Information Technology, Engineering, and/or comparable experience; advance degree preferred</li><li>Knowledge of modern observability stack – Splunk, Elastic Search, Prometheus, Grafana</li><li>Knowledge of containerization technologies (e.g., Kubernetes, Docker) and microservices architecture</li></ul>",
+      "InternalQualificationsStr": "<ul><li>Bachelor’s degree in Computer Science, Information Technology, Engineering, and/or comparable experience; advance degree preferred</li><li>Knowledge of modern observability stack – Splunk, Elastic Search, Prometheus, Grafana</li><li>Knowledge of containerization technologies (e.g., Kubernetes, Docker) and microservices architecture</li></ul>",
+      "InternalResponsibilitiesStr": "<ul><li>Collaborates with Software Engineering teams to design, develop, and implement features that enhance system resilience, scalability, and performance, while identifying and addressing potential system bottlenecks and failure points with guidance from senior colleagues</li></ul>",
+      "ExternalResponsibilitiesStr": "<ul><li>Collaborates with Software Engineering teams to design, develop, and implement features that enhance system resilience, scalability, and performance, while identifying and addressing potential system bottlenecks and failure points with guidance from senior colleagues</li></ul>",
+      "JobFunctionCode": "ENA",
+      "HotJobFlag": false,
+      "TrendingFlag": true,
+      "BeFirstToApplyFlag": false,
+      "WorkplaceTypeCode": "ORA_HYBRID",
+      "WorkplaceType": "Hybrid",
+      "OtherRequisitionTitle": null,
+      "NumberOfOpenings": null,
+      "HiringManager": null,
+      "Organization": null,
+      "BusinessUnitId": 300000079628496,
+      "LegalEmployerId": 300000079647088,
+      "OrganizationId": 300000079628496,
+      "WorkerType": null,
+      "JobType": null,
+      "WorkMonths": null,
+      "WorkYears": null,
+      "WorkHours": null,
+      "WorkDays": null,
+      "LegalEmployer": null,
+      "BusinessUnit": null,
+      "Department": null,
+      "DomesticTravelRequired": null,
+      "JobFunction": "Engineering & Architecture",
+      "secondaryLocations": [],
+      "media": [],
+      "workLocation": [
+        {
+          "LocationId": 300000080574221,
+          "LocationName": "AEDR Desert Ridge OB4 - Canyon",
+          "AddressLine1": "18850 North 56th Street",
+          "AddressLine2": null,
+          "AddressLine3": null,
+          "AddressLine4": null,
+          "Building": "AMEX",
+          "TownOrCity": "Phoenix",
+          "PostalCode": "85054",
+          "Country": "US",
+          "Region1": "Maricopa",
+          "Region2": "AZ",
+          "Region3": null,
+          "Longitude": "-111.95336",
+          "Latitude": "33.67579"
+        }
+      ],
+      "otherWorkLocations": [],
+      "requisitionFlexFields": [
+        {
+          "Prompt": "Salary Range",
+          "Value": "$103750 - $174750 annually + bonus + benefits",
+          "ControlType": "TextArea",
+          "SequenceNumber": 4
+        },
+        {
+          "Prompt": "Career Area",
+          "Value": "Technology",
+          "ControlType": "SingleChoiceList",
+          "SequenceNumber": 9
+        }
+      ],
+      "primaryLocationCoordinates": [
+        {
+          "GeographyNodeId": 100020808352976,
+          "GeographyId": 300000007667464,
+          "Latitude": "33.44825",
+          "Longitude": "-112.0758",
+          "CountryCode": "US"
+        }
+      ],
+      "skills": []
+    }
+  ],
+  "count": 1,
+  "hasMore": false,
+  "limit": 499,
+  "offset": 0
+}

@@ -1,0 +1,104 @@
+{
+ "results": [
+  {
+   "id": 6234201,
+   "shortcode": "AC1EFBF75F",
+   "title": "Data Engineer - Hybrid",
+   "remote": false,
+   "location": {
+    "city": "Rochester",
+    "country": "United States",
+    "countryCode": "US",
+    "region": "New York"
+   },
+   "locations": [
+    {
+     "city": "Rochester",
+     "country": "United States",
+     "countryCode": "US",
+     "hidden": false,
+     "region": "New York"
+    }
+   ],
+   "state": "published",
+   "isInternal": false,
+   "code": "",
+   "published": "2026-10-30T00:00:00.000Z",
+   "type": "full",
+   "language": "en",
+   "department": [
+    "SchoolTool"
+   ],
+   "accountUid": "8b4c316e-873f-486b-9e3e-c4cf262e3725",
+   "approvalStatus": "approved",
+   "workplace": "hybrid"
+  },
+  {
+   "id": 6140521,
+   "shortcode": "0D8594CBD4",
+   "title": ".NET Software Engineer - Hybrid",
+   "remote": false,
+   "location": {
+    "city": "Rochester",
+    "country": "United States",
+    "countryCode": "US",
+    "region": "New York"
+   },
+   "locations": [
+    {
+     "city": "Rochester",
+     "country": "United States",
+     "countryCode": "US",
+     "hidden": false,
+     "region": "New York"
+    }
+   ],
+   "state": "published",
+   "isInternal": false,
+   "code": "",
+   "published": "2026-09-25T00:00:00.000Z",
+   "type": "full",
+   "language": "en",
+   "department": [
+    "SchoolTool"
+   ],
+   "accountUid": "8b4c316e-873f-486b-9e3e-c4cf262e3725",
+   "approvalStatus": "approved",
+   "workplace": "hybrid"
+  },
+  {
+   "id": 6275344,
+   "shortcode": "A836E7C2B9",
+   "title": "Sr. OpenEdge Software Engineer - Remote",
+   "remote": true,
+   "location": {
+    "city": "Rochester",
+    "country": "United States",
+    "countryCode": "US",
+    "region": "New York"
+   },
+   "locations": [
+    {
+     "city": "Rochester",
+     "country": "United States",
+     "countryCode": "US",
+     "hidden": false,
+     "region": "New York"
+    }
+   ],
+   "state": "published",
+   "isInternal": false,
+   "code": "",
+   "published": "2026-11-17T00:00:00.000Z",
+   "type": "full",
+   "language": "en",
+   "department": [
+    "SchoolTool"
+   ],
+   "accountUid": "8b4c316e-873f-486b-9e3e-c4cf262e3725",
+   "approvalStatus": "approved",
+   "workplace": "remote"
+  }
+ ],
+ "total": 3
+}

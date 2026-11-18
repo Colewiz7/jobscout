@@ -1,0 +1,127 @@
+{
+ "res": {
+  "searchResults": [
+   {
+    "id": "200695296-0157",
+    "jobSummary": "Do you love building and scaling infrastructure that delights millions of customers? At Apple, we believe reliability is a feature. We are looking for a Site Reliability Engineer to join our team in overseeing the performance and availability of our core backend services in News, Stocks, Weather, Books and Creator Studio applications.",
+    "locations": [
+     {
+      "postLocationId": "postLocation-AST",
+      "city": "",
+      "stateProvince": "",
+      "countryName": "United States of America",
+      "metro": "",
+      "region": "",
+      "name": "Austin",
+      "countryID": "iso-country-USA",
+      "level": 5
+     }
+    ],
+    "positionId": "200695296",
+    "postingDate": "Nov 17, 2026",
+    "postingTitle": "Site Reliability Engineer — Info Apps",
+    "localeInfo": {
+     "languageCode": "en_US",
+     "dateFormat": "MMM D, YYYY",
+     "defaultLocaleCode": "en-us"
+    },
+    "postDateInGMT": "2026-11-17T22:09:32.904Z",
+    "transformedPostingTitle": "site-reliability-engineer-info-apps",
+    "reqId": "200695296-0157",
+    "managedPipelineRole": false,
+    "standardWeeklyHours": 40,
+    "team": {
+     "teamName": "Software and Services",
+     "teamID": "teamsAndSubTeams-SFTWR",
+     "teamCode": "SFTWR"
+    },
+    "type": "REQ",
+    "homeOffice": false,
+    "jobPositionId": "REQ-200695296",
+    "isMultiLocation": true,
+    "postExternal": true
+   },
+   {
+    "id": "200695296-0836",
+    "jobSummary": "Do you love building and scaling infrastructure that delights millions of customers? At Apple, we believe reliability is a feature. We are looking for a Site Reliability Engineer to join our team in overseeing the performance and availability of our core backend services in News, Stocks, Weather, Books and Creator Studio applications.",
+    "locations": [
+     {
+      "postLocationId": "postLocation-CUP",
+      "city": "",
+      "stateProvince": "",
+      "countryName": "United States of America",
+      "metro": "",
+      "region": "",
+      "name": "Cupertino",
+      "countryID": "iso-country-USA",
+      "level": 5
+     }
+    ],
+    "positionId": "200695296",
+    "postingDate": "Nov 17, 2026",
+    "postingTitle": "Site Reliability Engineer — Info Apps",
+    "localeInfo": {
+     "languageCode": "en_US",
+     "dateFormat": "MMM D, YYYY",
+     "defaultLocaleCode": "en-us"
+    },
+    "postDateInGMT": "2026-11-17T22:09:32.904Z",
+    "transformedPostingTitle": "site-reliability-engineer-info-apps",
+    "reqId": "200695296-0836",
+    "managedPipelineRole": false,
+    "standardWeeklyHours": 40,
+    "team": {
+     "teamName": "Software and Services",
+     "teamID": "teamsAndSubTeams-SFTWR",
+     "teamCode": "SFTWR"
+    },
+    "type": "REQ",
+    "homeOffice": false,
+    "jobPositionId": "REQ-200695296",
+    "isMultiLocation": true,
+    "postExternal": true
+   },
+   {
+    "id": "200695686-3956",
+    "jobSummary": "Do you want to help run one of the most critical communication systems inside Apple? Apple's Information Systems and Technology (IS&T) organization powers everything Apple does for its people and partners. Our Corporate Email Services team sits at the heart of that — configuring, maintaining, and securing the email infrastructure every employee and partner relies on, which demands deep fluency in SMTP, email deliverability, and anti-abuse strategy. If you're an email systems expert who knows how to turn protocol-level knowledge into a service that just works at Apple's scale, we'd love to talk.",
+    "locations": [
+     {
+      "postLocationId": "postLocation-SVL",
+      "city": "",
+      "stateProvince": "",
+      "countryName": "United States of America",
+      "metro": "",
+      "region": "",
+      "name": "Sunnyvale",
+      "countryID": "iso-country-USA",
+      "level": 5
+     }
+    ],
+    "positionId": "200695686",
+    "postingDate": "Nov 18, 2026",
+    "postingTitle": "Site Reliability Engineer — Corporate Email Services",
+    "localeInfo": {
+     "languageCode": "en_US",
+     "dateFormat": "MMM D, YYYY",
+     "defaultLocaleCode": "en-us"
+    },
+    "postDateInGMT": "2026-11-18T17:51:58.776Z",
+    "transformedPostingTitle": "site-reliability-engineer-corporate-email-services",
+    "reqId": "200695686-3956",
+    "managedPipelineRole": false,
+    "standardWeeklyHours": 40,
+    "team": {
+     "teamName": "Software and Services",
+     "teamID": "teamsAndSubTeams-SFTWR",
+     "teamCode": "SFTWR"
+    },
+    "type": "PIPE",
+    "homeOffice": false,
+    "jobPositionId": "PIPE-200695686",
+    "isMultiLocation": false,
+    "postExternal": true
+   }
+  ],
+  "totalRecords": 77
+ }
+}

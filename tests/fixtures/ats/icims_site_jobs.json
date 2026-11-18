@@ -1,0 +1,219 @@
+{
+ "jobs": [
+  {
+   "data": {
+    "slug": "92826",
+    "language": "en-us",
+    "languages": [
+     "en-us"
+    ],
+    "req_id": "92826",
+    "title": "DevOps Platform Engineer ",
+    "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI an",
+    "location_name": "IN,Hyderabad-Sattva",
+    "street_address": "10th to 16th Floor, Octave Block Unit 2A & 2B, Parcel 4, Salarpuria Sattva Knowledge City, Raidurgam",
+    "city": "Hyderabad",
+    "state": "Telangana",
+    "country": "India",
+    "country_code": "IN",
+    "postal_code": "500081",
+    "location_type": "LAT_LNG",
+    "latitude": 17.435183,
+    "longitude": 78.3825063,
+    "categories": [
+     {
+      "name": "Engineering"
+     }
+    ],
+    "tags1": [
+     "No"
+    ],
+    "tags2": [
+     "INR ₹3,245,970.00/Yr."
+    ],
+    "tags3": [
+     "INR ₹4,637,100.00/Yr."
+    ],
+    "tags4": [
+     "Global Careers (do not use for US or Canada)"
+    ],
+    "promotion_value": 0,
+    "employment_type": "FULL_TIME",
+    "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries ar",
+    "hiring_organization": "Advanced Micro Devices, Inc",
+    "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+    "responsibilities": "DevOps Platform Engineer THE ROLE: We are seeking a hands-on Platform Engineer to build and operate the infrastructure foundations that enable engineering teams to deliver reliable, scalable, and secu",
+    "posted_date": "2026-10-13T15:19:00+0000",
+    "apply_url": "https://global-external-amd.icims.com/jobs/92826/login",
+    "internal": false,
+    "external": false,
+    "searchable": true,
+    "applyable": true,
+    "li_easy_applyable": true,
+    "ats_code": "icims",
+    "isFrontLineAIJob": false,
+    "isApplyFlowJob": false,
+    "update_date": "2026-11-13T12:09:30+0000",
+    "create_date": "2026-10-13T15:20:07+0000",
+    "category": [
+     " Engineering"
+    ],
+    "full_location": "Hyderabad, India",
+    "short_location": "Hyderabad, India",
+    "multipleLocations": false
+   }
+  },
+  {
+   "data": {
+    "slug": "97759",
+    "language": "en-us",
+    "languages": [
+     "en-us"
+    ],
+    "req_id": "97759",
+    "title": "Devops Platform Engineer",
+    "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI an",
+    "location_name": "US,CA,San Jose",
+    "street_address": "2100 Logic Drive",
+    "city": "San Jose",
+    "state": "California",
+    "country": "United States",
+    "country_code": "US",
+    "postal_code": "95124",
+    "location_type": "LAT_LNG",
+    "latitude": 37.25306399999999,
+    "longitude": -121.9362806,
+    "categories": [
+     {
+      "name": "Engineering"
+     }
+    ],
+    "tags1": [
+     "No"
+    ],
+    "tags2": [
+     "USD $150,500.00/Yr."
+    ],
+    "tags3": [
+     "USD $215,000.00/Yr."
+    ],
+    "tags4": [
+     "US Careers (External)"
+    ],
+    "tags5": [
+     "USD $172,000.00/Yr."
+    ],
+    "tags6": [
+     "USD $258,000.00/Yr."
+    ],
+    "tags7": [
+     "172000"
+    ],
+    "tags8": [
+     "258000"
+    ],
+    "promotion_value": 0,
+    "employment_type": "FULL_TIME",
+    "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries ar",
+    "hiring_organization": "Advanced Micro Devices, Inc",
+    "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+    "responsibilities": "THE ROLE: We are seeking a hands-on Platform Engineer to build and operate the infrastructure foundations that enable engineering teams to deliver reliable, scalable, and secure products. This role wi",
+    "posted_date": "2026-11-09T22:45:00+0000",
+    "apply_url": "https://careers-amd.icims.com/jobs/97759/login",
+    "internal": false,
+    "external": false,
+    "searchable": true,
+    "applyable": true,
+    "li_easy_applyable": true,
+    "ats_code": "icims",
+    "isFrontLineAIJob": false,
+    "isApplyFlowJob": false,
+    "update_date": "2026-11-13T12:10:56+0000",
+    "create_date": "2026-11-09T22:46:08+0000",
+    "category": [
+     " Engineering"
+    ],
+    "full_location": "San Jose, California",
+    "short_location": "San Jose, California",
+    "multipleLocations": false
+   }
+  },
+  {
+   "data": {
+    "slug": "94331",
+    "language": "en-us",
+    "languages": [
+     "en-us"
+    ],
+    "req_id": "94331",
+    "title": "Senior Source Control Engineer",
+    "description": "ADVANCE YOUR CAREER. ADVANCE THE WORLD. At AMD, we believe technology has the power to solve the world’s most important challenges. From advancing healthcare and scientific discovery to powering AI an",
+    "location_name": "CA,ON,Markham-1CV",
+    "street_address": "1 Commerce Valley Drive",
+    "city": "MARKHAM",
+    "state": "Ontario",
+    "country": "Canada",
+    "country_code": "CA",
+    "postal_code": "L3T 7X6",
+    "location_type": "LAT_LNG",
+    "latitude": 43.8388005,
+    "longitude": -79.3794769,
+    "categories": [
+     {
+      "name": "Engineering"
+     }
+    ],
+    "tags1": [
+     "No"
+    ],
+    "tags2": [
+     "CAD $115,500.00/Yr."
+    ],
+    "tags3": [
+     "CAD $165,000.00/Yr."
+    ],
+    "tags4": [
+     "Canada Careers (External)"
+    ],
+    "tags5": [
+     "CAD $132,000.00/Yr."
+    ],
+    "tags6": [
+     "CAD $198,000.00/Yr."
+    ],
+    "tags7": [
+     "132000"
+    ],
+    "tags8": [
+     "198000"
+    ],
+    "promotion_value": 0,
+    "employment_type": "FULL_TIME",
+    "qualifications": "Benefits offered are described: AMD benefits at a glance. AMD does not accept unsolicited resumes from headhunters, recruitment agencies, or fee-based recruitment services. AMD and its subsidiaries ar",
+    "hiring_organization": "Advanced Micro Devices, Inc",
+    "hiring_organization_logo": "https://www.amd.com/content/dam/code/images/header/amd-header-logo.svg",
+    "responsibilities": "THE ROLE: AMD engineering operates a large enterprise source-control environment spanning thousands of repositories and numerous development organizations. We are looking for a Senior Source Control E",
+    "posted_date": "2026-11-03T20:49:00+0000",
+    "apply_url": "https://canadacareers-amd.icims.com/jobs/94331/login",
+    "internal": false,
+    "external": false,
+    "searchable": true,
+    "applyable": true,
+    "li_easy_applyable": true,
+    "ats_code": "icims",
+    "isFrontLineAIJob": false,
+    "isApplyFlowJob": false,
+    "update_date": "2026-11-07T12:05:19+0000",
+    "create_date": "2026-11-03T20:49:33+0000",
+    "category": [
+     " Engineering"
+    ],
+    "full_location": "MARKHAM, Canada",
+    "short_location": "MARKHAM, Canada",
+    "multipleLocations": false
+   }
+  }
+ ],
+ "totalCount": 3,
+ "count": 3
+}

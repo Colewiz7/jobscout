@@ -1,0 +1,49 @@
+{
+  "status": 200,
+  "error": {
+    "message": "",
+    "body": ""
+  },
+  "data": {
+    "id": 1970393557007828,
+    "displayJobId": "200057914",
+    "name": "Site Reliability Engineer - CTJ - Secret",
+    "locations": [
+      "United States, Virginia, Reston"
+    ],
+    "standardizedLocations": [
+      "Reston, VA, US"
+    ],
+    "postedTs": 1791402110,
+    "stars": 0,
+    "department": "Site Reliability Engineering",
+    "creationTs": 1790261283,
+    "jobDescription": "<b>Overview</b><br><div dir=\"ltr\"><p>Do you have a passion for high scale services and working with some of Microsoft’s most critical customers? We’re looking for a <strong>Site Reliability Engineer</strong> with the right mix of software development, on-line services experience and passion for quality to envision, design, and deliver Office 365 government cloud service offerings.</p><p> </p>",
+    "location": "United States, Virginia, Reston",
+    "isHot": 0,
+    "workLocationOption": "onsite",
+    "locationFlexibility": null,
+    "atsJobId": "200057914",
+    "positionUrl": "/careers/job/1970393557007828",
+    "publicUrl": "https://apply.careers.microsoft.com/careers/job/1970393557007828",
+    "efcustomTextWorkSite": [
+      "3 days / week in-office"
+    ],
+    "efcustomTextRequiredTravel": [
+      "Less than 25%"
+    ],
+    "efcustomTextCurrentProfession": [
+      "Software Engineering"
+    ],
+    "efcustomTextTaDisciplineName": [
+      "Site Reliability Engineering"
+    ],
+    "efcustomTextRoletype": [
+      "Individual Contributor"
+    ],
+    "efcustomTextEmploymentType": [
+      "Full-Time"
+    ]
+  },
+  "metadata": null
+}

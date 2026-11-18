@@ -1,0 +1,38 @@
+{
+ "took": 31,
+ "timed_out": false,
+ "_shards": {
+  "total": 20,
+  "successful": 20,
+  "skipped": 0,
+  "failed": 0
+ },
+ "hits": {
+  "total": {
+   "value": 1,
+   "relation": "eq"
+  },
+  "max_score": 9.880394,
+  "hits": [
+   {
+    "_index": "genesis-prod-1788036777996",
+    "_id": "1b8ebc843a6df5868a768062eed82f0ac70f8476b29ab7af48460ab849f6140c",
+    "_score": 9.880394,
+    "_source": {
+     "language": "en",
+     "url": "https://careers.ibm.com/careers/JobDetail?jobId=137275",
+     "dcdate": "2026-10-19",
+     "title": "DevOps Engineer",
+     "description": "DevOps Engineer, IBM Corporation, Dallas, TX (Up to 100% telecommuting permitted):   Work in an agile environment, attend stand-ups, update work progress, and communicate regularly with stakeholders.  Develop automated configuration management processes...",
+     "entitled": "",
+     "field_keyword_05": "United States",
+     "field_keyword_08": null,
+     "field_keyword_17": "Hybrid",
+     "field_keyword_18": "Professional",
+     "field_keyword_19": "Dallas, US",
+     "field_text_01": 137275
+    }
+   }
+  ]
+ }
+}

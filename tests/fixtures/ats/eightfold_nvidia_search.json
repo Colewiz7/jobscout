@@ -1,0 +1,81 @@
+{
+  "status": 200,
+  "error": {
+    "message": "",
+    "body": ""
+  },
+  "data": {
+    "positions": [
+      {
+        "id": 893397724522,
+        "displayJobId": "JR2025882",
+        "name": "Software DevOps Engineer, Networking",
+        "locations": [
+          "US, CA, Santa Clara"
+        ],
+        "standardizedLocations": [
+          "Santa Clara, CA, US"
+        ],
+        "postedTs": 1793318400,
+        "solrScore": null,
+        "stars": 0,
+        "department": "Engineer, Dev Ops",
+        "creationTs": 1789430400,
+        "isHot": 0,
+        "workLocationOption": "onsite",
+        "locationFlexibility": null,
+        "atsJobId": "JR2025882",
+        "positionUrl": "/careers/job/893397724522"
+      },
+      {
+        "id": 893393669632,
+        "displayJobId": "JR2013271",
+        "name": "Senior Site Reliability Engineer - Kubernetes Platform",
+        "locations": [
+          "US, CA, Santa Clara",
+          "US, NC, Durham",
+          "US, TX, Austin"
+        ],
+        "standardizedLocations": [
+          "Santa Clara, CA, US",
+          "Durham, NC, US",
+          "Austin, TX, US"
+        ],
+        "postedTs": 1794614400,
+        "solrScore": null,
+        "stars": 0,
+        "department": "Engineer, Sys SW",
+        "creationTs": 1771286400,
+        "isHot": 0,
+        "workLocationOption": "onsite",
+        "locationFlexibility": null,
+        "atsJobId": "JR2013271",
+        "positionUrl": "/careers/job/893393669632"
+      },
+      {
+        "id": 893398602245,
+        "displayJobId": "JR2029107",
+        "name": "Senior Software Support Engineer - Slinky",
+        "locations": [
+          "US, UT, Remote"
+        ],
+        "standardizedLocations": [
+          "UT,US"
+        ],
+        "postedTs": 1794009600,
+        "solrScore": null,
+        "stars": 0,
+        "department": "Engineer, SW",
+        "creationTs": 1793577600,
+        "isHot": 0,
+        "workLocationOption": "remote_local",
+        "locationFlexibility": null,
+        "atsJobId": "JR2029107",
+        "positionUrl": "/careers/job/893398602245"
+      }
+    ],
+    "count": 3,
+    "sortBy": "relevance"
+  },
+  "metadata": null
+}

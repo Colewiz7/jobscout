@@ -13,6 +13,7 @@ import re
 import time
 import urllib.parse
 
+from .. import ats
 from ..models import Posting
 
 # Each board names its timestamp differently, and Lever uses epoch milliseconds.
@@ -489,6 +490,12 @@ PROVIDERS = {
 }
 
 
+def provider_for(name: str):
+    """The scanner for one provider name. iCIMS, Eightfold, Oracle and the rest
+    live in jobscout.ats and are looked up there, after this module has loaded."""
+    return PROVIDERS.get(name) or ats.board_providers().get(name)
+
+
 def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=()):
     """Returns (postings, fetched) where `fetched` is the (source, slug) pairs
     that actually answered. Only those are eligible for the missing-run close
@@ -505,7 +512,7 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=
     last_error: RuntimeError | None = None
     attempted = 0
     for provider, slugs in boards.items():
-        run = PROVIDERS.get(provider)
+        run = provider_for(provider)
         if run is None:
             log.warning("unknown board provider %r, skipping", provider)
             continue

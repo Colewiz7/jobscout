@@ -1,0 +1,97 @@
+{
+ "absolute_url": "https://careers.datadoghq.com/detail/8203657/?gh_jid=8203657",
+ "internal_job_id": 3550549,
+ "location": {
+  "name": "New York, New York, USA; Pittsburgh, Pennsylvania, USA"
+ },
+ "metadata": [
+  {
+   "id": 33310,
+   "name": "Time Type",
+   "value": "Full time",
+   "value_type": "single_select"
+  },
+  {
+   "id": 166208,
+   "name": "Area - Engineering",
+   "value": "AI Research",
+   "value_type": "single_select"
+  },
+  {
+   "id": 498252,
+   "name": "Cost Center",
+   "value": "Engineering - Dev Eng",
+   "value_type": "single_select"
+  },
+  {
+   "id": 516515,
+   "name": "Geography",
+   "value": "North America",
+   "value_type": "single_select"
+  },
+  {
+   "id": 9593635,
+   "name": "Early Career Time Type",
+   "value": "Internship",
+   "value_type": "single_select"
+  },
+  {
+   "id": 29446322,
+   "name": "Pay Transparency Range",
+   "value": {
+    "unit": "USD",
+    "max_value": "140000.0",
+    "min_value": "110000.0"
+   },
+   "value_type": "currency_range"
+  },
+  {
+   "id": 31273219,
+   "name": "Does this role require access to ITAR-controlled data?",
+   "value": "Pipeline - Some roles may require an ITAR licence",
+   "value_type": "single_select"
+  },
+  {
+   "id": 58619948,
+   "name": "IC or MG",
+   "value": "IC",
+   "value_type": "single_select"
+  }
+ ],
+ "id": 8203657,
+ "updated_at": "2026-11-09T08:32:01-05:00",
+ "requisition_id": "R21316",
+ "title": "Research Science Intern (PhD)",
+ "company_name": "Datadog",
+ "first_published": "2026-09-15T13:30:59-04:00",
+ "language": "en",
+ "application_deadline": null,
+ "content": "&lt;p&gt;&lt;strong&gt;Datadog AI Research — Scholars Program with Carnegie Mellon University&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Datadog AI Research (DAIR) is partnering with Carnegie Mellon University to support a small number of PhD students working on open research problems grounded by ongoing efforts at Datadog/DAIR.&amp;nbsp;&lt;/p&gt;\n&lt;p&gt;You will frame a problem, run your own experiments, and write up what you find, with compute and data at a scale most academic labs cannot provide.&amp;nbsp; You will collaborate with colleagues working on the same questions.&lt;/p&gt;",
+ "departments": [
+  {
+   "id": 54548,
+   "name": "Engineering Interns",
+   "child_ids": [],
+   "parent_id": 9022
+  }
+ ],
+ "offices": [
+  {
+   "id": 5664,
+   "name": "New York",
+   "location": "New York, NY, United States",
+   "child_ids": [
+    81327,
+    76746
+   ],
+   "parent_id": 73429
+  },
+  {
+   "id": 61862,
+   "name": "Pittsburgh",
+   "location": "Pittsburgh, Pennsylvania, United States",
+   "child_ids": [],
+   "parent_id": 78238
+  }
+ ]
+}

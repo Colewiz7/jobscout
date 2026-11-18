@@ -1,0 +1,40 @@
+{
+ "id": 6275344,
+ "shortcode": "A836E7C2B9",
+ "title": "Sr. OpenEdge Software Engineer - Remote",
+ "remote": true,
+ "location": {
+  "city": "Rochester",
+  "country": "United States",
+  "countryCode": "US",
+  "region": "New York"
+ },
+ "locations": [
+  {
+   "city": "Rochester",
+   "country": "United States",
+   "countryCode": "US",
+   "hidden": false,
+   "region": "New York"
+  }
+ ],
+ "state": "published",
+ "isInternal": false,
+ "code": "",
+ "published": "2026-11-17T00:00:00.000Z",
+ "type": "full",
+ "language": "en",
+ "department": [
+  "SchoolTool"
+ ],
+ "accountUid": "8b4c316e-873f-486b-9e3e-c4cf262e3725",
+ "approvalStatus": "approved",
+ "workplace": "remote",
+ "salary_from": 90000,
+ "salary_to": 140000,
+ "salary_currency_iso_code": "USD",
+ "salary_frequency": "year",
+ "description": "<p>Mindex is looking for a Senior OpenEdge Full Stack Engineer to maintain and modernize a mature, business-critical Progress OpenEdge platform, reporting to the engineering manager. You’ll own major areas of work, keep a critical production system stable while delivering new features, and help</p>",
+ "requirements": "<ul><li>5+ years of software engineering experience developing and supporting production systems in an Agile environment.</li></ul><ul><li>Significant experience with Progress OpenEdge v12 and above, including object-oriented ABL.</li><li>Proven, hands-on daily use of AI-assisted development tools</p>",
+ "benefits": "<ul><ul><li>Fully Remote Work Environment</li><li>Flexible Time Off</li><li>Medical, Dental, and Vision Insurance</li><li>401(k) with Company Match</li><li>Company-Paid Life and Disability Insurance</li><li>Professional Development Opportunities</li></ul></ul><p></p><p><strong>Additional</p>"
+}

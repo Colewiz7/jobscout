@@ -1,0 +1,64 @@
+{
+  "items": [
+    {
+      "SearchId": 1,
+      "Keyword": null,
+      "CorrectedKeyword": null,
+      "UseExactKeywordFlag": false,
+      "SuggestedKeyword": null,
+      "ExecuteSpellCheckFlag": true,
+      "Location": null,
+      "LocationId": null,
+      "Radius": 0,
+      "RadiusUnit": "MI",
+      "Facets": "LOCATIONS",
+      "Offset": 0,
+      "Limit": 1,
+      "SortBy": "RELEVANCY",
+      "TotalJobsCount": 6933,
+      "Latitude": null,
+      "Longitude": null,
+      "SiteNumber": "CX_1001",
+      "JobFamilyId": null,
+      "PostingStartDate": null,
+      "PostingEndDate": null,
+      "RequisitionId": null,
+      "CandidateNumber": null,
+      "WorkLocationZipCode": null,
+      "WorkLocationCountryCode": null,
+      "SelectedFlexFieldsFacets": null,
+      "OrganizationId": null,
+      "UserTargetFacetName": null,
+      "UserTargetFacetInputTerm": null,
+      "HotJobFlag": null,
+      "WorkplaceType": null,
+      "BotQRShortCode": null,
+      "locationsFacet": [
+        {
+          "Id": 300000000289738,
+          "Name": "United States",
+          "TotalCount": 5083
+        },
+        {
+          "Id": 300000020657200,
+          "Name": "NY, United States",
+          "TotalCount": 1175
+        },
+        {
+          "Id": 300000000289276,
+          "Name": "United Kingdom",
+          "TotalCount": 588
+        },
+        {
+          "Id": 300000000289360,
+          "Name": "India",
+          "TotalCount": 302
+        }
+      ]
+    }
+  ],
+  "count": 1,
+  "hasMore": false,
+  "limit": 25,
+  "offset": 0
+}

@@ -17,6 +17,7 @@ import urllib.parse
 
 from bs4 import BeautifulSoup
 
+from . import ats
 from .models import is_signin_url
 
 
@@ -37,7 +38,7 @@ _HEADINGS = {
     "about": ("about", "about us", "about the company", "about our company", "about the team", "who we are", "our company"),
     "role": ("the role", "about the role", "the opportunity", "job description", "position overview", "position summary", "role overview", "your team, your impact", "overview of department"),
     "responsibilities": ("responsibilities", "what you'll do", "what you will do", "your impact", "what you will be doing", "what you'll be doing", "duties", "in this role", "your responsibilities"),
-    "requirements": ("requirements", "qualifications", "minimum qualifications", "required qualifications", "competencies", "what you bring", "what we're looking for", "what we are looking for", "who we are looking for", "what you'll need", "what you will need", "who you are", "required skills"),
+    "requirements": ("requirements", "qualifications", "minimum qualifications", "minimal qualifications", "required qualifications", "competencies", "what you bring", "what we're looking for", "what we are looking for", "who we are looking for", "what you'll need", "what you will need", "who you are", "required skills"),
     "nice_to_have": ("nice to have", "preferred qualifications", "bonus", "preferred", "desired", "desired qualifications", "nice-to-have"),
     "benefits": ("benefits", "perks", "what we offer", "what you can expect", "compensation and benefits", "what's in it for you", "what is in it for you", "pay and benefits"),
     "logistics": ("please note", "work authorization", "employment eligibility", "location", "work location", "salary", "compensation", "pay range", "application process"),
@@ -260,11 +261,8 @@ def _workday_spec_from_url(url: str) -> tuple[str, str] | None:
     return f"{tenant}/{dc}/{site}", "/" + "/".join(parts[1:])
 
 
-_EMBEDDED_GREENHOUSE = {
-    "careers.withwaymo.com": "waymo",
-    "www.zipline.com": "flyzipline",
-}
-_JSONLD_HOSTS = {"careers.amd.com", "careers.excellusbcbs.com"}
+# careers.amd.com moved to the iCIMS adapter
+_JSONLD_HOSTS = {"careers.excellusbcbs.com"}
 _AMAZON_HOSTS = {"amazon.jobs", "www.amazon.jobs"}
 _HTML_CONTENT_SELECTORS = {"careers.acuityinc.com": ".joblayouttoken"}
 
@@ -337,6 +335,24 @@ class ProviderDescriptionFetcher:
             self._last_request[provider] = time.monotonic()
             return content
 
+    def _from_adapter(self, adapter, ref) -> ParsedDescription | None:
+        with self._lock:
+            remaining = self.min_interval - (time.monotonic() - self._last_request.get(ref.provider, 0))
+            if remaining > 0:
+                time.sleep(remaining)
+            try:
+                detail = adapter.detail(self.fetcher, ref)
+            except ats.Gone:
+                return None
+            except ats.Unavailable as error:
+                if error.status in {401, 403}:
+                    raise DescriptionAccessBlocked("The posting host blocked automated access to its description. Open the original posting to read it.") from None
+                return None
+            finally:
+                self._last_request[ref.provider] = time.monotonic()
+        raw = detail.description_html
+        return parse_description(raw, provider_deadline=detail.deadline) if raw else None
+
     def fetch(self, target: dict) -> ParsedDescription | None:
         key = str(target.get("dedupe_key") or "")
         provider, _, provider_id = key.partition(":")
@@ -344,6 +360,9 @@ class ProviderDescriptionFetcher:
         # sign-in pages have no public description
         if provider == "careerconnect" or (url and is_signin_url(url)):
             return None
+        found = ats.match(url)
+        if found is not None:
+            return self._from_adapter(*found)
         parsed = urllib.parse.urlsplit(url)
         host = (parsed.hostname or "").casefold()
         parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
@@ -351,9 +370,6 @@ class ProviderDescriptionFetcher:
         if host in {"boards.greenhouse.io", "job-boards.greenhouse.io"} and len(parts) >= 3 and parts[1] == "jobs" and parts[2].isdigit():
             provider, provider_id = "greenhouse", parts[2]
             target = {**target, "board": parts[0]}
-        elif host in _EMBEDDED_GREENHOUSE and urllib.parse.parse_qs(parsed.query).get("gh_jid"):
-            provider, provider_id = "greenhouse", urllib.parse.parse_qs(parsed.query)["gh_jid"][0]
-            target = {**target, "board": _EMBEDDED_GREENHOUSE[host]}
         elif host == "jobs.lever.co" and len(parts) >= 2:
             provider, provider_id = "lever", parts[1]
             target = {**target, "board": parts[0]}
@@ -371,18 +387,6 @@ class ProviderDescriptionFetcher:
             else:
                 workday_parts = key.split(":", 2)
                 provider_id = workday_parts[2] if len(workday_parts) == 3 else ""
-        if host == "jobs.smartrecruiters.com" and len(parts) >= 2:
-            company, posting_id = parts[:2]
-            if re.fullmatch(r"[A-Za-z0-9_-]+", company) and re.fullmatch(r"[A-Za-z0-9-]+", posting_id):
-                payload = self._get_json("smartrecruiters", f"https://api.smartrecruiters.com/v1/companies/{company}/postings/{posting_id}")
-                sections = ((payload or {}).get("jobAd") or {}).get("sections") or {}
-                raw = "".join(
-                    f"<h2>{html.escape(str(section.get('title') or label))}</h2>{section.get('text') or ''}"
-                    for key_name, label in (("companyDescription", "About the company"), ("jobDescription", "The role"), ("qualifications", "Requirements"), ("additionalInformation", "Additional information"))
-                    if isinstance(section := sections.get(key_name), dict) and section.get("text")
-                )
-                if raw:
-                    return parse_description(raw)
         if host in _JSONLD_HOSTS or host in _AMAZON_HOSTS or host in _HTML_CONTENT_SELECTORS:
             page = self._get_html(host, url)
             if page:

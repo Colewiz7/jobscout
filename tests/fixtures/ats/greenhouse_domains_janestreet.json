@@ -1,0 +1,107 @@
+{
+ "absolute_url": "https://www.janestreet.com/join-jane-street/apply/8868904002?gh_jid=8868904002",
+ "internal_job_id": 6551008002,
+ "location": {
+  "name": "New York, New York, United States"
+ },
+ "metadata": [
+  {
+   "id": 4246316002,
+   "name": "Employment Type",
+   "value": "Full-Time: Experienced",
+   "value_type": "single_select"
+  },
+  {
+   "id": 4453104002,
+   "name": "Event Date",
+   "value": null,
+   "value_type": "date"
+  },
+  {
+   "id": 4453107002,
+   "name": "Event Location",
+   "value": null,
+   "value_type": "short_text"
+  },
+  {
+   "id": 4453108002,
+   "name": "Event Time",
+   "value": null,
+   "value_type": "short_text"
+  },
+  {
+   "id": 4453114002,
+   "name": "Event Type",
+   "value": null,
+   "value_type": "single_select"
+  },
+  {
+   "id": 4453115002,
+   "name": "Event Continent",
+   "value": null,
+   "value_type": "single_select"
+  },
+  {
+   "id": 4453117002,
+   "name": "Event URL",
+   "value": null,
+   "value_type": "short_text"
+  },
+  {
+   "id": 19843245002,
+   "name": "Duration",
+   "value": "Permanent",
+   "value_type": "single_select"
+  },
+  {
+   "id": 20495683002,
+   "name": "Event Registration Deadline",
+   "value": null,
+   "value_type": "date"
+  },
+  {
+   "id": 24844645002,
+   "name": "Min salary",
+   "value": "130,000",
+   "value_type": "short_text"
+  },
+  {
+   "id": 24844702002,
+   "name": "Max salary",
+   "value": "160,000",
+   "value_type": "short_text"
+  },
+  {
+   "id": 31769182002,
+   "name": "Workday Job Profile",
+   "value": "Talent Development Specialist",
+   "value_type": "single_select"
+  }
+ ],
+ "id": 8868904002,
+ "updated_at": "2026-11-03T10:18:06-05:00",
+ "requisition_id": "6572",
+ "title": "Talent Development, Infrastructure and Operations Specialist",
+ "company_name": "Jane Street",
+ "first_published": "2026-10-07T17:42:05-04:00",
+ "language": "en",
+ "application_deadline": null,
+ "content": "&lt;h3&gt;About the position&lt;/h3&gt;\n&lt;p&gt;We&#39;re looking for someone to help design the infrastructure and run operations for Jane Street&#39;s Talent Development team.&amp;nbsp;&lt;/p&gt;\n&lt;p&gt;You will partner with a team of Talent Development Specialists who design and run a variety of internal programs, from internships to early career education to development for more experienced leaders across the firm. Your role will be critical to our ability to effectively scale, run, and evaluate our programming.&lt;/p&gt;",
+ "departments": [
+  {
+   "id": 4073117002,
+   "name": "Human Resources",
+   "child_ids": [],
+   "parent_id": 4072834002
+  }
+ ],
+ "offices": [
+  {
+   "id": 4013330002,
+   "name": "New York",
+   "location": "New York, New York, United States",
+   "child_ids": [],
+   "parent_id": null
+  }
+ ]
+}

@@ -82,3 +82,11 @@ def test_a_throttled_provider_is_reported_as_rate_limiting():
     })
     assert result.status == "unknown"
     assert "rate limiting" in result.evidence
+
+
+def test_a_bot_challenge_is_not_proof_the_posting_is_live():
+    challenged = Response(202, url="https://careers.example.com/job/1")
+    result = PostingLivenessChecker(Fetcher(challenged), min_interval=0).check(
+        {"dedupe_key": "sha256:abc", "url": "https://careers.example.com/job/1"}
+    )
+    assert result.status == "unknown" and "challenge" in result.evidence

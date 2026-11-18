@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.parse
 
+from . import ats
 from .descriptions import _slug_from_url
 from .models import is_signin_url
 
@@ -37,12 +38,32 @@ class PostingLivenessChecker:
             self._last_request[provider] = time.monotonic()
             return response
 
+    def _adapter(self, adapter, ref) -> LivenessResult:
+        label = f"{ref.provider} posting API"
+        with self._lock:
+            remaining = self.min_interval - (time.monotonic() - self._last_request.get(ref.provider, 0))
+            if remaining > 0:
+                time.sleep(remaining)
+            try:
+                adapter.detail(self.fetcher, ref)
+            except ats.Gone as error:
+                return LivenessResult("closed", f"{label} says the posting is gone ({error})")
+            except ats.Unavailable as error:
+                return LivenessResult("unknown", f"{label} could not be read ({error})")
+            finally:
+                self._last_request[ref.provider] = time.monotonic()
+        return LivenessResult("live", f"{label} returned the posting")
+
     @staticmethod
     def _http_result(response, evidence: str) -> LivenessResult | None:
         if response.status_code in {404, 410}:
             return LivenessResult("closed", f"{evidence} returned {response.status_code}")
         if not response.is_success:
             return LivenessResult("unknown", f"{evidence} returned {response.status_code}")
+        # A bot challenge answers 202 with nothing in it (IBM's AWS WAF does);
+        # that is not the posting, so it proves nothing either way.
+        if response.status_code == 202 or (getattr(response, "headers", None) or {}).get("x-amzn-waf-action"):
+            return LivenessResult("unknown", f"{evidence} answered with a bot challenge")
         return None
 
     def check(self, target: dict) -> LivenessResult:
@@ -59,6 +80,9 @@ class PostingLivenessChecker:
         board = target.get("board") or _slug_from_url(url, provider)
 
         try:
+            found = ats.match(url)
+            if found is not None:
+                return self._adapter(*found)
             if provider == "greenhouse" and board and provider_id:
                 endpoint = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{provider_id}"
                 response = self._probe(provider, endpoint)
