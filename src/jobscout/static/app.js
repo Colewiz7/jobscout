@@ -2700,7 +2700,7 @@ function stopSessionClock() {
 // same session keeps its checks
 function adoptSession(row, documents = null) {
   const current = state.applySession?.id === row.id ? state.applySession : null;
-  const session = Object.assign(current || { documents: [], index: 0, awaitingReturn: "", openedAt: 0, checkedKeys: new Set(), checkingKey: "", checkError: "" }, sessionFromServer(row));
+  const session = Object.assign(current || { documents: [], index: 0, awaitingReturn: "", openedAt: 0, checkedKeys: new Set(), checkingKey: "", checkError: "", checks: new Map(), precheck: null }, sessionFromServer(row));
   if (documents) session.documents = documents;
   state.applySession = session;
   if (session.endedAt) stopSessionClock(); else startSessionClock();
@@ -2756,6 +2756,7 @@ async function startApplySession(keys = null, { at = "", replace = false } = {})
     session.index = routeIndex(session, at);
     state.selectedKey = session.keys[session.index];
     navigate(`/queue/session/${encodeURIComponent(state.selectedKey)}`, { replace });
+    precheckSession(session);
   } catch (error) {
     showSnackbar(error instanceof Error ? error.message : "The session could not start.");
     if (at) { state.sessionLoad = "missing"; renderApplySession(); } else renderQueue();
@@ -2780,6 +2781,7 @@ async function loadApplySession() {
       restored.index = summary ? restored.keys.length : routeIndex(restored, key);
       if (state.jobs.find((job) => job.dedupe_key === key)?.status === "applying") restored.awaitingReturn = "prompt";
       state.sessionLoad = "";
+      if (!summary) precheckSession(restored);
     } else if (key && queueJobs().some((job) => job.dedupe_key === key)) fallback = key;
     else state.sessionLoad = "missing";
   } catch (error) {
@@ -2830,7 +2832,7 @@ function applySessionMarkup(job) {
     : `<aside class="session-review" id="session-posting-review" aria-label="Posting review"><h2>Posting review</h2>${overviewMarkup(job)}${atGlanceMarkup(job)}${descriptionMarkup(job, { compact: true })}</aside>`;
   const siteWarning = job.nonpublic_site ? `<p class="company-warning"><span aria-hidden="true">!</span>${job.public_apply_url ? "Apply opens the verified public posting." : "No public apply link verified. Find this role on the employer’s public careers site."}</p>` : "";
   const uncertain = job.liveness_status === "unknown" ? `<p class="company-warning"><span aria-hidden="true">?</span>Couldn’t confirm this posting is open: ${escapeHtml(job.liveness_evidence || "the provider did not respond")}. Check before submitting.</p>` : "";
-  return `<section class="apply-session${state.quickFillEnabled ? "" : " apply-session--review"}" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span></div><div><button class="text-button interactive" type="button" data-session-previous ${session.index === 0 ? "disabled" : ""}>Previous</button>${recordedAs(session, job.dedupe_key) ? '<button class="text-button interactive" type="button" data-session-next>Next</button>' : '<button class="text-button interactive" type="button" data-session-skip>Skip</button>'}<button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${sessionLocationFact(job.location)}${factItem("Pay", queuePayValue(job))}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements preview</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job, { compact: true }) : ""}</main>${quickFill}</div></section>`;
+  return `<section class="apply-session${state.quickFillEnabled ? "" : " apply-session--review"}" aria-labelledby="session-job-title"><header class="session-header"><div><strong>${escapeHtml(progress)}</strong><span id="session-elapsed">${elapsedLabel()}</span><span id="session-precheck" role="status">${escapeHtml(precheckLabel(session))}</span></div><div><button class="text-button interactive" type="button" data-session-previous ${session.index === 0 ? "disabled" : ""}>Previous</button>${recordedAs(session, job.dedupe_key) ? '<button class="text-button interactive" type="button" data-session-next>Next</button>' : '<button class="text-button interactive" type="button" data-session-skip>Skip</button>'}<button class="text-button interactive" type="button" data-session-end>End session</button></div></header><div class="session-columns"><main class="session-job"><div class="session-identity">${companyLogoMarkup(job.company, "detail-company-logo")}<div><p class="session-company">${escapeHtml(job.company)}</p><h1 id="session-job-title" tabindex="-1">${escapeHtml(job.title)}</h1></div></div><dl class="session-facts">${sessionLocationFact(job.location)}${factItem("Pay", queuePayValue(job))}${factItem("Term", job.terms)}${factItem("Deadline", deadlineLabel(job.deadline))}${factItem("Posted", formatDate(job.first_seen))}</dl>${siteWarning}${uncertain}<div class="session-primary-action">${sessionPromptMarkup(job)}</div><section><h2>Requirements preview</h2>${sessionRequirements(job)}</section>${state.quickFillEnabled ? overviewMarkup(job) + descriptionMarkup(job, { compact: true }) : ""}</main>${quickFill}</div></section>`;
 }
 
 function sessionSummaryMarkup() {
@@ -2888,21 +2890,80 @@ function renderApplySession({ focus = false } = {}) {
   if (focus) document.querySelector("#session-job-title")?.focus({ preventScroll: true });
 }
 
+// one request per posting, shared by the background pass and the arrival check
+function sessionCheck(session, key) {
+  if (!session.checks.has(key)) {
+    const pending = (async () => {
+      const response = await fetch("/api/v1/queue/check", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
+        body: JSON.stringify({ dedupe_key: key }),
+      });
+      noticeHidden(response);
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't check this posting.");
+      jobsWriteLanded(); // a closed posting gets archived
+      return response.json();
+    })();
+    // a failure can be retried
+    pending.catch(() => { if (session.checks.get(key) === pending) session.checks.delete(key); });
+    session.checks.set(key, pending);
+  }
+  return session.checks.get(key);
+}
+
+const PRECHECK_WORKERS = 2;
+
+function precheckLabel(session) {
+  const run = session?.precheck;
+  if (!run || !run.total) return "";
+  if (run.done < run.total) return `Checking queue ${run.done}/${run.total}`;
+  const notes = [run.closed ? `${run.closed} closed, will be skipped` : "", run.unknown ? `${run.unknown} unverified` : ""].filter(Boolean);
+  return `Queue checked · ${notes.length ? notes.join(" · ") : "all open"}`;
+}
+
+function showPrecheck(session) {
+  const status = document.querySelector("#session-precheck");
+  if (status && state.applySession === session) status.textContent = precheckLabel(session);
+}
+
+// Check every queued posting up front, without holding back the first job. The
+// arrival check reuses these answers, so a closed posting is skipped at once.
+async function precheckSession(session) {
+  if (!session || session.precheck || session.endedAt) return;
+  const keys = session.keys.filter((key) => !recordedAs(session, key) && !session.checkedKeys.has(key));
+  const run = { total: keys.length, done: 0, closed: 0, unknown: 0 };
+  session.precheck = run;
+  showPrecheck(session);
+  let next = 0;
+  const worker = async () => {
+    while (next < keys.length && state.applySession === session && !session.endedAt) {
+      const key = keys[next++];
+      try {
+        const result = await sessionCheck(session, key);
+        const job = state.jobs.find((item) => item.dedupe_key === key);
+        if (job) Object.assign(job, { liveness_status: result.status, liveness_evidence: result.evidence });
+        if (result.status === "closed") {
+          run.closed += 1;
+          if (job) job.status = "archived";
+        } else {
+          if (result.status === "unknown") run.unknown += 1;
+          session.checkedKeys.add(key);
+        }
+      } catch { /* checked again on arrival */ }
+      run.done += 1;
+      showPrecheck(session);
+    }
+  };
+  await Promise.all(Array.from({ length: PRECHECK_WORKERS }, worker));
+}
+
 async function verifySessionJob(key) {
   const session = state.applySession;
   if (!session || session.checkingKey || session.checkedKeys.has(key)) return;
   session.checkingKey = key;
   session.checkError = "";
   try {
-    const response = await fetch("/api/v1/queue/check", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf, Accept: "application/json" },
-      body: JSON.stringify({ dedupe_key: key }),
-    });
-    noticeHidden(response);
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Couldn't check this posting.");
-    jobsWriteLanded(); // a closed posting gets archived
-    const result = await response.json();
+    const result = await sessionCheck(session, key);
     if (state.applySession !== session || session.keys[session.index] !== key) return;
     const job = state.jobs.find((item) => item.dedupe_key === key);
     if (job) Object.assign(job, { liveness_status: result.status, liveness_evidence: result.evidence });

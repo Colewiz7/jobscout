@@ -2836,6 +2836,10 @@ body > .visually-hidden {
   color: var(--on-surface-variant);
 }
 
+#session-precheck:empty {
+  display: none;
+}
+
 .session-columns {
   display: grid;
   width: 100%;
@@ -5175,6 +5179,10 @@ body.quick-fill-popout {
   .session-header,
   .session-header > div {
     gap: var(--s-2);
+  }
+
+  .session-header > div {
+    flex-wrap: wrap;
   }
 
   .session-job {
