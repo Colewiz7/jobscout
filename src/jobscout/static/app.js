@@ -1375,7 +1375,7 @@ function queueCard(job, index, count) {
     ${rowSelectMarkup("queue", job)}
     <button class="queue-drag-handle drag-handle interactive" type="button" data-drag-handle aria-label="Reorder ${escapeHtml(job.title)}" title="Reorder ${escapeHtml(job.title)}">${icons.queue}</button>
     <div class="queue-card-copy"><h2 title="${escapeHtml(job.title)}">${roleLinkMarkup(job.dedupe_key, job.title)}</h2><p>${escapeHtml(job.company)}</p><dl>${factItem("Location", job.location)}<div class="queue-pay-fact"><dt>Pay</dt><dd>${escapeHtml(queuePayValue(job))}</dd></div>${factItem("Deadline", deadline)}${factItem("Score", job.score == null ? "" : new Intl.NumberFormat().format(job.score))}</dl>${checked}</div>
-    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button>${moreButtonMarkup(job.title)}</div>
+    <div class="queue-card-actions"><button class="icon-button interactive" type="button" data-queue-move="up" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move up, ${escapeHtml(job.title)}" title="Move up, ${escapeHtml(job.title)}" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button interactive" type="button" data-queue-move="down" data-queue-key="${escapeHtml(job.dedupe_key)}" aria-label="Move down, ${escapeHtml(job.title)}" title="Move down, ${escapeHtml(job.title)}" ${index === count - 1 ? "disabled" : ""}>↓</button><button class="text-button interactive" type="button" data-queue-remove="${escapeHtml(job.dedupe_key)}">Save for later</button><button class="text-button interactive" type="button" data-queue-hide="${escapeHtml(job.dedupe_key)}" aria-label="Remove, ${escapeHtml(job.title)}">Remove</button>${moreButtonMarkup(job.title)}</div>
   </article>`;
 }
 
@@ -6396,6 +6396,15 @@ document.addEventListener("click", (event) => {
   }
   const queueRemove = event.target.closest("[data-queue-remove]");
   if (queueRemove) { removeFromQueue(queueRemove.dataset.queueRemove); return; }
+  const queueHide = event.target.closest("[data-queue-hide]");
+  if (queueHide) {
+    const key = queueHide.dataset.queueHide;
+    hideJobs([key], {
+      trigger: queueHide,
+      focus: focusAfterRemoval(queueJobs().map((job) => job.dedupe_key), [key], ".queue-card", "data-queue-key", "#queue-title, .empty-state h2"),
+    });
+    return;
+  }
   if (event.target.closest("[data-session-retry-check]")) {
     if (state.applySession) {
       state.applySession.checkError = "";
