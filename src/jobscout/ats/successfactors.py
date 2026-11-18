@@ -48,6 +48,7 @@ NAME = "successfactors"
 CAREER_SITES = {
     "jobs.mcdonalds.com": "McDonald's",
     "careers.acuityinc.com": "Acuity",
+    "jobs.nassco.com": "General Dynamics NASSCO",
 }
 
 # SuccessFactors company ids whose legacy links redirect to one of the sites

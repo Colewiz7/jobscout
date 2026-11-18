@@ -55,6 +55,14 @@ def test_matches_a_career_site_job_url():
     assert (acuity.board, acuity.job_id) == ("careers.acuityinc.com", "1441848400")
 
 
+def test_matches_general_dynamics_nassco():
+    ref = match("https://jobs.nassco.com/job/San-Diego-Welding-Engineer-CA-92113/1447470400/?locale=en_US")
+    assert (ref.provider, ref.board, ref.job_id) == ("successfactors", "jobs.nassco.com", "1447470400")
+    assert ref.url == "https://jobs.nassco.com/job/San-Diego-Welding-Engineer-CA-92113/1447470400/"
+    assert ref.provider_id == "successfactors:jobs.nassco.com:1447470400"
+    assert successfactors._site_name("jobs.nassco.com") == "General Dynamics NASSCO"
+
+
 def test_matches_a_requisition_link_on_a_career_site():
     ref = match("https://careers.acuityinc.com/job-invite/16832/?locale=en_US")
     assert (ref.board, ref.job_id) == ("careers.acuityinc.com", "req-16832")
@@ -90,6 +98,9 @@ def test_matches_legacy_links_for_an_unknown_company():
         # lookalike hosts
         "https://jobs.mcdonalds.com.evil.com/job/Chicago-Cloud-Engineer-III-IL-60607/1408247300/",
         "https://evil-jobs.mcdonalds.com/job/Chicago-Cloud-Engineer-III-IL-60607/1408247300/",
+        "https://jobs.nassco.com.evil.com/job/San-Diego-Welding-Engineer-CA-92113/1447470400/",
+        "https://evil.jobs.nassco.com/job/San-Diego-Welding-Engineer-CA-92113/1447470400/",
+        "https://nassco.com/job/San-Diego-Welding-Engineer-CA-92113/1447470400/",
         "https://career41.sapsf.com.evil.com/career?company=mcdonaldsc&career_job_req_id=1",
         "https://career4.successfactors.com.example/career?company=x&career_job_req_id=1",
         "https://evilsuccessfactors.com/career?company=x&career_job_req_id=1",

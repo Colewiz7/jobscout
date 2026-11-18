@@ -1,0 +1,97 @@
+{
+ "code": 0,
+ "data": {
+  "job_post_detail": {
+   "id": "7662449816279419141",
+   "code": "A198559",
+   "title": "Production System Engineer Project Intern (Server DevOps) - 2027 Start",
+   "description": "Our Server Fleet Operations team manages the full lifecycle of servers powering our self-built data centers across the United States and Europe: from new hardware rollout to decommissioning. We work at the center of a large networ...\n\nWhat You'll Do\n- Get hands-on with server deployment, monitoring, and maintenance across CPU and GPU fleets\n- Write scripts and small tools (Python, Bash, or similar) to automate repetitive operational tasks\n- Learn to troubleshoot real Linux issuesL OS, hardware, storage, networking, and performance",
+   "requirement": "Minimum Qualifications:\n- Currently pursuing a Bachelor's or Master's student in CS, Computer Engineering, EE, IT, or a related field\n- Comfortable with basic Linux administration and troubleshooting\n\nPreferred Qualifications:\n- Hands-on experience from projects, labs, internships, open-source work, or competitions, academic or personal\n- Curiosity about AI agents, LLMs, or AI-powered automation",
+   "recruit_type": {
+    "id": "202",
+    "name": "实习",
+    "en_name": "Intern",
+    "i18n_name": "Intern"
+   },
+   "job_category": {
+    "id": "6704215958816295181",
+    "name": "基础架构",
+    "en_name": "Infrastructure",
+    "i18n_name": "Infrastructure",
+    "parent": null
+   },
+   "city_info": {
+    "code": "CT_1103355",
+    "location_type": 3,
+    "name": "圣何塞",
+    "en_name": "San Jose",
+    "i18n_name": "San Jose",
+    "parent": {
+     "code": "ST_31",
+     "location_type": 2,
+     "name": "加利福尼亚州",
+     "en_name": "California",
+     "i18n_name": "California",
+     "parent": {
+      "code": "CN_6",
+      "location_type": 1,
+      "name": "美国",
+      "en_name": "United States of America",
+      "i18n_name": "United States of America",
+      "parent": null
+     }
+    }
+   },
+   "tag_list": null,
+   "job_subject": {
+    "id": "7391494724038953254",
+    "name": "Project Intern",
+    "en_name": "Project Intern",
+    "i18n_name": "Project Intern"
+   },
+   "vacancies": null,
+   "department_info": null,
+   "job_post_info": {
+    "min_salary": null,
+    "max_salary": null,
+    "currency": null,
+    "required_degree": null,
+    "experience": null,
+    "sequence": null,
+    "min_level": null,
+    "max_level": null,
+    "highlight_list": null,
+    "job_post_object_value_list": [
+     {
+      "field_name": {
+       "id": null,
+       "name": "【For Pay Transparency】Compensation Description (Hourly) - Campus Intern",
+       "en_name": "【For Pay Transparency】Compensation Description (Hourly) - Campus Intern",
+       "i18n_name": "【For Pay Transparency】Compensation Description (Hourly) - Campus Intern"
+      },
+      "field_value": "<div><p>The hourly rate range for this position in the selected city is $25- $25. </p></div>"
+     },
+     {
+      "field_name": {
+       "id": null,
+       "name": "About Us",
+       "en_name": "About Us",
+       "i18n_name": "About Us"
+      },
+      "field_value": "<div><p>Founded in 2012, ByteDance's mission is to inspire creativity and enrich life. With a suite of more than a dozen products, including TikTok, Lemon8, CapCut and Pico as well as platforms specific to the China market, including Toutiao, Douyin, and Xigua, ByteDance has made it easier and more fun for people to connect with, consume, and create content.</p></div>"
+     }
+    ],
+    "expiry_time": null
+   },
+   "process_type": 2,
+   "channel_online_status": 1
+  },
+  "BaseResp": {
+   "StatusMessage": "Success",
+   "StatusCode": 0,
+   "Extra": null
+  }
+ },
+ "message": "ok",
+ "error": null
+}

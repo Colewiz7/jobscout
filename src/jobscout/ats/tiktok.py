@@ -1,28 +1,42 @@
-"""TikTok careers (lifeattiktok.com, and the older careers.tiktok.com).
+"""TikTok and ByteDance careers, two portals on one ATS API.
 
-The site is a Next.js front end over a public API at api.lifeattiktok.com. Both
-calls it needs are plain JSON POSTs with one constant header, `website-path:
-tiktok`, which picks the portal. Nothing is scraped from a page first: no
-cookie, CSRF token or signature.
+TikTok (lifeattiktok.com, and the older careers.tiktok.com) and ByteDance
+(joinbytedance.com) are Next.js front ends over the same public API. Both calls
+are plain JSON POSTs with one constant header, `website-path`, which picks the
+portal: "tiktok" for TikTok, and for ByteDance the language path "en" (there is
+no "bytedance" portal, and the API rejects that value). Nothing is scraped from
+a page first: no cookie, CSRF token or signature.
 
-- search: POST /api/v1/public/supplier/search/job/posts with a keyword, limit
-  and offset. Its location filter takes city codes only (a country code
-  returns nothing), so the US cut is made here from each job's city chain.
-- detail: POST /api/v1/public/supplier/job/posts/<id> with {"job_post_id"}.
-  A posting that no longer exists comes back 200 with `job_post_detail: null`,
-  which is the Gone signal. Because the API has that explicit answer, a 404
-  from it means the route moved, not that the posting closed, so it is read
-  as Unavailable.
+- search: POST <api>/search/job/posts with a keyword, limit and offset. Its
+  location filter takes city codes only (a country code returns nothing), so
+  the US cut is made here from each job's city chain.
+- detail: POST <api>/job/posts/<id> with {"job_post_id"}. A posting that no
+  longer exists comes back 200 with `job_post_detail: null`, which is the Gone
+  signal. Because the API has that explicit answer, a 404 from it means the
+  route moved, not that the posting closed, so it is read as Unavailable.
 
 Neither call returns a posted date, so age_days stays empty.
 
+Each portal is a Site, and the board names it: "tiktok" or "bytedance". TikTok
+is read from api.lifeattiktok.com. joinbytedance.com's own bundle calls
+jobs.bytedance.com/api/v1/public/supplier with `website-path: en` and
+`accept-language: en-US`, so ByteDance is read there with those two. The page
+also sends `x-tt-env` and `origin`, which change nothing in the answer.
+
+Posting ids come from the one ATS behind both portals, and a few postings are
+listed on both. Each portal still files them under its own board, so such a
+posting shows once for TikTok and once for ByteDance.
+
 careers.tiktok.com/position/<id>/detail redirects to lifeattiktok.com/search/<id>
-with the same id, so both are matched. joinbytedance.com is a sibling site on
-a different portal that this API does not serve (website-path "bytedance" is
-rejected), so it is not matched.
+with the same id, so both are matched. jobs.bytedance.com/en/position/<id>/detail
+redirects to joinbytedance.com/search/<id> the same way, and
+jobs.bytedance.com/en/resume/<id>/apply is joinbytedance.com's apply link. The
+rest of jobs.bytedance.com (/experienced, /campus) is ByteDance's China site on
+a different API, so only the /en/ paths are matched there.
 """
 from __future__ import annotations
 
+import dataclasses
 import html
 import logging
 import re
@@ -56,7 +70,56 @@ PAUSE = 1.0
 _PATH = re.compile(
     r"(?:/[a-z]{2}(?:-[A-Za-z]{2})?)?/(?:search|position|resume)/(\d{10,20})(?:/(?:detail|apply))?/?"
 )
+# joinbytedance.com/search/<id>, the only posting path that site has.
+_BYTEDANCE_PATH = re.compile(r"/search/(\d{10,20})/?")
+# The /en/ (global) half of jobs.bytedance.com: the old posting page, which
+# redirects to joinbytedance.com, and the apply page.
+_BYTEDANCE_LEGACY_PATH = re.compile(r"/en/(?:position/(\d{10,20})(?:/detail)?|resume/(\d{10,20})/apply)/?")
 _ID = re.compile(r"\d{10,20}")
+
+
+@dataclasses.dataclass(frozen=True)
+class Site:
+    board: str                       # board identifier, and the middle of provider_id
+    company: str                     # display name
+    api: str                         # base of both API calls
+    headers: dict[str, str]          # constant headers that pick the portal
+    view: str                        # public posting page, by {job_id}
+    paths: dict[str, re.Pattern]     # exact host -> posting path pattern
+
+    @property
+    def search_url(self) -> str:
+        return self.api + "/search/job/posts"
+
+    def detail_url(self, job_id: str) -> str:
+        return f"{self.api}/job/posts/{job_id}"
+
+
+TIKTOK = Site(
+    board="tiktok",
+    company=COMPANY,
+    api=API,
+    headers=HEADERS,
+    view=VIEW,
+    paths={host: _PATH for host in sorted(HOSTS)},
+)
+BYTEDANCE = Site(
+    board="bytedance",
+    company="ByteDance",
+    api="https://jobs.bytedance.com/api/v1/public/supplier",
+    headers={"website-path": "en", "accept-language": "en-US"},
+    view="https://joinbytedance.com/search/{job_id}",
+    paths={"joinbytedance.com": _BYTEDANCE_PATH, "jobs.bytedance.com": _BYTEDANCE_LEGACY_PATH},
+)
+SITES: dict[str, Site] = {site.board: site for site in (TIKTOK, BYTEDANCE)}
+_SITE_FOR_HOST: dict[str, Site] = {host: site for site in SITES.values() for host in site.paths}
+
+
+def _site(board: str) -> Site:
+    """The portal a board names: a site key or one of its hosts. Anything else
+    is TikTok, which is all this adapter read before ByteDance was added."""
+    board = (board or "").strip().casefold()
+    return SITES.get(board) or _SITE_FOR_HOST.get(board) or TIKTOK
 _BULLET = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s+")
 _HEADING = re.compile(r"^[^.!?]{2,60}[:：]$")
 _BRACKETED = re.compile(r"^【[^】]*】\s*")
@@ -144,28 +207,29 @@ def _employment_type(job: dict) -> str | None:
     return "INTERN" if label == "intern" else None
 
 
-def _data(payload) -> dict:
+def _data(payload, site: Site = TIKTOK) -> dict:
+    label = f"{site.board} api"
     if not isinstance(payload, dict):
-        raise Unavailable("tiktok api answered with something other than an object")
+        raise Unavailable(f"{label} answered with something other than an object")
     if payload.get("code") != 0:
-        raise Unavailable(f"tiktok api answered code {payload.get('code')}: {payload.get('message')}")
+        raise Unavailable(f"{label} answered code {payload.get('code')}: {payload.get('message')}")
     data = payload.get("data")
     if not isinstance(data, dict):
-        raise Unavailable("tiktok api answered without data")
+        raise Unavailable(f"{label} answered without data")
     return data
 
 
-def _post(fetcher, url: str, body: dict):
+def _post(fetcher, url: str, body: dict, site: Site = TIKTOK):
     try:
-        return fetch_json(fetcher, url, method="POST", body=body, headers=HEADERS)
+        return fetch_json(fetcher, url, method="POST", body=body, headers=dict(site.headers))
     except Gone as error:
         # The API says "not found" with a null record, so a bare 404 or 410
         # is the route itself, and must never close a posting.
-        raise Unavailable(f"tiktok api route: {error}", 404) from None
+        raise Unavailable(f"{site.board} api route: {error}", 404) from None
 
 
-def _ref(job_id: str) -> Ref:
-    return Ref(provider=NAME, board=NAME, job_id=job_id, url=VIEW.format(job_id=job_id))
+def _ref(job_id: str, site: Site = TIKTOK) -> Ref:
+    return Ref(provider=NAME, board=site.board, job_id=job_id, url=site.view.format(job_id=job_id))
 
 
 class _TikTok:
@@ -173,29 +237,35 @@ class _TikTok:
 
     def match(self, parsed: urllib.parse.SplitResult) -> Ref | None:
         host = (parsed.hostname or "").rstrip(".").casefold()
-        if host not in HOSTS:
+        site = _SITE_FOR_HOST.get(host)
+        if site is None:
             return None
-        found = _PATH.fullmatch(parsed.path or "")
-        return _ref(found.group(1)) if found else None
+        found = site.paths[host].fullmatch(parsed.path or "")
+        if not found:
+            return None
+        job_id = next(group for group in found.groups() if group)
+        return _ref(job_id, site)
 
     def detail(self, fetcher, ref: Ref) -> Detail:
+        site = _site(ref.board)
         if not _ID.fullmatch(ref.job_id or ""):
-            raise Unavailable(f"tiktok job id {ref.job_id!r} is not numeric")
-        data = _data(_post(fetcher, DETAIL.format(job_id=ref.job_id), {"job_post_id": ref.job_id}))
+            raise Unavailable(f"{site.board} job id {ref.job_id!r} is not numeric")
+        payload = _post(fetcher, site.detail_url(ref.job_id), {"job_post_id": ref.job_id}, site)
+        data = _data(payload, site)
         if "job_post_detail" not in data:
-            raise Unavailable("tiktok detail answered without job_post_detail")
+            raise Unavailable(f"{site.board} detail answered without job_post_detail")
         job = data["job_post_detail"]
         if job is None:
-            raise Gone(f"tiktok job {ref.job_id} no longer exists")
+            raise Gone(f"{site.board} job {ref.job_id} no longer exists")
         if not isinstance(job, dict) or str(job.get("id") or "") != ref.job_id:
-            raise Unavailable(f"tiktok detail for {ref.job_id} named a different posting")
+            raise Unavailable(f"{site.board} detail for {ref.job_id} named a different posting")
         title = str(job.get("title") or "").strip()
         if not title:
-            raise Unavailable(f"tiktok job {ref.job_id} came back without a title")
+            raise Unavailable(f"{site.board} job {ref.job_id} came back without a title")
         location = _location(job)
         return Detail(
-            ref=_ref(ref.job_id),
-            company=COMPANY,
+            ref=_ref(ref.job_id, site),
+            company=site.company,
             title=title,
             location=location,
             description_html=_description(job),
@@ -204,7 +274,8 @@ class _TikTok:
         )
 
     def search(self, fetcher, board: str, company: str, terms=()) -> list[Posting] | None:
-        company = company if company and company != board else COMPANY
+        site = _site(board)
+        company = company if company and company != board else site.company
         seen: dict[str, Posting] = {}
         answered = False
         first = True
@@ -223,12 +294,12 @@ class _TikTok:
                     "offset": page * PAGE,
                 }
                 try:
-                    data = _data(_post(fetcher, SEARCH, body))
+                    data = _data(_post(fetcher, site.search_url, body, site), site)
                     rows = data.get("job_post_list") or []
                     if not isinstance(rows, list):
-                        raise Unavailable("tiktok search answered without a job list")
+                        raise Unavailable(f"{site.board} search answered without a job list")
                 except (Gone, Unavailable) as error:
-                    log.warning("tiktok: query %r failed (%s), treating the board as absent", term, error)
+                    log.warning("%s/%s: query %r failed (%s), treating the board as absent", NAME, site.board, term, error)
                     return None
                 answered = True
                 for job in rows:
@@ -238,7 +309,7 @@ class _TikTok:
                     title = str(job.get("title") or "").strip()
                     if not _ID.fullmatch(job_id) or not title or job_id in seen or not _in_us(job):
                         continue
-                    ref = _ref(job_id)
+                    ref = _ref(job_id, site)
                     location = _location(job)
                     seen[job_id] = Posting(
                         source=NAME,

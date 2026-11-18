@@ -1,0 +1,215 @@
+{
+ "code": 0,
+ "data": {
+  "job_post_list": [
+   {
+    "id": "7662449816279419141",
+    "code": "A198559",
+    "title": "Production System Engineer Project Intern (Server DevOps) - 2027 Start",
+    "description": "Our Server Fleet Operations team manages the full lifecycle of servers powering our self-built data centers across the United States and Europe: from new hardware rollout to decommissioning. We work at the center of a la...",
+    "requirement": "Minimum Qualifications:\n- Currently pursuing a Bachelor's or Master's student in CS, Computer Engineering, EE, IT, or a related field\n- Comfortable with basic L...",
+    "recruit_type": {
+     "id": "202",
+     "name": "实习",
+     "en_name": "Intern",
+     "i18n_name": "Intern"
+    },
+    "job_category": {
+     "id": "6704215958816295181",
+     "name": "基础架构",
+     "en_name": "Infrastructure",
+     "i18n_name": "Infrastructure",
+     "parent": {
+      "id": "6704215862603155720",
+      "name": "研发",
+      "en_name": "R&D",
+      "i18n_name": "R&D",
+      "parent": null
+     }
+    },
+    "city_info": {
+     "code": "CT_1103355",
+     "location_type": 3,
+     "name": "圣何塞",
+     "en_name": "San Jose",
+     "i18n_name": "San Jose",
+     "parent": {
+      "code": "ST_31",
+      "location_type": 2,
+      "name": "加利福尼亚州",
+      "en_name": "California",
+      "i18n_name": "California",
+      "parent": {
+       "code": "CN_6",
+       "location_type": 1,
+       "name": "美国",
+       "en_name": "United States of America",
+       "i18n_name": "United States of America",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": {
+     "id": "7391494724038953254",
+     "name": "Project Intern",
+     "en_name": "Project Intern",
+     "i18n_name": "Project Intern"
+    },
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   },
+   {
+    "id": "7696614592324290821",
+    "code": "A86846A",
+    "title": "Software Engineer (Seed Model - Infrastructures - SRE)",
+    "description": "About the Team\nThe Seed Infrastructures team oversees the distributed training, reinforcement learning framework, high-performance inference, and heterogeneous hardware compilation technologies for AI foundation models....",
+    "requirement": "Minimum Qualifications\n- 1+ years of experience in DevOps, SRE or infrastructure engineering projects.\n- Proficient in at least one or two of Go / Python / Shel...",
+    "recruit_type": {
+     "id": "101",
+     "name": "正式",
+     "en_name": "Regular",
+     "i18n_name": "Regular"
+    },
+    "job_category": {
+     "id": "6704215862603155720",
+     "name": "研发",
+     "en_name": "R&D",
+     "i18n_name": "R&D",
+     "parent": null
+    },
+    "city_info": {
+     "code": "CT_157",
+     "location_type": 3,
+     "name": "西雅图",
+     "en_name": "Seattle",
+     "i18n_name": "Seattle",
+     "parent": {
+      "code": "ST_54",
+      "location_type": 2,
+      "name": "华盛顿",
+      "en_name": "Washington",
+      "i18n_name": "Washington",
+      "parent": {
+       "code": "CN_6",
+       "location_type": 1,
+       "name": "美国",
+       "en_name": "United States of America",
+       "i18n_name": "United States of America",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": null,
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   },
+   {
+    "id": "7421023936648038706",
+    "code": "A94503",
+    "title": "Site Reliability Engineer - Game",
+    "description": "Nuverse is a gaming business unit in ByteDance. The Game Technology team is playing a significant role in the whole life cycle of the game. We are responsible for the development, testing, operation, SRE, and quality ass...",
+    "requirement": "Minimum Qualifications:\n1. Bachelor or higher degree in Computer Science, Information Systems, or related field. \n2. Experienced with Kubernetes (K8S) or other...",
+    "recruit_type": {
+     "id": "101",
+     "name": "正式",
+     "en_name": "Regular",
+     "i18n_name": "Regular"
+    },
+    "job_category": {
+     "id": "6704217321877014787",
+     "name": "运维",
+     "en_name": "DevOps",
+     "i18n_name": "DevOps",
+     "parent": {
+      "id": "6704215862603155720",
+      "name": "研发",
+      "en_name": "R&D",
+      "i18n_name": "R&D",
+      "parent": null
+     }
+    },
+    "city_info": {
+     "code": "CT_163",
+     "location_type": 3,
+     "name": "新加坡",
+     "en_name": "Singapore",
+     "i18n_name": "Singapore",
+     "parent": {
+      "code": "ST_100785",
+      "location_type": 2,
+      "name": "新加坡",
+      "en_name": "Singapore",
+      "i18n_name": "Singapore",
+      "parent": {
+       "code": "CN_25",
+       "location_type": 1,
+       "name": "新加坡",
+       "en_name": "Singapore",
+       "i18n_name": "Singapore",
+       "parent": null
+      }
+     }
+    },
+    "tag_list": null,
+    "job_subject": null,
+    "vacancies": null,
+    "department_info": null,
+    "job_post_info": {
+     "min_salary": null,
+     "max_salary": null,
+     "currency": null,
+     "required_degree": null,
+     "experience": null,
+     "sequence": null,
+     "min_level": null,
+     "max_level": null,
+     "highlight_list": null,
+     "job_post_object_value_list": null,
+     "expiry_time": null
+    },
+    "process_type": null,
+    "channel_online_status": null
+   }
+  ],
+  "count": 3,
+  "BaseResp": {
+   "StatusMessage": "Success",
+   "StatusCode": 0,
+   "Extra": null
+  }
+ },
+ "message": "ok",
+ "error": null
+}
