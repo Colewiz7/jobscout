@@ -87,7 +87,6 @@ IGNORE = "ignore"
 # marks mail as not an alert
 _GOOGLE_SENDER = "forwarding-noreply@google.com"
 _JOB_LINK = re.compile(r"jobRedirectUrl|/app/jobs/detail", re.I)
-_ALERT_SENDER = re.compile(r"careerconnect\.|symplicity", re.I)
 _ALERT_SUBJECT = re.compile(r"jobs are here|job matches", re.I)
 
 
@@ -100,7 +99,10 @@ def _empty_verdict(message, html: str, linked: bool) -> str:
         return "no readable html part"
     if linked or _JOB_LINK.search(html):
         return "job links present but none parsed"
-    if _ALERT_SENDER.search(sender) or _ALERT_SUBJECT.search(subject):
+    # The subject, not the sender: the school's system also mails application
+    # receipts and newsletters from the same address, and none of those carry
+    # job links, so the sender alone made every one of them a "broken alert".
+    if _ALERT_SUBJECT.search(subject):
         return "alert layout has no job links"
     return IGNORE
 

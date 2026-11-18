@@ -468,11 +468,19 @@ UNRELATED = (b"From: friend@example.com\r\nSubject: lunch\r\nContent-Type: text/
              b"<html><body><p>lunch?</p></body></html>")
 ALERT_EMPTY_HTML = (b"From: careerservices@careerconnect.example.org\r\nSubject: Student, here are your job matches\r\n"
                     b"Content-Type: text/html\r\n\r\n<html><body><p>nothing</p></body></html>")
+# the school's system mails receipts and newsletters from the alert address
+APPLICATION_RECEIPT = (b"From: careerservices@rit-csm.symplicity.com\r\nSubject: Non-OCR Application Confirmation\r\n"
+                       b"Content-Type: text/html\r\n\r\n<html><body><p>Your application was received.</p>"
+                       b"<a href='https://rit-csm.symplicity.com/students'>View</a></body></html>")
+ALERT_RELABELLED_SENDER = (b"From: careerservices@rit-csm.symplicity.com\r\nSubject: Student, the latest \"devops\" jobs are here\r\n"
+                           b"Content-Type: text/html\r\n\r\n<html><body><p>moved layout</p></body></html>")
 
 
 @pytest.mark.parametrize("raw,outcome", [
     (CONFIRMATION, "ignored"),
     (UNRELATED, "ignored"),
+    (APPLICATION_RECEIPT, "ignored"),
+    (ALERT_RELABELLED_SENDER, "failed"),
     (ALERT_NO_HTML, "failed"),
     (HTML_LINKS_NO_JOBS, "failed"),
     (ALERT_EMPTY_HTML, "failed"),
