@@ -245,3 +245,47 @@ def test_search_without_terms_did_not_answer():
     fetcher = answer(200, fixture("apple_search.json"))
     assert ADAPTER.search(fetcher, "apple", "Apple", ()) is None
     assert fetcher.calls == []
+
+
+def test_alive_confirms_a_posting_through_search_and_never_closes_one():
+    import json as _json
+
+    import httpx as _httpx
+
+    from jobscout.ats import apple as module
+
+    ref = module.ADAPTER.match(urllib.parse.urlsplit("https://jobs.apple.com/en-us/details/200631016-0157/devops-engineer-agents"))
+
+    class Search:
+        def __init__(self, rows, status=200):
+            self.rows, self.status, self.calls = rows, status, []
+
+        def send(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs.get("timeout")))
+            body = _json.dumps({"res": {"searchResults": self.rows, "totalRecords": len(self.rows)}})
+            return _httpx.Response(self.status, text=body, request=_httpx.Request(method, url))
+
+    hit = Search([{"positionId": "200631016", "id": "200631016-0157", "postingTitle": "DevOps Engineer - Agents"}])
+    assert module.ADAPTER.alive(hit, ref, "DevOps Engineer - Agents") is True
+    assert hit.calls[0][:2] == ("POST", module.SEARCH)
+    assert module.ADAPTER.alive(Search([{"positionId": "999"}]), ref, "DevOps Engineer - Agents") is None
+    assert module.ADAPTER.alive(Search([], status=503), ref, "DevOps Engineer - Agents") is None
+    assert module.ADAPTER.alive(hit, ref, "") is None
+
+
+def test_detail_asks_for_the_long_timeout():
+    import httpx as _httpx
+
+    from jobscout.ats import apple as module
+
+    seen = {}
+
+    class Slow:
+        def send(self, method, url, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return _httpx.Response(404, text="{}", request=_httpx.Request(method, url))
+
+    ref = module.ADAPTER.match(urllib.parse.urlsplit("https://jobs.apple.com/en-us/details/200631016-0157/devops-engineer-agents"))
+    with pytest.raises(module.Gone):
+        module.ADAPTER.detail(Slow(), ref)
+    assert seen["timeout"] == module.DETAIL_TIMEOUT

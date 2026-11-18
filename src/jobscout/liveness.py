@@ -38,13 +38,16 @@ class PostingLivenessChecker:
             self._last_request[provider] = time.monotonic()
             return response
 
-    def _adapter(self, adapter, ref) -> LivenessResult:
+    def _adapter(self, adapter, ref, title: str = "") -> LivenessResult:
         label = f"{ref.provider} posting API"
         with self._lock:
             remaining = self.min_interval - (time.monotonic() - self._last_request.get(ref.provider, 0))
             if remaining > 0:
                 time.sleep(remaining)
             try:
+                alive = getattr(adapter, "alive", None)
+                if alive is not None and alive(self.fetcher, ref, title) is True:
+                    return LivenessResult("live", f"{ref.provider} search still lists the posting")
                 adapter.detail(self.fetcher, ref)
             except ats.Gone as error:
                 return LivenessResult("closed", f"{label} says the posting is gone ({error})")
@@ -82,7 +85,7 @@ class PostingLivenessChecker:
         try:
             found = ats.match(url)
             if found is not None:
-                return self._adapter(*found)
+                return self._adapter(*found, title=str(target.get("title") or ""))
             if provider == "greenhouse" and board and provider_id:
                 endpoint = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{provider_id}"
                 response = self._probe(provider, endpoint)

@@ -265,3 +265,12 @@ def test_pay_reads_between_and_ranges_and_a_line_introduced_by_pay():
     assert extract_pay(parse_description(html).text) == "$183,000–$265,000"
     # "between ... and" outside pay context is still not pay
     assert extract_pay("Raised $40 million between 2020 and 2022.") is None
+
+
+def test_company_money_is_not_pay():
+    assert extract_pay("Team of 12. Revenue $5,000,000 per year.") is None
+    assert extract_pay("We raised $20M in funding and pay well.") is None
+    assert extract_pay("Annual revenue of $2 billion; competitive compensation.") is None
+    # real pay next to the same words still reads
+    assert extract_pay("Sales Engineer salary range $90,000 - $120,000 annually.") == "$90,000–$120,000/yr"
+    assert extract_pay("Salary: $120,000 per year. We have raised $50 million.") == "$120,000/yr"

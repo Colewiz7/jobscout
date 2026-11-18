@@ -116,6 +116,10 @@ class Adapter(Protocol):
     # Optional. Absent means the scout cannot scan this ATS by company.
     search: Callable | None
 
+    # Optional: alive(fetcher, ref, title) -> True when a cheaper route than
+    # detail confirms the posting is open, None when it cannot tell. Never
+    # returns False; only detail may call a posting closed.
+
 
 def _status_check(response, url: str) -> None:
     if response is None:
@@ -126,9 +130,15 @@ def _status_check(response, url: str) -> None:
         raise Unavailable(f"{url} returned {response.status_code}", response.status_code)
 
 
-def fetch_text(fetcher, url: str, *, method: str = "GET", body=None, headers: dict | None = None) -> str:
-    """Body of a successful response. Gone on 404/410, Unavailable otherwise."""
+def fetch_text(fetcher, url: str, *, method: str = "GET", body=None, headers: dict | None = None,
+               timeout: float | None = None) -> str:
+    """Body of a successful response. Gone on 404/410, Unavailable otherwise.
+
+    `timeout` overrides the fetcher's own for a provider known to be slow.
+    """
     kwargs = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     if headers:
         kwargs["headers"] = headers
     if body is not None:
@@ -138,11 +148,12 @@ def fetch_text(fetcher, url: str, *, method: str = "GET", body=None, headers: di
     return response.text
 
 
-def fetch_json(fetcher, url: str, *, method: str = "GET", body=None, headers: dict | None = None):
+def fetch_json(fetcher, url: str, *, method: str = "GET", body=None, headers: dict | None = None,
+               timeout: float | None = None):
     headers = {"Accept": "application/json", **(headers or {})}
     if body is not None and not isinstance(body, bytes):
         headers.setdefault("Content-Type", "application/json")
-    text = fetch_text(fetcher, url, method=method, body=body, headers=headers)
+    text = fetch_text(fetcher, url, method=method, body=body, headers=headers, timeout=timeout)
     try:
         return json.loads(text)
     except ValueError:

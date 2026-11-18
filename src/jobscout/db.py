@@ -1809,7 +1809,7 @@ def description_target(conn: psycopg.Connection, dedupe_key: str) -> dict | None
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, dedupe_key, source, source_id, board, url
+            select id, dedupe_key, source, source_id, board, url, title
               from postings
              where dedupe_key = %s
              order by

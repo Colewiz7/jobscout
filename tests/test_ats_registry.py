@@ -138,3 +138,13 @@ def test_workday_capture_accepts_a_locale_prefix():
     captured = PostingCapture(fetcher).capture({"url": "https://amfam.wd1.myworkdayjobs.com/en-US/Careers/job/WI-Madison/IT-Intern_R39462"})
     assert fetcher.url == "https://amfam.wd1.myworkdayjobs.com/wday/cxs/amfam/Careers/job/WI-Madison/IT-Intern_R39462"
     assert captured.posting.board == "amfam/wd1/Careers"
+
+
+def test_liveness_takes_a_cheap_alive_answer_and_skips_detail(adapter):
+    calls = []
+    adapter.alive = lambda fetcher, ref, title: calls.append(title) or True
+    adapter.outcome = "gone"   # detail would say closed; alive answers first
+    result = PostingLivenessChecker(fetcher=None, min_interval=0).check({"dedupe_key": "x", "url": URL, "title": "DevOps Co-op"})
+    assert result.status == "live" and calls == ["DevOps Co-op"]
+    adapter.alive = lambda fetcher, ref, title: None
+    assert PostingLivenessChecker(fetcher=None, min_interval=0).check({"dedupe_key": "x", "url": URL, "title": "DevOps Co-op"}).status == "closed"

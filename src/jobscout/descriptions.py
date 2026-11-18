@@ -66,6 +66,12 @@ _PAY_HEADING = re.compile(
     r"(?:pay|salary|wages?|compensation|hourly)(?:\s+(?:range(?:\(s\))?|rate|information))?\s*:?\s*",
     re.I,
 )
+# Company money, not the job's: "revenue of $5,000,000 per year", "raised $20M".
+_NOT_PAY_BEFORE = re.compile(
+    r"\b(?:revenues?|raised|raising|funding|funded|valuation|valued at|ARR|market cap(?:italization)?|series [a-e])\b[^$\n]{0,40}$",
+    re.I,
+)
+_NOT_PAY_AFTER = re.compile(r"^\s*(?:million|billion|trillion|in (?:revenue|funding|assets))\b", re.I)
 _NON_BASE_PAY = r"(?:housing|relocation|meal|wellness|equipment|signing|sign-on|tuition|commuter)\s+(?:stipend|bonus|assistance|allowance|reimbursement)"
 
 
@@ -109,7 +115,11 @@ def extract_pay(text: str | None) -> str | None:
                 re.search(_NON_BASE_PAY + r"(?:\s+(?:of|up to))?\s*$", before, re.I)
                 or re.match(r"^\s*(?:for\s+)?" + _NON_BASE_PAY + r"\b", after, re.I)
             )
-            if not _PAY_CONTEXT.search(nearby) or is_benefit:
+            company_money = bool(
+                _NOT_PAY_BEFORE.search(line[max(0, amount.start() - 60):amount.start()])
+                or _NOT_PAY_AFTER.match(after)
+            )
+            if not _PAY_CONTEXT.search(nearby) or is_benefit or company_money:
                 continue
             following = amounts[index + 1] if index + 1 < len(amounts) else None
             joiner = line[amount.end():following.start()] if following else ""

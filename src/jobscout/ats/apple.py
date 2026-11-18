@@ -38,6 +38,10 @@ BOARD = "apple"
 COMPANY = "Apple"
 HOST = "jobs.apple.com"
 DETAIL = "https://jobs.apple.com/api/v1/jobDetails/{job_id}"
+# jobDetails is often slow: in November 2026 a third of requests from the
+# cluster ran past 40 s while search answered in 0.3 s. One long attempt beats
+# the dashboard's short timeout and retries.
+DETAIL_TIMEOUT = 45
 SEARCH = "https://jobs.apple.com/api/v1/search"
 VIEW = "https://jobs.apple.com/en-us/details/{number}"
 US = "postLocation-USA"
@@ -232,7 +236,8 @@ class _Apple:
                     slug if slug and _SLUG.fullmatch(slug) else None)
 
     def detail(self, fetcher, ref: Ref) -> Detail:
-        payload = fetch_json(fetcher, DETAIL.format(job_id=urllib.parse.quote(ref.job_id, safe="")))
+        payload = fetch_json(fetcher, DETAIL.format(job_id=urllib.parse.quote(ref.job_id, safe="")),
+                             timeout=DETAIL_TIMEOUT)
         res = payload.get("res") if isinstance(payload, dict) else None
         if not isinstance(res, dict) or not str(res.get("postingTitle") or "").strip():
             raise Unavailable(f"unexpected Apple body for {ref.provider_id}")
@@ -248,6 +253,30 @@ class _Apple:
             deadline=_deadline(res),
             age_days=_age_days(res.get("postDateInGMT")),
         )
+
+    def alive(self, fetcher, ref: Ref, title: str) -> bool | None:
+        """True when a search for the exact title still lists this position.
+
+        Search answers in a fraction of a second while jobDetails can take
+        most of a minute, so liveness asks here first. A miss proves nothing
+        (the title may have been edited), so it falls back to detail.
+        """
+        if not (title or "").strip():
+            return None
+        body = {"query": _query(title), "filters": {"locations": [US]}, "page": 1,
+                "locale": "en-us", "sort": "relevance", "format": _FORMAT}
+        try:
+            payload = fetch_json(fetcher, SEARCH, method="POST", body=body)
+        except (Gone, Unavailable):
+            return None
+        res = payload.get("res") if isinstance(payload, dict) else None
+        for job in (res or {}).get("searchResults") or []:
+            if not isinstance(job, dict):
+                continue
+            number = str(job.get("id") or job.get("reqId") or "")
+            if str(job.get("positionId") or number.split("-", 1)[0]) == ref.job_id:
+                return True
+        return None
 
     def search(self, fetcher, board: str, company: str, terms=()) -> list[Posting] | None:
         seen: dict[str, Posting] = {}
