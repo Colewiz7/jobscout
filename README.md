@@ -15,7 +15,7 @@ A Kubernetes CronJob every six hours. There is no web service in the scout itsel
 
 ```
 CronJob (6h)
-  |-- sources: about 260 boards across 6 providers, plus the Simplify lists
+  |-- sources: about 290 boards across 16 providers, plus the Simplify lists
   |-- filters: shape, level, location, term
   |-- scoring: rank, collapse duplicates, apply the floor
   |-- Postgres (CloudNativePG): every posting, its score, and why
@@ -35,8 +35,16 @@ A provider takes a fetcher, a board identifier and a display name, and returns p
 | Workday | tenant, wd number, site | paged POST, one query per search term |
 | Amazon | a search query | one GET per query |
 | Phenom | careers host | sitemap, then a detail fetch per plausible job |
+| iCIMS | customer key (`amd`) | the company's career site JSON, or the portal's search page |
+| Eightfold | host and tenant domain | the PCSX search the career page calls |
+| Oracle Recruiting | Fusion pod and site | public REST search, US location id read per pod |
+| SuccessFactors | career site host | search page, then JobPosting markup per job |
+| SmartRecruiters, Workable | company identifier | public JSON search per term |
+| Apple, Google, IBM, TikTok | the company | each site's own search, one adapter apiece |
 
 Workday's search is a substring match, so searching `intern` also matches "Internal Audit". The fan-out is over the infrastructure words, and the level is decided locally where it can be precise. Phenom looks like it needs a browser, but every site publishes a sitemap and each job page carries schema.org `JobPosting` data, so the slug alone discards most jobs without opening them.
+
+Everything from iCIMS down lives in `jobscout/ats`, one module per system. Each module knows which posting URLs are its own, how to read one posting, and optionally how to search a company's board, and capture, descriptions, liveness and the scanner all ask that registry instead of carrying a branch per provider. Hosts are matched by a fixed suffix or a short list of company domains checked by hand, so pasting a link never makes the dashboard fetch an arbitrary URL. Meta postings can be captured and checked but not searched, and Tesla is not supported: its careers site turns away anything that is not a browser.
 
 ## Filtering and scoring
 
