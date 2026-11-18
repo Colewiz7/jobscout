@@ -41,10 +41,11 @@ A provider takes a fetcher, a board identifier and a display name, and returns p
 | SuccessFactors | career site host | search page, then JobPosting markup per job |
 | SmartRecruiters, Workable | company identifier | public JSON search per term |
 | Apple, Google, IBM, TikTok, ByteDance | the company | each site's own search, one adapter apiece |
+| Company career sites (Gulfstream) | careers host | jobs sitemap, then JobPosting per job whose slug names a term |
 
 Workday's search is a substring match, so searching `intern` also matches "Internal Audit". The fan-out is over the infrastructure words, and the level is decided locally where it can be precise. Phenom looks like it needs a browser, but every site publishes a sitemap and each job page carries schema.org `JobPosting` data, so the slug alone discards most jobs without opening them.
 
-Everything from iCIMS down lives in `jobscout/ats`, one module per system. Each module knows which posting URLs are its own, how to read one posting, and optionally how to search a company's board, and capture, descriptions, liveness and the scanner all ask that registry instead of carrying a branch per provider. Hosts are matched by a fixed suffix or a short list of company domains checked by hand, so pasting a link never makes the dashboard fetch an arbitrary URL. Meta postings can be captured and checked but not searched, and Tesla is not supported: its careers site turns away anything that is not a browser.
+Everything from iCIMS down lives in `jobscout/ats`, one module per system. Each module knows which posting URLs are its own, how to read one posting, and optionally how to search a company's board, and capture, descriptions, liveness and the scanner all ask that registry instead of carrying a branch per provider. Hosts are matched by a fixed suffix or a short list of company domains checked by hand, so pasting a link never makes the dashboard fetch an arbitrary URL. Meta postings can be captured and checked but not searched. A site whose robots.txt closes its search but publishes a jobs sitemap, like Gulfstream's, is read from the sitemap instead. Tesla and General Dynamics Land Systems are not supported: both turn away anything that is not a browser, even for robots.txt.
 
 ## Filtering and scoring
 
