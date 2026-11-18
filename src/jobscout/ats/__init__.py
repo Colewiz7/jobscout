@@ -45,8 +45,10 @@ MODULES: tuple[str, ...] = (
     "greenhouse_domains",
     "apple",
     "google",
-    # Meta is built (ats/meta.py) but left out: metacareers.com's robots.txt
-    # says automated collection needs Meta's written permission.
+    # Detail only, one page per posting someone captured or queued. Its
+    # robots.txt allows these paths but asks for written permission for
+    # automated collection, so there is no scout search here.
+    "meta",
 )
 
 
