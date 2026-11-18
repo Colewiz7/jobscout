@@ -50,12 +50,16 @@ def _refuse_signin(request: httpx.Request) -> None:
 
 class Fetcher:
     def __init__(self, timeout: float = 25.0, retry_seconds: float = CONNECT_RETRY_SECONDS, transport=None):
+        # http2 is not for speed. A client that offers only http/1.1 in the TLS
+        # handshake is what Workday's bot protection answers with a 429, while
+        # the same request offering h2 as well goes through.
         self._client = httpx.Client(
             timeout=timeout,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
             event_hooks={"request": [_refuse_signin]},
             transport=transport,
+            http2=True,
         )
         self._retry_seconds = retry_seconds
 
