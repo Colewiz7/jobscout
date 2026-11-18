@@ -53,3 +53,15 @@ def test_server_errors_still_use_the_long_backoff(sleeps):
     answers = iter([httpx.Response(503), httpx.Response(503), httpx.Response(200, json={})])
     fetcher_with(lambda request: next(answers)).get("https://acme.example/jobs")
     assert sleeps == [http.BACKOFF[0], http.BACKOFF[1]]
+
+
+def test_the_tls_context_verifies_but_never_offers_alpn(monkeypatch):
+    import ssl
+
+    context = http._tls_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    # httpcore calls this on every connection; the base method must not run
+    def refuse(self, protocols):
+        raise AssertionError("ALPN offered")
+    monkeypatch.setattr(ssl.SSLContext, "set_alpn_protocols", refuse)
+    context.set_alpn_protocols(["http/1.1"])

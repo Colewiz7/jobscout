@@ -8,8 +8,10 @@ rather than failing the whole run on a cold start.
 from __future__ import annotations
 
 import logging
+import ssl
 import time
 
+import certifi
 import httpx
 
 from .models import is_signin_url
@@ -48,18 +50,35 @@ def _refuse_signin(request: httpx.Request) -> None:
         raise SignInRefused(request.url.host)
 
 
+class _NoALPNContext(ssl.SSLContext):
+    """A normal verifying TLS context that never advertises ALPN.
+
+    httpx always offers ALPN, and Workday's bot protection answers that
+    handshake from this host with a 429 on nearly every request, http/1.1 or
+    h2 alike. The same request without ALPN, which is what Python's own
+    urllib sends, gets a 200 every time. HTTP/1.1 is all this client speaks
+    anyway, so there is nothing to negotiate.
+    """
+
+    def set_alpn_protocols(self, protocols) -> None:
+        return None
+
+
+def _tls_context() -> ssl.SSLContext:
+    context = _NoALPNContext(ssl.PROTOCOL_TLS_CLIENT)  # verifies host and chain
+    context.load_verify_locations(certifi.where())
+    return context
+
+
 class Fetcher:
     def __init__(self, timeout: float = 25.0, retry_seconds: float = CONNECT_RETRY_SECONDS, transport=None):
-        # http2 is not for speed. A client that offers only http/1.1 in the TLS
-        # handshake is what Workday's bot protection answers with a 429, while
-        # the same request offering h2 as well goes through.
         self._client = httpx.Client(
             timeout=timeout,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
             event_hooks={"request": [_refuse_signin]},
             transport=transport,
-            http2=True,
+            verify=_tls_context(),
         )
         self._retry_seconds = retry_seconds
 
@@ -80,6 +99,11 @@ class Fetcher:
     def probe(self, url: str) -> httpx.Response:
         """Fetch while preserving a definitive HTTP error for liveness checks."""
         return self._request("GET", url, return_errors=True)
+
+    def send(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Any method, keeping a definitive HTTP error. The ATS adapters use it
+        to tell a 404 (posting gone) from a 403 (host blocked us)."""
+        return self._request(method, url, return_errors=True, **kwargs)
 
     def _request(
         self, method: str, url: str, *, return_errors: bool = False, **kwargs

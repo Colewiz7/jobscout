@@ -12,7 +12,8 @@ requires-python = ">=3.11"
 # cannot import its own modules.
 dependencies = [
     "beautifulsoup4>=4.15",
-    "httpx[http2]>=0.28",
+    "certifi",
+    "httpx>=0.28",
     "psycopg[binary]>=3.3",
     "PyYAML>=6.0",
 ]
