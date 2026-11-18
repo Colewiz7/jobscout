@@ -396,3 +396,17 @@ def test_search_accepts_other_names_for_a_known_company(board):
     # board stays as configured, for the close rule; the id stays canonical
     assert {row.board for row in rows} == {board}
     assert rows[0].provider_id == "icims:amd:92826"
+
+
+def test_general_dynamics_units_on_icims_have_their_names():
+    import urllib.parse
+
+    from jobscout.ats import icims as module
+    for url, board, name in (
+        ("https://careers-gdeb.icims.com/jobs/123456/engineer/job", "gdeb", "General Dynamics Electric Boat"),
+        ("https://careers-gdbiw.icims.com/jobs/123456/engineer/job", "gdbiw", "General Dynamics Bath Iron Works"),
+        ("https://careers-gd-ots.icims.com/jobs/123456/engineer/job", "ots", "General Dynamics OTS"),
+    ):
+        ref = module.ADAPTER.match(urllib.parse.urlsplit(url))
+        assert ref.board == board and ref.provider_id == f"icims:{board}:123456"
+        assert module.COMPANIES[board].name == name

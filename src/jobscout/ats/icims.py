@@ -60,7 +60,11 @@ COMPANIES: dict[str, Company] = {
     for company in (
         Company("amd", "AMD", site="careers.amd.com"),
         Company("aon", "Aon", site="jobs.aon.com"),
+        Company("gdbiw", "General Dynamics Bath Iron Works", portal="careers-gdbiw"),
+        Company("gdeb", "General Dynamics Electric Boat", portal="careers-gdeb"),
         Company("gdms", "General Dynamics Mission Systems", portal="careers-gdms"),
+        # careers-gd-ots: the customer key is the last hyphenated part
+        Company("ots", "General Dynamics OTS", portal="careers-gd-ots"),
         Company("jhuapl", "Johns Hopkins APL", site="careers.jhuapl.edu"),
         Company("kindermorgan", "Kinder Morgan", site="careers.kindermorgan.com"),
         Company("msasafety", "MSA Safety", site="careers.msasafety.com"),
