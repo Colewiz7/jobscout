@@ -58,7 +58,7 @@ _DEADLINE_LABEL = re.compile(
 
 _PAY_AMOUNT = re.compile(r"\$(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?[kK]?(?!\w)")
 _PAY_CONTEXT = re.compile(
-    r"\b(?:pay|salary|wage|compensation|hourly|stipend|per hour|per week|per year|annually)\b|/\s*(?:hr|hour|week|year)\b",
+    r"\b(?:pay|salary|wage|compensation|hourly|stipend|per hour|per week|per year|annually|USD)\b|/\s*(?:hr|hour|week|year)\b",
     re.I,
 )
 _PAY_RANGE_JOIN = re.compile(r"^\s*(?:-|–|—|to\b|through\b|,?\s*(?:maximum|max)\b)", re.I)
@@ -67,6 +67,15 @@ _PAY_HEADING = re.compile(
     re.I,
 )
 _NON_BASE_PAY = r"(?:housing|relocation|meal|wellness|equipment|signing|sign-on|tuition|commuter)\s+(?:stipend|bonus|assistance|allowance|reimbursement)"
+
+
+def _money(amount: str) -> str:
+    """$183000 -> $183,000, $28.00 -> $28; anything else as written."""
+    amount = amount.replace(".00", "")
+    digits = re.fullmatch(r"\$(\d{4,})(\.\d{1,2})?([kK]?)", amount)
+    if digits:
+        return f"${int(digits.group(1)):,}{digits.group(2) or ''}{digits.group(3)}"
+    return amount
 
 
 def extract_pay(text: str | None) -> str | None:
@@ -88,7 +97,11 @@ def extract_pay(text: str | None) -> str | None:
             previous = line
             continue
         for index, amount in enumerate(amounts):
-            heading = previous if _PAY_HEADING.fullmatch(previous) else ""
+            # Google puts "Individual pay is determined by..." on one line and
+            # "US: $183000 - $265000 (USD)" on the next, so a short amounts line
+            # takes its context from the sentence just before it.
+            introduced = len(line) <= 160 and _PAY_CONTEXT.search(previous)
+            heading = previous if _PAY_HEADING.fullmatch(previous) or introduced else ""
             nearby = f"{heading} {line[max(0, amount.start() - 100):amount.end() + 100]}"
             before = line[max(0, amount.start() - 45):amount.start()]
             after = line[amount.end():amount.end() + 30]
@@ -99,13 +112,19 @@ def extract_pay(text: str | None) -> str | None:
             if not _PAY_CONTEXT.search(nearby) or is_benefit:
                 continue
             following = amounts[index + 1] if index + 1 < len(amounts) else None
+            joiner = line[amount.end():following.start()] if following else ""
             is_range = bool(
                 following and following.start() - amount.end() <= 45
-                and _PAY_RANGE_JOIN.search(line[amount.end():following.start()])
+                and (
+                    _PAY_RANGE_JOIN.search(joiner)
+                    # "between $150,400 and $277,600"
+                    or (re.fullmatch(r"\s*and\s*", joiner, re.I)
+                        and re.search(r"\bbetween\s*$", line[max(0, amount.start() - 12):amount.start()], re.I))
+                )
             )
-            value = amount.group().replace(".00", "")
+            value = _money(amount.group())
             if is_range:
-                value += "–" + following.group().replace(".00", "")
+                value += "–" + _money(following.group())
             unit_context = line[max(0, amount.start() - 60):
                                 (following.end() if is_range else amount.end()) + 100]
             if re.search(r"\b(?:per hour|hourly)\b|/\s*(?:hr|hour)\b", unit_context, re.I):

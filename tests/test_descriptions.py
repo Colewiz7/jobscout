@@ -1,6 +1,6 @@
 import datetime as dt
 
-from jobscout.descriptions import ProviderDescriptionFetcher, extract_pay, parse_deadline, parse_sections
+from jobscout.descriptions import ProviderDescriptionFetcher, extract_pay, parse_deadline, parse_description, parse_sections
 
 
 class FakeFetcher:
@@ -256,3 +256,12 @@ def test_allowlisted_successfactors_page_uses_only_the_job_body():
     })
     assert detail.sections[0]["key"] == "responsibilities"
     assert "Not the job" not in detail.text
+
+
+def test_pay_reads_between_and_ranges_and_a_line_introduced_by_pay():
+    assert extract_pay("The base pay range for this role is between $150,400 and $277,600, and your base pay will depend on your skills.") == "$150,400–$277,600"
+    html = ("<p>Individual pay is determined by factors including job-related skills, experience, and relevant education or training."
+            "<br><br>US: $183000 - $265000 (USD) + 20% bonus target + equity + benefits<br><br>Learn more about benefits.</p>")
+    assert extract_pay(parse_description(html).text) == "$183,000–$265,000"
+    # "between ... and" outside pay context is still not pay
+    assert extract_pay("Raised $40 million between 2020 and 2022.") is None
