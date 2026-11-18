@@ -22,6 +22,21 @@ USER_AGENT = "jobscout (+https://github.com/Colewiz7/jobscout)"
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
+# A 429 means the host wants us to slow down, and a 90 second retry loop only
+# sends it more traffic. One short retry, then give up and let the caller skip.
+RATE_LIMIT_RETRIES = 1
+RATE_LIMIT_MAX_WAIT = 10
+RATE_LIMIT_DEFAULT_WAIT = 5
+
+
+def _retry_after(response: httpx.Response) -> float:
+    """Seconds to wait after a 429, from Retry-After when it is a plain number."""
+    try:
+        seconds = float(response.headers.get("retry-after", ""))
+    except ValueError:
+        return RATE_LIMIT_DEFAULT_WAIT
+    return min(max(seconds, 1), RATE_LIMIT_MAX_WAIT)
+
 
 class SignInRefused(Exception):
     pass
@@ -68,18 +83,25 @@ class Fetcher:
         deadline = time.monotonic() + self._retry_seconds
         attempt = 0
         last: Exception | None = None
+        rate_limited = 0
         # not 403, that reads as a host block
         refused = httpx.Response(451, request=httpx.Request("GET", "https://refused.invalid/")) if return_errors else None
         if is_signin_url(url):
             log.info("refusing sign-in url")
             return refused
         while True:
+            wait: float | None = None
             try:
                 response = self._client.request(method, url, **kwargs)
                 if response.status_code in RETRY_STATUS:
                     last = httpx.HTTPStatusError(
                         f"{response.status_code}", request=response.request, response=response
                     )
+                    if response.status_code == 429:
+                        rate_limited += 1
+                        if rate_limited > RATE_LIMIT_RETRIES:
+                            raise RuntimeError(f"rate limited by {url}") from last
+                        wait = _retry_after(response)
                 elif response.is_success:
                     return response
                 else:
@@ -103,7 +125,7 @@ class Fetcher:
 
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"giving up on {url} after {self._retry_seconds}s") from last
-            delay = BACKOFF[min(attempt, len(BACKOFF) - 1)]
+            delay = wait if wait is not None else BACKOFF[min(attempt, len(BACKOFF) - 1)]
             log.warning("retrying %s in %ss (%s)", url, delay, last)
             time.sleep(delay)
             attempt += 1
