@@ -66,3 +66,19 @@ def test_missing_application_url_is_closed():
         "url": "",
     })
     assert result.status == "closed"
+
+
+def test_a_throttled_provider_is_reported_as_rate_limiting():
+    import httpx
+
+    class Throttled:
+        def probe(self, url):
+            response = httpx.Response(429, request=httpx.Request("GET", url))
+            cause = httpx.HTTPStatusError("429", request=response.request, response=response)
+            raise RuntimeError(f"giving up on {url} after 20s") from cause
+
+    result = PostingLivenessChecker(Throttled(), min_interval=0).check({
+        "dedupe_key": "lever:abc", "board": "acme", "url": "https://jobs.lever.co/acme/abc",
+    })
+    assert result.status == "unknown"
+    assert "rate limiting" in result.evidence

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 import time
 import urllib.parse
 
 from .descriptions import _slug_from_url
 from .models import is_signin_url
+
+log = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,5 +111,9 @@ class PostingLivenessChecker:
             if parsed.path not in {"", "/"} and final.path in {"", "/"}:
                 return LivenessResult("unknown", "Application URL redirected to a site homepage")
             return LivenessResult("live", "Application URL responded")
-        except Exception:
+        except Exception as error:
+            log.warning("liveness check failed for %s: %s", key or url, error)
+            response = getattr(getattr(error, "__cause__", None), "response", None)
+            if getattr(response, "status_code", None) == 429:
+                return LivenessResult("unknown", "The provider is rate limiting us right now; check again later")
             return LivenessResult("unknown", "Liveness check could not reach the provider")
