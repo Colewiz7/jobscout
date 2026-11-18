@@ -502,6 +502,8 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=
     NOTICES.clear()
     postings: list[Posting] = []
     fetched: set[tuple[str, str]] = set()
+    last_error: RuntimeError | None = None
+    attempted = 0
     for provider, slugs in boards.items():
         run = PROVIDERS.get(provider)
         if run is None:
@@ -509,11 +511,24 @@ def fetch(fetcher, boards: dict[str, tuple[str, ...]], names=None, search_terms=
             continue
         for slug in slugs:
             company = (names.get(provider) or {}).get(slug, slug)
-            rows = run(fetcher, slug, company, search_terms)
+            attempted += 1
+            try:
+                rows = run(fetcher, slug, company, search_terms)
+            except RuntimeError as error:
+                # The fetcher gave up on this board (a 429 that outlasted the
+                # retry window, say). That is one board not answering, not a
+                # reason to throw away every board that already did.
+                log.warning("%s/%s gave up: %s", provider, slug, error)
+                last_error = error
+                rows = None
             if rows is None:
                 log.warning("%s/%s did not answer, skipping", provider, slug)
                 continue
             postings.extend(rows)
             fetched.add((provider, slug))
             log.info("%s/%s: %d rows", provider, slug, len(rows))
+    if attempted and not fetched and last_error is not None:
+        # Nothing answered at all, which looks like the egress cold start or a
+        # dead network rather than one throttled board. Keep failing the run.
+        raise last_error
     return postings, fetched

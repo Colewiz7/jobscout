@@ -68,6 +68,34 @@ def test_fetch_reports_only_boards_that_answered(fixture_json):
     assert all(p.board == "appian" for p in postings)
 
 
+class ThrottledFetcher(FakeFetcher):
+    """Gives up on any URL containing a fragment, like the real fetcher after a 429."""
+
+    def __init__(self, payloads, throttled):
+        super().__init__(payloads)
+        self.throttled = throttled
+
+    def get_json(self, url):
+        if self.throttled in url:
+            raise RuntimeError(f"giving up on {url} after 90s")
+        return super().get_json(url)
+
+
+def test_a_board_that_gives_up_does_not_sink_the_run(fixture_json):
+    fetcher = ThrottledFetcher(
+        {"boards/appian/": fixture_json("greenhouse_appian.json")}, throttled="boards/slow/"
+    )
+    postings, fetched = fetch(fetcher, {"greenhouse": ("slow", "appian")})
+    assert fetched == {("greenhouse", "appian")}
+    assert postings
+
+
+def test_fetch_still_fails_when_no_board_answers():
+    fetcher = ThrottledFetcher({}, throttled="boards/")
+    with pytest.raises(RuntimeError):
+        fetch(fetcher, {"greenhouse": ("a", "b")})
+
+
 def test_fetch_ignores_unknown_provider():
     fetcher = FakeFetcher({})
     postings, fetched = fetch(fetcher, {"taleo": ("acme",)})
