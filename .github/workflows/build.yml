@@ -64,7 +64,7 @@ jobs:
       # unit tests run from the source tree, so they cannot catch a module that
       # exists in git but was never copied into the image.
       - name: the image must actually start
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -72,7 +72,7 @@ jobs:
           tags: jobscout:ci
       - run: docker run --rm jobscout:ci selftest
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
